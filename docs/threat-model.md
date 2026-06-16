@@ -66,8 +66,9 @@ the contract reference; this file is the security reasoning.
 - Refresh-token rotation keeps consumed token hashes so replay can be detected;
   replay revokes the token family and blocks future rotations in that family.
 - Hosted production requires `OAUTH_CONSENT_SIGNING_SECRET` +
-  `OAUTH_SIGNING_PRIVATE_JWK`, fail-fast at boot. If the signing JWK is not
-  injected, restarts generate a new key and invalidate existing access tokens.
+  `OAUTH_SIGNING_PRIVATE_JWK`, fail-fast at boot. The hosted flavor must not
+  silently generate production signing secrets; missing injection is a boot
+  failure.
 
 ## Known Risks
 

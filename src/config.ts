@@ -15,6 +15,10 @@ export const config = {
   auth: {
     localHeaderMode: () => envString("LOCAL_HEADER_MODE", "false") === "true",
   },
+  deployment: {
+    flavor: () => envString("SMART_FETCH_FLAVOR", envString("DEPLOYMENT_FLAVOR", "local-binary")),
+    production: () => envString("NODE_ENV", "development") === "production",
+  },
   oauth: {
     issuer: () => envString("OAUTH_ISSUER", ""),
     resource: () => envString("OAUTH_RESOURCE", ""),
@@ -24,6 +28,7 @@ export const config = {
     accessTokenTtlSeconds: 600,
     refreshTokenTtlSeconds: 2592000,
     consentTokenTtlSeconds: 300,
+    authorizationCodeTtlSeconds: 300,
     redirectAllowlist: () => envString("OAUTH_REDIRECT_ALLOWLIST", "").split(",").map((s) => s.trim()).filter(Boolean),
   },
   transform: {

@@ -117,7 +117,7 @@ export class SqliteStore implements StorePort {
         `UPDATE oauth_refresh_tokens SET consumed_at = ?
           WHERE token_hash = ? AND consumed_at IS NULL`,
       ).run(nowIso, tokenHash);
-      insertRefreshToken(this.db, next);
+      insertRefreshToken(this.db, nextFromRow(next, row));
       return refreshTokenFromRow(row);
     });
   }
@@ -171,6 +171,15 @@ function insertRefreshToken(db: DatabaseSync, input: SaveRefreshTokenInput): voi
     JSON.stringify(input.scopes),
     input.expiresAt,
   );
+}
+
+function nextFromRow(input: SaveRefreshTokenInput, row: RefreshTokenRow): SaveRefreshTokenInput {
+  return {
+    ...input,
+    clientId: row.client_id,
+    subject: row.subject,
+    scopes: parseScopes(row.scopes_json),
+  };
 }
 
 function revokeFamily(db: DatabaseSync, familyId: string, revokedAtIso: string): void {

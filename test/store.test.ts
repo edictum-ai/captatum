@@ -73,6 +73,38 @@ test("sqlite rotates refresh tokens and replay revokes the refresh family", asyn
   cleanup();
 });
 
+
+test("sqlite rotation preserves refresh-token metadata from the consumed token", async () => {
+  const { file, cleanup } = sqlitePath();
+  const store = openSqliteStore(file);
+  const rawOne = "refresh-metadata-one";
+  const rawTwo = "refresh-metadata-two";
+  const rawThree = "refresh-metadata-three";
+
+  await store.saveRefreshToken(refreshToken(rawOne, "family-metadata", null, FUTURE));
+  await store.rotateRefreshToken(
+    sha256Hex(rawOne),
+    {
+      ...refreshToken(rawTwo, "family-metadata", sha256Hex(rawOne), FUTURE),
+      clientId: "attacker",
+      subject: "attacker",
+      scopes: ["fetch:transform"],
+    },
+    NOW,
+  );
+  const second = await store.rotateRefreshToken(
+    sha256Hex(rawTwo),
+    refreshToken(rawThree, "family-metadata", sha256Hex(rawTwo), FUTURE),
+    LATER,
+  );
+
+  assert.equal(second?.clientId, "client-1");
+  assert.equal(second?.subject, "subject-1");
+  assert.deepEqual(second?.scopes, ["fetch:read"]);
+  await store.close();
+  cleanup();
+});
+
 test("sqlite rejects expired refresh tokens and closes idempotently", async () => {
   const { file, cleanup } = sqlitePath();
   const store = openSqliteStore(file);
@@ -140,6 +172,37 @@ test("tidb fake rotates refresh tokens and revokes family on replay", async () =
   assert.equal(fake.families.get("tidb-family")?.revoked_at, LATER);
   assertParameterized(fake, [rawOne, rawTwo, rawThree, rawFour, sha256Hex(rawOne)]);
   assertNoRawInFake(fake, [rawOne, rawTwo, rawThree, rawFour]);
+});
+
+
+test("tidb rotation preserves refresh-token metadata from the consumed token", async () => {
+  const fake = new FakeTidb();
+  await migrateTidbStore(fake);
+  const store = new TidbStore(fake);
+  const rawOne = "tidb-refresh-metadata-one";
+  const rawTwo = "tidb-refresh-metadata-two";
+  const rawThree = "tidb-refresh-metadata-three";
+
+  await store.saveRefreshToken(refreshToken(rawOne, "tidb-family-metadata", null, FUTURE));
+  await store.rotateRefreshToken(
+    sha256Hex(rawOne),
+    {
+      ...refreshToken(rawTwo, "tidb-family-metadata", sha256Hex(rawOne), FUTURE),
+      clientId: "attacker",
+      subject: "attacker",
+      scopes: ["fetch:transform"],
+    },
+    NOW,
+  );
+  const second = await store.rotateRefreshToken(
+    sha256Hex(rawTwo),
+    refreshToken(rawThree, "tidb-family-metadata", sha256Hex(rawTwo), FUTURE),
+    LATER,
+  );
+
+  assert.equal(second?.clientId, "client-1");
+  assert.equal(second?.subject, "subject-1");
+  assert.deepEqual(second?.scopes, ["fetch:read"]);
 });
 
 function authCode(rawCode: string, expiresAt: string): SaveAuthCodeInput {

@@ -76,7 +76,7 @@ export class TidbStore implements StorePort {
         [nowIso, tokenHash],
       );
       if (affectedRows(updated) !== 1) return null;
-      await insertRefreshToken(tx, next);
+      await insertRefreshToken(tx, nextFromRow(next, row));
       return refreshTokenFromRow(row);
     });
   }
@@ -147,6 +147,15 @@ async function insertRefreshToken(db: TidbExecutor, input: SaveRefreshTokenInput
     JSON.stringify(input.scopes),
     input.expiresAt,
   ]);
+}
+
+function nextFromRow(input: SaveRefreshTokenInput, row: RefreshTokenRow): SaveRefreshTokenInput {
+  return {
+    ...input,
+    clientId: row.client_id,
+    subject: row.subject,
+    scopes: JSON.parse(row.scopes_json) as string[],
+  };
 }
 
 async function ensureFamily(db: TidbExecutor, familyId: string): Promise<void> {

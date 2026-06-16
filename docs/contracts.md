@@ -144,9 +144,9 @@ The OAuth contract below applies only to the hosted flavor. It mirrors `personal
 | POST | `/oauth/token` | `authorization_code` / `refresh_token` grant (`cache-control: no-store`) |
 | POST | `/oauth/revoke` | Revoke refresh-token family; always 200 |
 
-Flow: authorize (PKCE S256, request-bound signed consent token) → approve (single-use code, stored as `sha256(code)`) → token (verify PKCE, issue **ES256 JWT** access token signed by `OAUTH_SIGNING_PRIVATE_JWK`, aud=resource; rotating refresh tokens stored as `sha256(raw)`, grouped by family; replay revokes the family). Access TTL 600 s; refresh TTL 30 days. Hosted production requires `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` (fail-fast at boot).
+Flow: authorize (PKCE S256, request-bound signed consent token) → approve (single-use code, stored as `sha256(code)`) → token (verify PKCE, issue **ES256 JWT** access token signed by `OAUTH_SIGNING_PRIVATE_JWK`, aud=resource; rotating refresh tokens stored as `sha256(raw)`, grouped by family; replay revokes the family). Auth-code TTL is 300 s, access TTL 600 s, and refresh TTL 30 days. Hosted production requires `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` (fail-fast at boot).
 
-Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). Tool handlers enforce required scope per request.
+Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). Tool handlers enforce required scope per request: raw fetch requires `fetch:read`; summary/extract/transform use requires `fetch:transform`.
 
 ## Security controls (see threat-model.md)
 
@@ -184,7 +184,7 @@ Guarded fetch reject codes include `unsupported_scheme`, `invalid_url`,
 
 ## Audit event
 
-One per tool call: `{ occurredAt, subject?, clientId?, tool:"smart_fetch", url_host (scheme+host only), tier, platform, output, status, bytes, durationMs, transformProvider?, transformModel? }`. Never includes body, full URL path/query for private hosts, tokens, or credentials.
+One per tool call: `{ occurredAt, subject?, clientId?, tool:"smart_fetch", url_host (scheme+host only), tier, platform, output, status, bytes, durationMs, transformProvider?, transformModel? }`. OAuth transitions also write metadata-only auth events: `{ occurredAt, event, status, clientId?, subject?, resource?, scopes?, redirectHost?, reason? }`. Never includes body, full URL path/query for private hosts, authorization codes, refresh tokens, access tokens, consent tokens, or credentials.
 
 ## Deployment
 
