@@ -18,8 +18,8 @@ export interface AttemptTrace {
 
 export interface TransformInfo {
   provider: string;
-  model: string;
-  free: boolean;
+  model?: string;
+  free?: boolean;
   inTokens?: number;
   outTokens?: number;
   latencyMs?: number;

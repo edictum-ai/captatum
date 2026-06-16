@@ -64,13 +64,19 @@ Result {
   contentType,
   title,                                          // when derivable
   structured: { canonicalUrl?, jsonLd?, og?, meta?, appState? }, // parsed from raw HTML (present when found)
-  transform: { provider, model, free, inTokens, outTokens, latencyMs, costUsd? }, // present on summary/extract
+  transform: { provider, model?, free?, inTokens?, outTokens?, latencyMs?, costUsd?, reason? }, // present on summary/extract or fallback
   timings: { totalMs, fetchMs, renderMs?, transformMs? },
   errors: [{ code, message }],
 }
 ```
 
 Timestamps are caller-injected (`fetchedAt?: string`). No `Date.now()` in core (CI grep enforces).
+
+When guarded fetch rejects before any HTTP response is safely available, the
+core still returns a contract-shaped `Result`: `code: 0`,
+`codeText: "FETCH_REJECTED"`, `tier: "error"`, `resolvedVia:
+"guarded-fetch"`, `errors[0]` preserves the original guarded-fetch
+`{ code, message }`, and extraction/render/transform are not called.
 
 ## Ports
 
@@ -99,7 +105,7 @@ Provider-configurable via `transform`: **OpenRouter** (default; OpenAI-compatibl
 
 Privacy: fetched content is mostly public web content; the only egress risk is non-public content (authed/signed URLs, internal hosts) → detect via signals and route to Ollama or skip.
 
-**Setup & fallback.** Configure `OPENROUTER_API_KEY` (OpenRouter) and/or `OLLAMA_BASE_URL` (local Ollama) in the environment; the router uses whichever is configured (OpenRouter default, Ollama override for sensitive/local). An MCP tool **cannot** see or use the calling agent's own model or credentials, so there is no "use the caller's model" path. **If no transform provider is configured, `output: summary` degrades to `output: raw`** (clean resolved content, no LLM) and provenance records `transform: { provider: "none", reason: "unconfigured" }`. Because summary is the default output, this setup is first-run-critical and must be documented prominently in the tool description and `docs/`.
+**Setup & fallback.** Configure `OPENROUTER_API_KEY` (OpenRouter) and/or `OLLAMA_BASE_URL` (local Ollama) in the environment; the router uses whichever is configured (OpenRouter default, Ollama override for sensitive/local). An MCP tool **cannot** see or use the calling agent's own model or credentials, so there is no "use the caller's model" path. **If no transform provider is configured, `output: summary` degrades to `output: raw`** (clean resolved content, no LLM) and provenance records `transform: { provider: "none", reason: "unconfigured" }`. If a configured transform fails, the core returns raw content with `transform: { provider: "none", reason: "failed" }` and a `transform_failed` provenance error. Because summary is the default output, this setup is first-run-critical and must be documented prominently in the tool description and `docs/`.
 
 ## OAuth (hosted flavor only)
 
@@ -151,6 +157,8 @@ All HTTP/JSON-RPC errors:
 ```
 
 Stable `code` values; `message` may change. Auth failure sets `WWW-Authenticate`.
+Tool input validation failures use the same HTTP error wrapper and include
+`invalid_input` for malformed tool payloads before any outbound work begins.
 Guarded fetch reject codes include `unsupported_scheme`, `invalid_url`,
 `crlf_url`, `userinfo_url`, `private_address`, `dns_error`, `dns_empty`,
 `redirect_limit`, `max_bytes`, `timeout`, `unsupported_encoding`,
