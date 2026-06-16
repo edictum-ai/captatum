@@ -1,6 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { isPrivate } from "../../domain/policy.ts";
+import { ipVersion, isPrivate } from "../../domain/policy.ts";
 import { reject, withAbort } from "./errors.ts";
 import { isLocalHostname } from "./url.ts";
 
@@ -57,6 +57,7 @@ export async function resolvePublicAddress(
     reject("dns_empty", "DNS resolution returned no addresses");
   }
   for (const resolved of addresses) {
+    assertClassifiedResolvedAddress(resolved);
     if (isPrivate(resolved.address)) {
       reject("private_address", "Host resolves to a private or reserved address");
     }
@@ -66,5 +67,15 @@ export async function resolvePublicAddress(
 
 function toIpFamily(hostname: string): 4 | 6 | null {
   const family = isIP(hostname);
-  return family === 4 || family === 6 ? family : null;
+  if (family !== 4 && family !== 6) return null;
+  if (ipVersion(hostname) !== family) {
+    reject("invalid_url", "IP literal could not be classified");
+  }
+  return family;
+}
+
+function assertClassifiedResolvedAddress(resolved: ResolvedAddress): void {
+  if (ipVersion(resolved.address) !== resolved.family) {
+    reject("dns_error", "DNS resolution returned an unclassifiable address");
+  }
 }

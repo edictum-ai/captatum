@@ -1,7 +1,9 @@
 import type { IncomingHttpHeaders } from "node:http";
 import { Readable } from "node:stream";
-import { fetch as wreqFetch } from "wreq-js";
+import type { ReadableStream } from "node:stream/web";
+import { fetch as defaultWreqFetch, type RequestInit } from "wreq-js";
 import type { FetcherPort } from "../../application/ports/fetcher.ts";
+import type { DnsResolver } from "../http/dns.ts";
 import { GuardedHttpFetcher } from "../http/guarded-fetcher.ts";
 import { GuardedFetchError, isAbortError } from "../http/errors.ts";
 import {
@@ -10,6 +12,21 @@ import {
   type HttpResponse,
   NodeHttpRequester,
 } from "../http/request.ts";
+
+export type WreqFetch = (
+  input: string,
+  init: RequestInit,
+) => Promise<{
+  status: number;
+  headers: Iterable<[string, string]>;
+  body: ReadableStream<Uint8Array> | null;
+}>;
+
+export interface WreqGuardedFetcherDeps {
+  resolver?: DnsResolver;
+  fetchImpl?: WreqFetch;
+  httpsFallback?: HttpRequester;
+}
 
 /**
  * Tier-1 wreq-js adapter behind guarded fetch semantics.
@@ -21,9 +38,11 @@ import {
  */
 class WreqTier1Requester implements HttpRequester {
   private readonly httpsFallback: HttpRequester;
+  private readonly fetchImpl: WreqFetch;
 
-  constructor(httpsFallback: HttpRequester = new NodeHttpRequester()) {
-    this.httpsFallback = httpsFallback;
+  constructor(deps: WreqGuardedFetcherDeps = {}) {
+    this.httpsFallback = deps.httpsFallback ?? new NodeHttpRequester();
+    this.fetchImpl = deps.fetchImpl ?? defaultWreqFetch;
   }
 
   async request(input: HttpRequestInput): Promise<HttpResponse> {
@@ -32,7 +51,7 @@ class WreqTier1Requester implements HttpRequester {
     }
 
     try {
-      const response = await wreqFetch(connectUrl(input), {
+      const response = await this.fetchImpl(connectUrl(input), {
         redirect: "manual",
         signal: input.signal,
         timeout: input.timeoutMs,
@@ -59,8 +78,11 @@ class WreqTier1Requester implements HttpRequester {
   }
 }
 
-export function createWreqGuardedFetcher(): FetcherPort {
-  return new GuardedHttpFetcher({ requester: new WreqTier1Requester() });
+export function createWreqGuardedFetcher(deps: WreqGuardedFetcherDeps = {}): FetcherPort {
+  return new GuardedHttpFetcher({
+    resolver: deps.resolver,
+    requester: new WreqTier1Requester(deps),
+  });
 }
 
 function connectUrl(input: HttpRequestInput): string {
