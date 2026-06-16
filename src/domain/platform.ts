@@ -28,6 +28,7 @@ export interface ResolveResult {
 }
 
 export interface StructuredData {
+  canonicalUrl?: string;
   jsonLd?: unknown;
   og?: Record<string, string>;
   meta?: Record<string, string>;

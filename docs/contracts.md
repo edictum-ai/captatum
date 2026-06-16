@@ -63,7 +63,7 @@ Result {
   attempts: [{ step, tier, outcome, status?, durationMs, bytes?, reason? }],
   contentType,
   title,                                          // when derivable
-  structured: { jsonLd?, og?, meta?, appState? }, // parsed from raw HTML (present when found)
+  structured: { canonicalUrl?, jsonLd?, og?, meta?, appState? }, // parsed from raw HTML (present when found)
   transform: { provider, model, free, inTokens, outTokens, latencyMs, costUsd? }, // present on summary/extract
   timings: { totalMs, fetchMs, renderMs?, transformMs? },
   errors: [{ code, message }],

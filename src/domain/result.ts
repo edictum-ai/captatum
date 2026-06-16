@@ -1,5 +1,5 @@
 import type { Tier, Output } from "./tier.ts";
-import type { Platform } from "./platform.ts";
+import type { Platform, StructuredData } from "./platform.ts";
 
 export interface Redirect {
   url: string;
@@ -59,12 +59,7 @@ export interface Result {
   attempts: AttemptTrace[];
   contentType: string;
   title?: string;
-  structured?: {
-    jsonLd?: unknown;
-    og?: Record<string, string>;
-    meta?: Record<string, string>;
-    appState?: unknown;
-  };
+  structured?: StructuredData;
   transform?: TransformInfo;
   timings: Timings;
   errors: ProvenanceError[];
