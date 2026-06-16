@@ -1,17 +1,24 @@
 /**
  * Transform router port: picks a provider+model for the summary/extract stage,
- * and receives per-result feedback for the bandit (per-model EMA → flaky/garbage
- * self-demotes). Implemented by src/infrastructure/llm/model-router.ts.
+ * and receives per-result feedback for deterministic per-model EMA scoring
+ * (flaky/garbage self-demotes). Implemented by src/infrastructure/llm/model-router.ts.
  *
  * See docs/contracts.md "Ports → ModelRouterPort" and "Transform".
  */
 
 export type RouterTask = "summarize" | "extract";
+export type RouterProvider = "openrouter" | "ollama" | "none";
+
+export interface ModelPickOptions {
+  provider?: Exclude<RouterProvider, "none">;
+  model?: string;
+  localOnly?: boolean;
+}
 
 export interface ModelPick {
-  provider: "openrouter" | "ollama" | "none";
-  model: string;
-  free: boolean;
+  provider: RouterProvider;
+  model?: string;
+  free?: boolean;
   /** Populated when provider is "none" (degrade to raw). */
   reason?: string;
 }
@@ -25,6 +32,6 @@ export interface ModelScore {
 }
 
 export interface ModelRouterPort {
-  pick(task: RouterTask, inputTokens: number): ModelPick;
+  pick(task: RouterTask, inputTokens: number, options?: ModelPickOptions): ModelPick;
   feedback(score: ModelScore): void;
 }

@@ -13,6 +13,7 @@ export interface TransformInput {
   output: Extract<Output, "summary" | "extract">;
   content: string;
   prompt: string;
+  sourceUrl?: string;
   schema?: unknown;
   budget?: number;
   transform?: TransformOverride;
@@ -21,6 +22,16 @@ export interface TransformInput {
 export interface TransformResult {
   result: string;
   info: TransformInfo;
+}
+
+export class TransformError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "TransformError";
+    this.code = code;
+  }
 }
 
 /**

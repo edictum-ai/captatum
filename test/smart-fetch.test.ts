@@ -263,6 +263,7 @@ test("configured transform receives prompt, schema, budget, and transform overri
     output: "summary",
     content: "Source content",
     prompt: "Summarize this",
+    sourceUrl: "https://example.test/",
     schema,
     budget: 200,
     transform: override,

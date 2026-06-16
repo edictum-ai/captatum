@@ -33,7 +33,11 @@ export const config = {
   },
   transform: {
     openRouterApiKey: () => envString("OPENROUTER_API_KEY", ""),
+    openRouterBaseUrl: () => envString("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+    openRouterModels: () => envString("OPENROUTER_MODELS", "google/gemini-2.0-flash-exp:free,openrouter/auto"),
     ollamaBaseUrl: () => envString("OLLAMA_BASE_URL", ""),
+    ollamaModel: () => envString("OLLAMA_MODEL", "llama3.1"),
+    timeoutMs: () => envPositiveInteger("TRANSFORM_TIMEOUT_MS", 20000),
     freeFirst: true,
   },
   render: {

@@ -30,14 +30,14 @@ smart_fetch(url, { prompt?, output?, schema?, budget?, transform?, maxBytes?, ti
                (JSON-LD / OG / meta / app-state) + shell-gate → done if content present
   2. TIER-2  [optional] platform adapter short-circuit (general; not contract-defined)
   3. TIER-3  Playwright render (lazy dynamic import) → inject Readability.js → extract
-  4. TRANSFORM (DEFAULT)  OpenRouter/Ollama summarize|extract (policy+bandit model router)
+  4. TRANSFORM (DEFAULT)  OpenRouter/Ollama summarize|extract (policy+feedback model router)
   → summary (default) | raw | extract + provenance
 ```
 
 - **Tier-1 fetch = `wreq-js`** (Rust-powered browser TLS/JA3+JA4 fingerprint impersonation → anti-bot/Cloudflare bypass; `fetch()`-compatible; native prebuilts; MIT). The one hard ingredient we import; we did NOT fork `Thinkscape/agent-smart-fetch` (their edge is entirely wreq-js).
 - **Tier-2 adapters** register behind a `PlatformAdapter` port (one folder + one registry line per platform). Optional and general — not part of the contract; verified endpoints live in adapter code/fixtures.
 - **Tier-3 render** is core (it's what makes "any page" true), lazy-loaded so the core stays light.
-- **Transform is the default output** (`output: summary`): token-efficient answer to `prompt` via the free-model router (OpenRouter/Ollama + bandit). `output: raw` returns clean content with no LLM; `output: extract` returns structured JSON.
+- **Transform is the default output** (`output: summary`): token-efficient answer to `prompt` via the free-model router (OpenRouter/Ollama + deterministic feedback). `output: raw` returns clean content with no LLM; `output: extract` returns schema-validated JSON. Configure `OPENROUTER_API_KEY`/`OPENROUTER_MODELS` or `OLLAMA_BASE_URL`/`OLLAMA_MODEL`; with no provider, summary/extract honestly fall back to raw with `provider: "none"`.
 - **Provenance** is first-class output on every response.
 - **Two deployment flavors, one core:** hosted remote server (Streamable HTTP `/mcp` + gateway OAuth; reachable from web agents like claude.ai/chatgpt.com) and a self-contained local binary (no auth, single-user). Auth is conditional on flavor.
 

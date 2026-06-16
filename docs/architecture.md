@@ -57,8 +57,9 @@ not concretes.
     restricted `smartfetch_rw` user + a TiDB-SG rule allowing smart-fetch's task SG
     on `4000/tcp`. Mirrors how `personal-memory-gateway` connects.
   - local-binary flavor → **`node:sqlite`**, file on disk, no server.
-- **`ModelRouterPort`** — `pick(task, inputTokens): { provider, model }` +
-  `feedback(model, score)` for the bandit. Implemented by
+- **`ModelRouterPort`** — `pick(task, inputTokens, options?): { provider, model?, free?, reason? }` +
+  `feedback(model, score)` for a deterministic per-model EMA. `options.localOnly`
+  is used when fetched content has sensitive/non-public signals. Implemented by
   `src/infrastructure/llm/model-router.ts`.
 
 ## Adaptive pipeline
@@ -96,11 +97,12 @@ smart_fetch(url, { prompt?, output?, schema?, budget?, transform?, maxBytes?, ti
   private-IP guard before aborting them, and returns `page.content()` to the
   Tier-1 extractor with tier-3 provenance.
 - **Transform** is the **default** output path (`output: summary`): resolved
-  content → token-efficient answer to `prompt` via the free-model router. If no
-  transform provider is configured, it degrades to `output: raw` and provenance
-  records `transform: { provider: "none", reason: "unconfigured" }`. Because
-  summary is the default, this setup is first-run-critical and must be documented
-  prominently in the tool description and `docs/`.
+  content → token-efficient answer to `prompt` via the free-model router. Configure
+  `OPENROUTER_API_KEY`/`OPENROUTER_MODELS` or `OLLAMA_BASE_URL`/`OLLAMA_MODEL`.
+  If no transform provider is configured, it degrades to `output: raw` and
+  provenance records `transform: { provider: "none", reason: "unconfigured" }`.
+  Because summary is the default, this setup is first-run-critical and must be
+  documented prominently in the tool description and `docs/`.
 
 ## OAuth flow (hosted flavor only)
 

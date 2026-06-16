@@ -2,9 +2,9 @@ import { STATUS_CODES } from "node:http";
 import type { FetcherPort, FetcherResult, RejectResult } from "../ports/fetcher.ts";
 import type { ClockPort } from "../ports/clock.ts";
 import type { RenderPort } from "../ports/renderer.ts";
-import type { TransformPort, TransformResult } from "../ports/transformer.ts";
+import { TransformError, type TransformPort, type TransformResult } from "../ports/transformer.ts";
 import type { Platform } from "../../domain/platform.ts";
-import type { Result, TransformInfo } from "../../domain/result.ts";
+import type { Result } from "../../domain/result.ts";
 import {
   extractTier1FromFetchResult,
   type HtmlExtractor,
@@ -108,7 +108,7 @@ export class SmartFetchUseCase {
 
     if (!this.transformer) {
       base.output = "raw";
-      base.transform = unconfiguredTransform();
+      base.transform = { provider: "none", reason: "unconfigured" };
       base.timings.transformMs = 0;
       stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);
       return base;
@@ -123,6 +123,7 @@ export class SmartFetchUseCase {
         output: request.requestedOutput,
         content: base.result,
         prompt: request.prompt,
+        sourceUrl: base.finalUrl,
         schema: request.schema,
         budget: request.budget,
         transform: request.transform,
@@ -133,12 +134,12 @@ export class SmartFetchUseCase {
       base.output = "raw";
       base.transform = { provider: "none", reason: "failed", latencyMs: transformMs };
       base.timings.transformMs = transformMs;
-      base.errors.push({ code: "transform_failed", message: errorMessage(error, "Transform failed") });
+      base.errors.push({ code: transformErrorCode(error), message: errorMessage(error, "Transform failed") });
       stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);
       return base;
     }
     base.result = transformed.result;
-    base.output = request.requestedOutput;
+    base.output = transformed.info.provider === "none" ? "raw" : request.requestedOutput;
     base.transform = transformed.info;
     base.timings.transformMs = transformMs;
     stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);
@@ -193,19 +194,16 @@ function stampTotals(result: Result, totalMs: number, fetchMs: number): void {
   result.codeText = result.code === 0 ? result.codeText : STATUS_CODES[result.code] ?? "";
 }
 
-function unconfiguredTransform(): TransformInfo {
-  return {
-    provider: "none",
-    reason: "unconfigured",
-  };
-}
-
 function unexpectedReject(error: unknown): RejectResult {
   return {
     rejected: true,
     code: "network_error",
     message: errorMessage(error, "Fetch failed before a safe response was available"),
   };
+}
+
+function transformErrorCode(error: unknown): string {
+  return error instanceof TransformError ? error.code : "transform_failed";
 }
 
 function errorMessage(error: unknown, fallback: string): string {
