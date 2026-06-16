@@ -48,6 +48,23 @@ test("extracts Open Graph, Twitter, generic meta, and canonical from og-meta.htm
   assert.equal(extraction.shellGate.reason, "structured-data-found");
 });
 
+test("ignores unsafe meta keys after normalization", () => {
+  const extraction = extractHtml({
+    html: [
+      "<meta property=\"OG:TITLE\" content=\"Safe OG\">",
+      "<meta name=\"description\" content=\"Safe meta\">",
+      "<meta name=\"Constructor\" content=\"unsafe\">",
+      "<meta name=\"PROTOTYPE\" content=\"unsafe\">",
+      "<meta name=\"__PROTO__\" content=\"unsafe\">",
+    ].join(""),
+    url: "https://example.test/meta-unsafe",
+  });
+
+  assert.deepEqual(extraction.structured.og, { "og:title": "Safe OG" });
+  assert.deepEqual(extraction.structured.meta, { description: "Safe meta" });
+  assert.equal(extraction.shellGate.reason, "structured-data-found");
+});
+
 test("extracts __NEXT_DATA__ and __INITIAL_STATE__ from app-state.html", () => {
   const extraction = extractHtml({
     html: fixture("app-state.html"),

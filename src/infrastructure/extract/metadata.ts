@@ -102,9 +102,11 @@ function extractMetaTags(html: string): {
   for (const tag of findStartTags(html, "meta")) {
     const key = tag.attrs.property || tag.attrs.name;
     const value = tag.attrs.content;
-    if (!key || value === undefined || !isSafeRecordKey(key)) continue;
+    if (!key || value === undefined) continue;
 
     const normalized = key.toLowerCase();
+    if (!isSafeRecordKey(normalized)) continue;
+
     if (normalized.startsWith("og:")) {
       og[normalized] = value;
     } else {

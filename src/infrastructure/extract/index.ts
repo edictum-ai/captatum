@@ -1,23 +1,17 @@
-import type { StructuredData } from "../../domain/platform.ts";
 import type { ProvenanceError } from "../../domain/result.ts";
-import type { ShellGateEvidence } from "../../domain/shell-gate.ts";
+import type { StructuredData } from "../../domain/platform.ts";
+import type {
+  HtmlExtraction,
+  HtmlExtractionInput,
+} from "../../application/use-cases/tier1-extract.ts";
 import { extractVisibleText } from "./html.ts";
 import { extractPageMetadata } from "./metadata.ts";
 import { evaluateShellGate } from "./shell-gate.ts";
 
-export interface HtmlExtractionInput {
-  html: string;
-  url: string;
-  contentType?: string;
-}
-
-export interface HtmlExtraction {
-  title?: string;
-  text: string;
-  structured: StructuredData;
-  shellGate: ShellGateEvidence;
-  errors: ProvenanceError[];
-}
+export type {
+  HtmlExtraction,
+  HtmlExtractionInput,
+} from "../../application/use-cases/tier1-extract.ts";
 
 export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
   const errors = [] as ProvenanceError[];
