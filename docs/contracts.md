@@ -81,7 +81,11 @@ Timestamps are caller-injected (`fetchedAt?: string`). No `Date.now()` in core (
 
 ## Tiers
 
-- **Tier-1 (default).** `wreq-js` fetch (browser TLS/JA3+JA4 fingerprint impersonation → anti-bot) + raw-HTML extraction: JSON-LD `<script application/ld+json>`, Open Graph/twitter meta, canonical, and embedded app state (`__NEXT_DATA__`, `__INITIAL_STATE__`) via a prototype-pollution-safe reviver. A **shell-gate** decides whether the page has real content (→ done) or is an empty SPA shell (→ escalate). Generic main-content extraction may use `defuddle` when added.
+- **Tier-1 (default).** `wreq-js` fetch (browser TLS/JA3+JA4 fingerprint impersonation → anti-bot) + raw-HTML extraction: JSON-LD `<script application/ld+json>`, Open Graph/twitter meta, canonical, and embedded app state (`__NEXT_DATA__`, `__INITIAL_STATE__`) via a prototype-pollution-safe reviver. Tier-1 egress is still behind `FetcherPort`; direct `wreq-js` calls are not allowed to bypass guarded DNS/IP checks. A **shell-gate** decides whether the page has real content (→ done) or is an empty SPA shell (→ escalate). Generic main-content extraction may use `defuddle` when added.
+  Current P1 limitation: the guarded adapter uses `wreq-js` only for plain HTTP.
+  HTTPS delegates to the Node requester to preserve checked-IP connect semantics
+  plus original-host SNI/certificate verification, so `wreq-js` TLS/JA3+JA4
+  fingerprinting is not active for HTTPS yet.
 - **Tier-2 (optional).** If a registered `PlatformAdapter` detects the URL, it resolves via that platform's public API (clean JSON), short-circuiting extraction/render. Adapters are optional and general; their endpoints live in adapter code/fixtures, not this contract.
 - **Tier-3 (core, gated by `allowRender`).** Lazy `import('playwright')`; one warm browser context per process; render with hard timeouts + request interception (abort image/font/media/analytics, block private IPs at the browser network layer, close websockets, disable Service Workers, block downloads); reuse the Tier-1 extractor on `page.content()` and inject Readability.js via `page.evaluate` for main content. Chromium pinned to version+digest. If Playwright is absent → `render-unavailable`. **When it applies:** Tier-3 fires when Tier-1 finds an empty SPA shell or no usable structured data — e.g. client-rendered React/Vue/Svelte apps whose HTML is a `<div id="root">` stub; pages that load content via XHR/fetch after `load`; JS-only docs/demos (Docusaurus/Storybook in SPA mode); content behind a Cloudflare/anti-bot interstitial that needs a real browser; and embedded widgets rendered client-side on a third-party domain (e.g. an Ashby board). Gated by `allowRender` (default false) so a bare `smart-fetch` never spawns a browser.
 
@@ -122,7 +126,7 @@ Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). 
 
 ## Security controls (see threat-model.md)
 
-- OUTBOUND rebinding-proof `guardedFetch`: scheme `http|https` only; reject raw CRLF; strip userinfo; resolve → `isPrivate` CIDR (v4 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16 incl. metadata, 0.0.0.0/8, 100.64/10, 224/4; v6 ::1, fe80/10, fc00/7, ff00/8, `::ffff:0:0/96`, NAT64 `64:ff9b::`, IPv4-compatible) → connect to the resolved IP (`node:https` with `servername`/`Host` = original host); manual redirects re-validated each hop (`maxHops=5`); decompressed-byte cap; `AbortController` timeout.
+- OUTBOUND rebinding-proof `guardedFetch`: scheme `http|https` only; reject raw CRLF; reject userinfo-bearing URLs and strip credentials from all sanitized URL values; resolve → `isPrivate` CIDR (v4 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16 incl. metadata, 0.0.0.0/8, 100.64/10, 224/4; v6 ::1, fe80/10, fc00/7, ff00/8, `::ffff:0:0/96`, NAT64 `64:ff9b::`, IPv4-compatible) → connect to the resolved IP (`node:https` with `servername`/`Host` = original host); manual redirects re-validated each hop (`maxHops=5`); decompressed-byte cap; `AbortController` timeout.
 - INBOUND: SDK transport Host/Origin DNS-rebinding protection.
 - TIER-3 in-browser SSRF: `page.route` isPrivate on every subresource; websocket-close; SW off; downloads blocked; render-byte cap; browser in a separate child process with no env; OS sandbox on (never `--no-sandbox`).
 - Response guards: reject `Content-Length` > max before reading; stream through a counting `TransformStream`.
@@ -147,6 +151,10 @@ All HTTP/JSON-RPC errors:
 ```
 
 Stable `code` values; `message` may change. Auth failure sets `WWW-Authenticate`.
+Guarded fetch reject codes include `unsupported_scheme`, `invalid_url`,
+`crlf_url`, `userinfo_url`, `private_address`, `dns_error`, `dns_empty`,
+`redirect_limit`, `max_bytes`, `timeout`, `unsupported_encoding`,
+`body_read_error`, `network_error`, and `invalid_options`.
 
 ## Audit event
 

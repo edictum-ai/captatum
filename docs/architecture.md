@@ -1,9 +1,10 @@
 # Architecture
 
-Status: v1 direction. Only the scaffold is decided; the vertical slice (wreq-js
-fetch, adapters, OAuth, MCP server) is the next step. This document describes the
-approved shape. `docs/contracts.md` is the source of truth for tool I/O, ports,
-provenance, OAuth, and errors; this file does not duplicate it.
+Status: v1 direction. The guarded egress primitive is implemented; the remaining
+vertical slice (extraction, adapters, render, transform, OAuth, MCP server) is
+next. This document describes the approved shape. `docs/contracts.md` is the
+source of truth for tool I/O, ports, provenance, OAuth, and errors; this file
+does not duplicate it.
 
 ## Shape
 
@@ -76,6 +77,12 @@ smart_fetch(url, { prompt?, output?, schema?, budget?, transform?, maxBytes?, ti
   Open Graph/twitter meta, canonical, and embedded app state
   (`__NEXT_DATA__`, `__INITIAL_STATE__`) via a prototype-pollution-safe reviver. A
   shell-gate decides real content vs. empty SPA shell.
+  **Known P1 limitation:** the guarded requester uses `wreq-js` only for plain
+  HTTP. HTTPS delegates to the Node requester so the adapter can connect to the
+  checked IP while preserving original-host SNI/certificate verification. That
+  keeps the SSRF invariant but means `wreq-js` TLS/JA3+JA4 anti-bot behavior is
+  not active for HTTPS until a checked-IP + original TLS identity path is proven
+  through `wreq-js`.
 - **Tier-2** adapters resolve via a platform's public API when detected. Optional
   and general; endpoints live in adapter code/fixtures.
 - **Tier-3** renders with Playwright when Tier-1 finds an empty SPA shell or no
@@ -113,11 +120,15 @@ auth limits.
 The single egress primitive (`FetcherPort` / `guardedFetch`) holds these
 invariants; `docs/threat-model.md` is the security reference.
 
-- scheme `http|https` only; reject raw CRLF; strip userinfo.
+- scheme `http|https` only; reject raw CRLF; reject userinfo-bearing URLs.
 - resolve → `isPrivate` CIDR (exhaustive — see threat model) → connect to the
   **resolved IP** (`node:https` with `servername`/`Host` = original host).
 - manual redirects re-validated each hop (`maxHops=5`).
 - decompressed-byte cap; `AbortController` timeout.
+- Tier-1 `wreq-js` egress lives behind this guard. It must receive the already
+  validated connection target; direct `wreq-js` fetches are not a safe substitute.
+  Current guarded Tier-1 HTTPS requests intentionally use the Node fallback above
+  rather than weakening checked-IP connect semantics.
 - Tier-3 in-browser: `page.route` isPrivate on every subresource; websocket-close;
   Service Workers off; downloads blocked; render-byte cap; browser in a separate
   child process with no env; OS sandbox on (never `--no-sandbox`).
@@ -134,8 +145,8 @@ Split by layer or responsibility when a file gets close to the limit.
 
 ## Not Implemented Yet
 
-- Everything except the scaffold. The vertical slice — wreq-js Tier-1 fetch, the
-  Tier-2 adapter registry, Tier-3 Playwright render, the Transform router,
-  gateway OAuth, the Streamable HTTP MCP server, and both `StorePort` impls — is
-  the next step. `docs/contracts.md` describes the whole product; nothing is
+- The guarded fetch egress primitive and Tier-1 requester seam exist. Extraction,
+  the Tier-2 adapter registry, Tier-3 Playwright render, the Transform router,
+  gateway OAuth, the Streamable HTTP MCP server, and both `StorePort` impls are
+  still pending. `docs/contracts.md` describes the whole product; nothing is
   version-gated or deferred, it all gets built.
