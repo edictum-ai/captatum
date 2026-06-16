@@ -4,6 +4,7 @@ import type { ClockPort } from "../src/application/ports/clock.ts";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
 import { createSmartFetchUseCase } from "../src/application/use-cases/smart-fetch.ts";
 import type { HtmlExtraction, HtmlExtractionInput } from "../src/application/use-cases/tier1-extract.ts";
+import { validateJsonSchema } from "../src/infrastructure/llm/json-schema.ts";
 import { LlmTransformer, ModelRouter } from "../src/infrastructure/llm/model-router.ts";
 import type { LlmGenerateInput, LlmGenerateResult, LlmModelCandidate, LlmProvider } from "../src/infrastructure/llm/types.ts";
 
@@ -123,6 +124,62 @@ test("output extract rejects later array item that violates item schema", async 
   assert.equal(result.output, "raw");
   assert.equal(result.result, "Original array source");
   assert.deepEqual(result.errors, [{ code: "extract_schema_invalid", message: "$[1] must be string" }]);
+});
+
+test("output extract rejects provider JSON that violates requested minLength schema", async () => {
+  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), {
+    text: '{"title":"Hi"}',
+  });
+  const schema = {
+    type: "object",
+    required: ["title"],
+    properties: { title: { type: "string", minLength: 10 } },
+  };
+  const transformer = new LlmTransformer({
+    router: new ModelRouter(provider.candidates()),
+    providers: { openrouter: provider },
+    clock: new FakeClock([10, 15]),
+  });
+
+  const result = await createSmartFetchUseCase({
+    fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
+    extractHtml: new FakeExtractor(extraction({ text: "Original minLength source" })).extract,
+    transformer,
+    clock: new FakeClock([0, 4, 5, 5, 8, 8]),
+  }).execute({ url: "https://extract.test/minlength", output: "extract", schema });
+
+  assert.equal(result.output, "raw");
+  assert.equal(result.result, "Original minLength source");
+  assert.deepEqual(result.errors, [{ code: "extract_schema_invalid", message: "$.title length must be at least 10" }]);
+});
+
+test("JSON schema validator enforces common requested constraints", () => {
+  const cases: Array<{ value: unknown; schema: unknown; message: string }> = [
+    {
+      value: { slug: "Bad Slug!" },
+      schema: { type: "object", properties: { slug: { type: "string", pattern: "^[a-z-]+$" } } },
+      message: "$.slug must match pattern ^[a-z-]+$",
+    },
+    {
+      value: { count: 1 },
+      schema: { type: "object", properties: { count: { type: "number", minimum: 2 } } },
+      message: "$.count must be >= 2",
+    },
+    {
+      value: { value: true },
+      schema: { type: "object", properties: { value: { anyOf: [{ type: "string" }, { type: "number" }] } } },
+      message: "$.value must match at least one anyOf schema",
+    },
+    {
+      value: { value: "x" },
+      schema: { type: "object", properties: { value: { oneOf: [{ type: "string" }, { const: "x" }] } } },
+      message: "$.value must match exactly one oneOf schema",
+    },
+  ];
+
+  for (const { value, schema, message } of cases) {
+    assert.deepEqual(validateJsonSchema(value, schema), { valid: false, message });
+  }
 });
 
 test("output extract invalid JSON returns structured error and keeps fetch provenance", async () => {

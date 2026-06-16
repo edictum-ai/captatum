@@ -119,6 +119,8 @@ The Transform stage is the **default** output path (`output: summary`): resolved
 
 Modes: `summarize` (default — concise answer to `prompt`, optionally to a token `budget`) and `extract` (structured JSON per `schema`). `output: raw` skips the LLM and returns clean resolved content.
 
+`extract` validates the provider's JSON before returning it. The validator enforces the supported JSON Schema subset used by this tool (`type`, `required`, `properties`, `additionalProperties`, `items`, `enum`/`const`, string length/pattern, numeric bounds, array/property counts, uniqueness, and `allOf`/`anyOf`/`oneOf`/`not`) and fails closed with `extract_schema_invalid` for unsupported validation keywords instead of accepting schema-invalid output.
+
 Provider-configurable via `transform`: **OpenRouter** (default; OpenAI-compatible `chat/completions` over plain `node:https`, key from config) or **local Ollama** (zero egress). The model router enforces a policy hosted routers won't: free-first (`pricing.prompt=="0"`), per-request fit (context length, text modality — filter out audio/coding/image models, JSON-schema support for `extract`), with deterministic **feedback EMA** (score each result: valid JSON? in-budget? non-empty? latency → per-model EMA → flaky/garbage self-demotes) and a fallback chain: best free → cheap paid (Flash/Haiku) → local Ollama. Provenance records `{provider, model, free, inTokens, outTokens, latencyMs}`. On failure, fall back to raw content + a provenance flag.
 
 Privacy: fetched content is mostly public web content; the only egress risk is non-public content (authed/signed URLs, internal hosts) → detect via signals and route to Ollama or skip.
