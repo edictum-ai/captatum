@@ -72,7 +72,7 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
     structured,
     timings: { totalMs: input.durationMs, fetchMs: input.fetchMs ?? input.durationMs },
     errors: extraction.errors,
-    fetchedAt: input.fetchedAt,
+    ...(input.fetchedAt !== undefined ? { fetchedAt: input.fetchedAt } : {}),
   };
 }
 

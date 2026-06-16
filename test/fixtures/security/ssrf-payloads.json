@@ -1,0 +1,56 @@
+[
+  {
+    "name": "metadata IPv4 literal",
+    "url": "http://169.254.169.254/latest/meta-data",
+    "expectedCode": "private_address",
+    "docsPayload": "169.254.169.254"
+  },
+  {
+    "name": "metadata IPv4-mapped IPv6 literal",
+    "url": "http://[::ffff:169.254.169.254]/latest/meta-data",
+    "expectedCode": "private_address",
+    "docsPayload": "::ffff:169.254.169.254"
+  },
+  {
+    "name": "localhost hostname",
+    "url": "http://localhost/admin",
+    "expectedCode": "private_address",
+    "docsPayload": "localhost"
+  },
+  {
+    "name": "gopher unsupported scheme",
+    "url": "gopher://example.test/",
+    "expectedCode": "unsupported_scheme",
+    "docsPayload": "gopher://"
+  },
+  {
+    "name": "file unsupported scheme",
+    "url": "file:///etc/passwd",
+    "expectedCode": "unsupported_scheme",
+    "docsPayload": "file://"
+  },
+  {
+    "name": "302 redirect to loopback",
+    "url": "http://public.test/start",
+    "expectedCode": "private_address",
+    "docsPayload": "302 -> 127.0.0.1",
+    "resolver": {
+      "public.test": [{ "address": "93.184.216.34", "family": 4 }]
+    },
+    "response": { "status": 302, "headers": { "location": "http://127.0.0.1/private" } },
+    "expectedRequesterCalls": 1
+  },
+  {
+    "name": "DNS rebind answer-set stub",
+    "url": "http://rebind.test/resource",
+    "expectedCode": "private_address",
+    "docsPayload": "DNS-rebind stub",
+    "resolver": {
+      "rebind.test": [
+        { "address": "93.184.216.34", "family": 4 },
+        { "address": "127.0.0.1", "family": 4 }
+      ]
+    },
+    "expectedRequesterCalls": 0
+  }
+]

@@ -109,13 +109,17 @@ the contract reference; this file is the security reasoning.
 ## Implementation Gates
 
 - No egress or browser-path change without updating this doc.
-- No dependency install before `docs/dependency-ledger.md` recheck (15-day rule)
-  and `pnpm audit --prod` clean.
+- No dependency install before `docs/dependency-ledger.md` recheck (15-day rule).
+  `pnpm audit --prod` must be clean before public hosted deployment, or any
+  finding must be documented in the ledger with why no eligible patched version
+  can be selected under the 15-day gate.
 - The SSRF fixture suite must all be blocked before the hosted flavor ships:
   `169.254.169.254`, `::ffff:169.254.169.254`, `localhost`, `gopher://`, `file://`,
-  `302 → 127.0.0.1`, and a DNS-rebind stub.
-- No hosted-flavor ship before `OAUTH_SIGNING_PRIVATE_JWK` injection, the TiDB
-  OAuth migration, explicit `MCP_ALLOWED_HOSTS` / `MCP_ALLOWED_ORIGINS`, and
-  authenticated client compatibility tests pass.
+  `302 → 127.0.0.1`, and a DNS-rebind stub. The fixture list is
+  `test/fixtures/security/ssrf-payloads.json`, exercised by
+  `test/ssrf-fixtures.test.ts`.
+- No public hosted deployment before `OAUTH_SIGNING_PRIVATE_JWK` injection, the
+  TiDB OAuth migration/provisioning, explicit `MCP_ALLOWED_HOSTS` /
+  `MCP_ALLOWED_ORIGINS`, and authenticated client compatibility tests pass.
 - No Tier-3 default-on: `allowRender` must default to **false** so a bare
   `smart-fetch` never spawns a browser.

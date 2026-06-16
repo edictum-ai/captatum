@@ -6,7 +6,7 @@ import type { FetcherOptions, FetcherPort, FetcherResult } from "../application/
 import { extractHtml } from "../infrastructure/extract/index.ts";
 import { createLocalMcpServer } from "../interfaces/mcp/local-server.ts";
 
-const FIXTURE_TEXT = "smart-fetch local stdio smoke fixture content.";
+const FIXTURE_TEXT = "smart-fetch shared smoke fixture content.";
 
 class StdioSmokeFetcher implements FetcherPort {
   readonly calls: Array<{ url: string; opts: FetcherOptions }> = [];

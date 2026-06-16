@@ -145,7 +145,10 @@ function renderAttempt(
   status?: number,
   bytes?: number,
 ): AttemptTrace {
-  return { step: 3, tier, outcome, durationMs, reason, status, bytes };
+  const attempt: AttemptTrace = { step: 3, tier, outcome, durationMs, reason };
+  if (status !== undefined) attempt.status = status;
+  if (bytes !== undefined) attempt.bytes = bytes;
+  return attempt;
 }
 
 function errorMessage(error: unknown, fallback: string): string {

@@ -183,7 +183,7 @@ function rejectResult(
     contentType: "",
     timings: { totalMs, fetchMs },
     errors: [{ code: rejected.code, message: rejected.message }],
-    fetchedAt,
+    ...(fetchedAt !== undefined ? { fetchedAt } : {}),
   };
 }
 

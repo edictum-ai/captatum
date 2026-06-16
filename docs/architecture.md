@@ -11,10 +11,12 @@ ports, provenance, OAuth, and errors; this file does not duplicate it.
 
 Two deployment flavors off **one core engine**:
 
-- **Hosted remote server** (primary). Streamable HTTP `POST /mcp` + gateway-owned
-  OAuth, on Node 24 native TS. Reachable from every client including web agents
-  (claude.ai, chatgpt.com), which cannot use a stdio bridge. Containerized,
-  mirroring `personal-memory-gateway`'s ECS/cloudflared path.
+- **Hosted remote server runtime**. Streamable HTTP `POST /mcp` +
+  gateway-owned OAuth, on Node 24 native TS. This repo ships the runtime and
+  local authenticated tests/smoke; public deployment packaging, container
+  publishing, ECS wiring, and cloudflared routing are outside this repo slice.
+  When deployed, this is the flavor web agents use because they cannot use a
+  stdio bridge.
 - **Self-contained local binary**. The same engine compiled (Bun `--compile`)
   into one executable an agent runs locally — no deployment, **no auth**,
   single-user/single-agent. `wreq-js` native prebuilts bundle alongside.
@@ -50,13 +52,11 @@ not concretes.
   `src/application/adapters.ts`. Adding a platform = one folder under
   `src/infrastructure/<platform>/` + one registry line + one fixture. Not part of
   the public contract.
-- **`StorePort`** — OAuth state only (auth codes + refresh tokens, hashed). Two
-  implementations, one per flavor:
-  - hosted flavor → **TiDB via `mysql2`**, reusing `personal-memory-infra`'s TiDB
-    (EC2, private `REDACTED_TIDB_HOST:4000`, MySQL protocol): new `smartfetch` database +
-    restricted `smartfetch_rw` user + a TiDB-SG rule allowing smart-fetch's task SG
-    on `4000/tcp`. Mirrors how `personal-memory-gateway` connects.
-  - local-binary flavor → **`node:sqlite`**, file on disk, no server.
+- **`StorePort`** — OAuth state only (auth codes + refresh tokens, hashed). The
+  hosted flavor uses **TiDB via `mysql2`** and the repo ships migrations/store
+  code for that path. A **`node:sqlite`** store is also shipped and tested for
+  local/dev OAuth-state use, but the current local-binary stdio bridge has no
+  OAuth and does not open a store.
 - **`ModelRouterPort`** — `pick(task, inputTokens, options?): { provider, model?, free?, reason? }` +
   `feedback(model, score)` for a deterministic per-model EMA. `options.localOnly`
   is used when fetched content has sensitive/non-public signals. Implemented by
@@ -170,6 +170,22 @@ actually produced. Packaging caveats: `wreq-js` ships native prebuilts and
 Playwright is a lazy `import('playwright')`, so the compiled binary still relies
 on those runtime assets being resolvable on the host (see `docs/dependency-ledger.md`).
 
+## Smoke and contract fixtures
+
+`pnpm run smoke` is deterministic and public-network-free. It is split into:
+
+- `pnpm run smoke:hosted` — exercises raw safe fetch, default summary with a
+  fake local transformer, blocked SSRF, render-disabled default behavior, and an
+  authenticated hosted `POST /mcp` tool call.
+- `pnpm run smoke:local` — exercises the same raw safe fetch use case through
+  the local stdio MCP server, then launches the advertised stdio bridge process
+  and checks stdout is pure JSON-RPC.
+
+Stable contract examples live in `test/fixtures/contracts/*.json` and are
+compared against runtime output by `test/contract-fixtures.test.ts`. The SSRF
+payload list lives in `test/fixtures/security/ssrf-payloads.json` and is
+exercised by `test/ssrf-fixtures.test.ts`.
+
 ## OAuth flow (hosted flavor only)
 
 Applies only to the hosted flavor; the local-binary flavor has no auth. Mirrors
@@ -220,12 +236,12 @@ pnpm run check:lines
 
 Split by layer or responsibility when a file gets close to the limit.
 
-## Not Implemented Yet
+## Not Implemented Yet / Outside This Repo Slice
 
 - Public deployment packaging/infrastructure wiring is still outside this repo
   slice. The hosted Streamable HTTP MCP runtime exists locally and in tests.
-  `docs/contracts.md` describes the whole product; nothing is version-gated or
-  deferred.
+- The SQLite `StorePort` implementation is tested, but the local stdio runtime
+  does not currently use it because local mode has no OAuth state.
 - Local-binary stdio behavior is complete and exercised by `pnpm run smoke` and
   `pnpm test`. The single-file binary build (`pnpm run build:binary`) depends on
   the external Bun toolchain; on a machine without Bun it exits with the exact

@@ -21,15 +21,15 @@
     "smoke": "node --no-warnings src/dev/smoke-test.ts && node --no-warnings src/dev/smoke-stdio.ts && node --no-warnings src/dev/smoke-stdio-process.ts",
     "smoke:stdio": "node --no-warnings src/dev/smoke-stdio.ts",
     "smoke:stdio:process": "node --no-warnings src/dev/smoke-stdio-process.ts",
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "smoke:hosted": "node --no-warnings src/dev/smoke-test.ts",
+    "smoke:local": "node --no-warnings src/dev/smoke-stdio.ts && node --no-warnings src/dev/smoke-stdio-process.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "fastify": "5.8.5",
     "jose": "6.2.3",
     "mysql2": "3.22.3",
-    "oauth4webapi": "3.8.6",
-    "pino": "10.3.1",
     "playwright": "1.60.0",
     "wreq-js": "2.3.1",
     "zod": "4.4.3"

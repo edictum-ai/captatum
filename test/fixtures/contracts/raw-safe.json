@@ -1,0 +1,55 @@
+{
+  "name": "raw-safe",
+  "input": {
+    "url": "https://fixture.test/contract",
+    "output": "raw"
+  },
+  "structuredContent": {
+    "url": "https://fixture.test/contract",
+    "bytes": 444,
+    "code": 200,
+    "codeText": "OK",
+    "durationMs": 0,
+    "result": "Contract Fixture Smart fetch fixture body for contract reconciliation.",
+    "schemaVersion": 1,
+    "finalUrl": "https://fixture.test/contract",
+    "redirects": [],
+    "tier": 1,
+    "output": "raw",
+    "platform": {
+      "adapterId": "generic",
+      "label": "Generic HTML",
+      "detectedFrom": "tier1"
+    },
+    "jsRequired": false,
+    "resolvedVia": "tier1-meta",
+    "attempts": [
+      {
+        "step": 1,
+        "tier": 1,
+        "outcome": "ok",
+        "status": 200,
+        "durationMs": 0,
+        "bytes": 444,
+        "reason": "structured-data-found"
+      }
+    ],
+    "contentType": "text/html; charset=utf-8",
+    "title": "Contract Fixture",
+    "structured": {
+      "canonicalUrl": "https://fixture.test/contract",
+      "og": {
+        "og:title": "Contract Fixture"
+      },
+      "meta": {
+        "description": "Fixture description for contract reconciliation."
+      }
+    },
+    "timings": {
+      "totalMs": 0,
+      "fetchMs": 0
+    },
+    "errors": []
+  },
+  "mcpText": "<!-- smart-fetch tier=1 output=raw status=200 bytes=444 finalUrl=https://fixture.test/contract platform=generic jsRequired=false resolvedVia=tier1-meta -->\nContract Fixture Smart fetch fixture body for contract reconciliation."
+}

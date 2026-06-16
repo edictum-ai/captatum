@@ -1,35 +1,47 @@
 import { generateKeyPairSync } from "node:crypto";
+import { createServer } from "node:net";
+import type { AddressInfo } from "node:net";
 import type { JWK } from "jose";
-import type { FetcherOptions, FetcherPort, FetcherResult } from "../application/ports/fetcher.ts";
-import type { ClockPort } from "../application/ports/clock.ts";
 import type { AuditLoggerPort } from "../application/ports/audit.ts";
+import type { ClockPort } from "../application/ports/clock.ts";
+import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../application/ports/fetcher.ts";
 import type { StorePort } from "../application/ports/store.ts";
+import type { TransformInput, TransformPort, TransformResult } from "../application/ports/transformer.ts";
 import type { HostedOAuthConfig } from "../application/use-cases/oauth-config.ts";
 import { signAccessToken } from "../application/use-cases/oauth-crypto.ts";
 import { createSmartFetchUseCase } from "../application/use-cases/smart-fetch.ts";
 import { config } from "../config.ts";
+import type { Result } from "../domain/result.ts";
 import { extractHtml } from "../infrastructure/extract/index.ts";
 import { createHttpApp } from "../interfaces/http/app.ts";
+import { resultToMcpText } from "../interfaces/mcp/format.ts";
+
+const SAFE_URL = "https://smoke.test/fixture";
+const BLOCKED_URL = "http://169.254.169.254/latest/meta-data";
+const SPA_URL = "https://smoke.test/spa";
+const FIXTURE_TEXT = "smart-fetch shared smoke fixture content.";
+const clock: ClockPort = { nowMs: () => Date.parse("2026-06-16T12:00:00.000Z") };
 
 class SmokeFetcher implements FetcherPort {
-  calls: Array<{ url: string; opts: FetcherOptions }> = [];
+  readonly calls: Array<{ url: string; opts: FetcherOptions }> = [];
 
-  async fetchGuarded(url: string, opts: FetcherOptions): Promise<FetcherResult> {
+  async fetchGuarded(url: string, opts: FetcherOptions): Promise<FetcherResult | RejectResult> {
     this.calls.push({ url, opts });
-    const html = "<main><h1>Smoke</h1><p>smart-fetch hosted MCP smoke fixture content.</p></main>";
-    const bytes = new TextEncoder().encode(html);
+    if (url.includes("169.254.169.254")) {
+      return { rejected: true, code: "private_address", message: "Host resolves to a private or reserved address" };
+    }
+    return fetchResult(url, url.includes("/spa") ? spaHtml() : contentHtml());
+  }
+}
+
+class SmokeTransformer implements TransformPort {
+  readonly calls: TransformInput[] = [];
+
+  async transform(input: TransformInput): Promise<TransformResult> {
+    this.calls.push(input);
     return {
-      status: 200,
-      finalUrl: url,
-      redirects: [],
-      bodyStream: new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(bytes);
-          controller.close();
-        },
-      }),
-      contentType: "text/html; charset=utf-8",
-      bytes: bytes.byteLength,
+      result: `Smoke summary: ${FIXTURE_TEXT}`,
+      info: { provider: "fixture", model: "local-fake", free: true, inTokens: 42, outTokens: 9, latencyMs: 0 },
     };
   }
 }
@@ -48,53 +60,110 @@ class SmokeStore implements StorePort {
   async close(): Promise<void> {}
 }
 
-const clock: ClockPort = { nowMs: () => Date.parse("2026-06-16T12:00:00.000Z") };
 const oauth = hostedConfig();
+const fetcher = new SmokeFetcher();
+const transformer = new SmokeTransformer();
+const smartFetch = createSmartFetchUseCase({ fetcher, extractHtml, transformer, clock });
+
+printResult("raw safe fetch", await smartFetch.execute({ url: SAFE_URL, output: "raw" }));
+printResult("default summary with configured fake provider", await smartFetch.execute({ url: SAFE_URL }));
+printResult("blocked SSRF URL", await smartFetch.execute({ url: BLOCKED_URL, output: "raw" }));
+printResult("render-disabled default behavior", await smartFetch.execute({ url: SPA_URL, output: "raw" }));
+
+const port = await freePort();
+const app = await createHttpApp({
+  smartFetch,
+  runtime: { flavor: "hosted", oauth },
+  clock,
+  audit: new SmokeAudit(),
+  store: new SmokeStore(),
+  allowedHosts: [`127.0.0.1:${port}`],
+  allowedOrigins: ["https://client.test"],
+});
 const token = await signAccessToken({
   subject: "smoke-user",
   clientId: "smoke-client",
   scopes: ["fetch:read"],
 }, oauth, clock);
-const fetcher = new SmokeFetcher();
-const app = await createHttpApp({
-  smartFetch: createSmartFetchUseCase({ fetcher, extractHtml, clock }),
-  runtime: { flavor: "hosted", oauth },
-  clock,
-  audit: new SmokeAudit(),
-  store: new SmokeStore(),
-  allowedHosts: ["smart-fetch.test"],
-  allowedOrigins: ["https://client.test"],
-});
-
-const response = await app.inject({
+await app.listen({ host: "127.0.0.1", port });
+const hosted = await fetch(`http://127.0.0.1:${port}${config.mcp.endpointPath}`, {
   method: "POST",
-  url: config.mcp.endpointPath,
   headers: {
     authorization: `Bearer ${token}`,
-    host: "smart-fetch.test",
     origin: "https://client.test",
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
     "mcp-protocol-version": config.mcp.stableProtocolVersion,
   },
-  payload: {
+  body: JSON.stringify({
     jsonrpc: "2.0",
     id: 1,
     method: "tools/call",
-    params: { name: "smart_fetch", arguments: { url: "https://smoke.test/fixture", output: "raw" } },
-  },
+    params: { name: "smart_fetch", arguments: { url: SAFE_URL, output: "raw" } },
+  }),
 });
+const hostedResponseText = await hosted.text();
 await app.close();
+if (hosted.status !== 200) throw new Error(`hosted MCP smoke failed: ${hosted.status} ${hostedResponseText}`);
+const hostedBody = JSON.parse(hostedResponseText) as SmokeRpcResponse;
+const hostedText = hostedBody.result?.content?.[0]?.text ?? "";
+if (!hostedText.includes(FIXTURE_TEXT)) throw new Error(`hosted MCP smoke returned unexpected body: ${hostedResponseText}`);
+console.log("--- hosted MCP authenticated call ---");
+console.log(hostedText);
+console.log(JSON.stringify(pick(hostedBody.result?.structuredContent), null, 2));
 
-if (response.statusCode !== 200 || fetcher.calls.length !== 1) {
-  throw new Error(`smart-fetch MCP smoke failed: ${response.statusCode} ${response.body}`);
+function printResult(label: string, result: Result): void {
+  console.log(`--- ${label} ---`);
+  console.log(resultToMcpText(result));
+  console.log(JSON.stringify(pick(result), null, 2));
 }
-const body = response.json() as SmokeRpcResponse;
-const text = body.result?.content?.[0]?.text;
-if (!text?.includes("smart-fetch hosted MCP smoke fixture content")) {
-  throw new Error(`smart-fetch MCP smoke returned unexpected body: ${response.body}`);
+
+function pick(result: unknown): Record<string, unknown> {
+  const record = result as Result | undefined;
+  return {
+    schemaVersion: record?.schemaVersion,
+    tier: record?.tier,
+    output: record?.output,
+    code: record?.code,
+    codeText: record?.codeText,
+    finalUrl: record?.finalUrl,
+    resolvedVia: record?.resolvedVia,
+    jsRequired: record?.jsRequired,
+    transform: record?.transform,
+    errors: record?.errors,
+  };
 }
-console.log(text);
+
+async function freePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address() as AddressInfo;
+      server.close(() => resolve(address.port));
+    });
+  });
+}
+
+function fetchResult(finalUrl: string, html: string): FetcherResult {
+  const bytes = new TextEncoder().encode(html);
+  return {
+    status: 200,
+    finalUrl,
+    redirects: [],
+    bodyStream: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }),
+    contentType: "text/html; charset=utf-8",
+    bytes: bytes.byteLength,
+  };
+}
+
+function contentHtml(): string {
+  return `<main><h1>Smoke</h1><p>${FIXTURE_TEXT}</p></main>`;
+}
+
+function spaHtml(): string {
+  return "<html><body><div id=\"root\"></div><script src=\"/app.js\"></script></body></html>";
+}
 
 function hostedConfig(): HostedOAuthConfig {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -113,5 +182,8 @@ function hostedConfig(): HostedOAuthConfig {
 }
 
 interface SmokeRpcResponse {
-  result?: { content?: Array<{ type: string; text?: string }> };
+  result?: {
+    content?: Array<{ type: string; text?: string }>;
+    structuredContent?: unknown;
+  };
 }

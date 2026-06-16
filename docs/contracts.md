@@ -19,7 +19,22 @@ Why it beats `WebFetch`: `WebFetch` is a static GET + Turndown (which drops `<sc
 - Transport: **Streamable HTTP** at `POST /mcp` (stateless: fresh transport per request, `sessionIdGenerator: undefined`, `enableJsonResponse: true`). `GET/DELETE /mcp` → 405.
 - `GET /healthz` is the only unauthenticated route → `{ status: "ok" }`.
 - Every `/mcp` request is authenticated and authorized independently. Session IDs are never auth.
-- **Deployment is the primary path**: a hosted remote server reachable from every client, including web agents (claude.ai, chatgpt.com), which **cannot** use a stdio bridge. The local **stdio bridge** (`src/interfaces/mcp/stdio-bridge.ts`) is the self-contained local-binary entrypoint: it runs the **same** core engine in-process over an `StdioServerTransport` (`@modelcontextprotocol/sdk/server/stdio.js`) for a single local agent. It has **no OAuth**, opens **no network listener**, and is **not** a remote proxy. It reuses the hosted `smart_fetch` use case and tool schema unchanged (`src/interfaces/mcp/local-server.ts` builds the same MCP server the `POST /mcp` route serves, with single-user local auth). It refuses to start under the `hosted` flavor (fails loudly rather than exposing an unauthenticated surface), and all logs go to stderr so stdout stays the JSON-RPC channel. It does not serve web agents — they require the hosted HTTP server.
+- The repo ships two runtime entrypoints over the same core engine. The hosted
+  Streamable HTTP server is implemented locally and covered by authenticated
+  route/smoke tests; public deployment packaging/infrastructure is outside this
+  repo slice. When deployed with OAuth, that hosted HTTP flavor is the path web
+  agents can use. The local **stdio bridge**
+  (`src/interfaces/mcp/stdio-bridge.ts`) is the self-contained local-binary
+  entrypoint: it runs the **same** core engine in-process over an
+  `StdioServerTransport` (`@modelcontextprotocol/sdk/server/stdio.js`) for a
+  single local agent. It has **no OAuth**, opens **no network listener**, and is
+  **not** a remote proxy. It reuses the hosted `smart_fetch` use case and tool
+  schema unchanged (`src/interfaces/mcp/local-server.ts` builds the same MCP
+  server the `POST /mcp` route serves, with single-user local auth). It refuses
+  to start under the `hosted` flavor (fails loudly rather than exposing an
+  unauthenticated surface), and all logs go to stderr so stdout stays the
+  JSON-RPC channel. It does not serve web agents — they require the hosted HTTP
+  server.
 - Auth is conditional on deployment flavor (see OAuth / Deployment): the hosted flavor requires gateway OAuth bearer tokens; a self-contained local-binary flavor runs without auth.
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted boot requires explicit `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`; local defaults are loopback-only.
 
@@ -39,7 +54,7 @@ One tool. Input (v0):
 | `timeoutMs` | no | Per-tier wall-clock. Default 15 s (Tier-1/2), 20 s (Tier-3). |
 | `allowRender` | no | Default **false**. If false, Tier-3 is skipped and provenance reports `render-blocked`. |
 
-**Default behavior is `output: summary`** — resolved content is passed through the Transform router (free-first OpenRouter, or local Ollama) to produce a token-efficient answer to `prompt`. This is exactly the role WebFetch's Haiku step plays, but cheaper and fed by accurate rendered/extracted content. `output: raw` returns the clean resolved content (markdown + parsed structured data) with no LLM pass. Output is MCP `text` with a provenance footer as the first line (HTML-comment-wrapped, always model-visible), mirrored as `structuredContent` per the Result schema. Token-efficiency signals (`bytes`, `truncated`, `contentType`, `transform.inTokens/outTokens`) let the caller follow up.
+**Default behavior is `output: summary`** — resolved content is passed through the Transform router (free-first OpenRouter, or local Ollama) to produce a token-efficient answer to `prompt`. This is exactly the role WebFetch's Haiku step plays, but cheaper and fed by accurate rendered/extracted content. `output: raw` returns the clean resolved content (markdown + parsed structured data) with no LLM pass. Output is MCP `text` with a provenance line as the first line (HTML-comment-wrapped, always model-visible), mirrored as `structuredContent` per the Result schema. Token-efficiency signals (`bytes`, `contentType`, `transform.inTokens/outTokens`) let the caller follow up.
 
 ## Provenance / Result schema
 
@@ -83,7 +98,11 @@ core still returns a contract-shaped `Result`: `code: 0`,
 
 - **`FetcherPort`** — the single hardened egress. `fetchGuarded(url, opts) → { status, finalUrl, redirects, bodyStream, contentType, bytes } | RejectResult`. Every outbound request (Tier-1, Tier-2 adapter, every redirect hop, every Tier-3 in-browser request) routes through it.
 - **`PlatformAdapter`** — `{ id, detect(ctx): DetectResult | null, resolve(input, fetcher): Promise<ResolveResult> }`. Registered in `src/application/adapters.ts`. Optional general-purpose extension point: adding a platform = one folder under `src/infrastructure/<platform>/` + one registry line + one fixture. Not part of the public contract.
-- **`StorePort`** — OAuth state only: auth-code records and refresh-token records (hashed), plus `close()`. Implemented by `src/infrastructure/tidb/` over `mysql2` for the hosted flavor and `src/infrastructure/sqlite/` over `node:sqlite` for the local-binary flavor.
+- **`StorePort`** — OAuth state only: auth-code records and refresh-token records
+  (hashed), plus `close()`. Implemented by `src/infrastructure/tidb/` over
+  `mysql2` for the hosted flavor. A `node:sqlite` implementation is also
+  shipped and tested for local/dev OAuth-state use, but the current local stdio
+  bridge has no OAuth and does not open a store.
 - **`ModelRouterPort`** — `pick(task, inputTokens, options?): { provider, model?, free?, reason? }` + `feedback(model, score)` for the deterministic feedback EMA. `options.localOnly` is used for sensitive-content signals so hosted providers are bypassed. Implemented by `src/infrastructure/llm/model-router.ts`.
 
 ## Tiers
@@ -162,11 +181,55 @@ Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). 
 
 ## Storage
 
-OAuth state only (auth codes + refresh tokens, hashed), behind a swappable `StorePort` with one implementation per flavor:
-- **Hosted flavor → reuse the existing TiDB** from `personal-memory-infra` (EC2 `REDACTED_INSTANCE`, private `REDACTED_TIDB_HOST:4000`, MySQL protocol): add a new `smartfetch` database + a restricted `smartfetch_rw` user, and a TiDB-SG rule allowing smart-fetch's task SG on `4000/tcp` — mirroring how `personal-memory-gateway` connects (`mysql2`, `TIDB_HOST/PORT/DATABASE/USER/PASSWORD`). No new database server.
-- **Local-binary flavor → embedded `node:sqlite`** (file on disk, no server).
+OAuth state only (auth codes + refresh tokens, hashed), behind a swappable
+`StorePort`:
+- **Hosted flavor → TiDB** via `mysql2`, configured with
+  `TIDB_HOST/PORT/DATABASE/USER/PASSWORD`. The code ships the TiDB store and
+  migrations; provisioning the `smartfetch` database/user/security-group rule is
+  deployment work outside this repo slice. No fetched content/body/cache rows are
+  stored.
+- **SQLite implementation → `node:sqlite`** (file on disk, no server) is shipped
+  and tested for local/dev OAuth-state use. The current local stdio bridge has no
+  OAuth, so it does not use this store at runtime.
 
 Tables: `oauth_auth_codes` (code hash, client id, subject, redirect URI, resource, scopes JSON, PKCE challenge, expiry), `oauth_refresh_tokens` (token hash, family id, previous token hash, client id, subject, scopes JSON, expiry, consumed timestamp), and `oauth_refresh_token_families` (family id, revoked timestamp). Auth codes are deleted on first consume whether valid or expired. Refresh rotation atomically marks the old token consumed and inserts the next hashed token; replay of a consumed token revokes the whole family. Expiry checks use caller-supplied UTC ISO timestamps. No raw codes/tokens and no fetched content/body/cache rows are stored — the service is stateless otherwise. Schema via SQL migrations (per flavor).
+
+## Contract fixtures
+
+Stable local contract examples live under `test/fixtures/contracts/` and are
+checked by `test/contract-fixtures.test.ts`. They use fake/local fetch and
+transform seams; they do not require public internet or secrets.
+
+- `raw-safe.json` — `output: "raw"` success. MCP text starts with the provenance
+  line and `structuredContent.output` is `"raw"`.
+- `summary-fallback.json` — omitted `output` requests the default summary, but
+  with no provider configured the shipped behavior falls back to raw content and
+  records `transform: { provider: "none", reason: "unconfigured" }`.
+- `blocked-ssrf.json` — guarded-fetch rejection still returns a result-shaped
+  payload with `code: 0`, `codeText: "FETCH_REJECTED"`, `tier: "error"`, and the
+  original guarded-fetch error in `errors[0]`.
+- `render-disabled.json` — an empty SPA shell with default `allowRender: false`
+  returns `tier: "render-blocked"` and records the skipped render attempt.
+
+Example `structuredContent` shape from `raw-safe.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "url": "https://fixture.test/contract",
+  "finalUrl": "https://fixture.test/contract",
+  "tier": 1,
+  "output": "raw",
+  "resolvedVia": "tier1-meta",
+  "platform": { "adapterId": "generic", "label": "Generic HTML", "detectedFrom": "tier1" },
+  "jsRequired": false,
+  "code": 200,
+  "codeText": "OK",
+  "result": "Contract Fixture Smart fetch fixture body for contract reconciliation.",
+  "timings": { "totalMs": 0, "fetchMs": 0 },
+  "errors": []
+}
+```
 
 ## Error shape
 
@@ -191,6 +254,22 @@ One per tool call: `{ occurredAt, subject?, clientId?, tool:"smart_fetch", url_h
 
 ## Deployment
 
-Everything in this contract is the product — nothing is version-gated or "deferred"; it all gets built. Two deployment flavors off one core engine:
-- **Hosted remote server** (primary): Streamable HTTP `/mcp` + gateway OAuth, reachable from all clients including web agents (claude.ai, chatgpt.com). Containerized (mirror `personal-memory-gateway`'s ECS/cloudflared path).
-- **Self-contained local binary**: the same engine compiled (Bun `--compile`) into one executable an agent runs locally — no deployment, no auth, single-user/single-agent use. (wreq-js native prebuilts bundle alongside.) The entrypoint is the stdio bridge (`src/interfaces/mcp/stdio-bridge.ts`); under Node the stdio-safe client command is `node --no-warnings src/interfaces/mcp/stdio-bridge.ts` (a bare process so stdout stays a pure JSON-RPC channel). `pnpm run bridge` must **not** be used as the client command — pnpm prints a lifecycle banner to stdout and corrupts the protocol stream; use `corepack pnpm --silent run bridge` if a package script is required. The binary is built with `pnpm run build:binary` (Bun external tool). `build:binary` fails loudly with the exact command to run elsewhere when Bun is absent, and never reports success unless the binary was actually produced. Local mode still routes every fetch through the same guarded-fetch SSRF primitive — "local" is not permission to skip SSRF.
+The repo ships two deployment-flavor runtimes off one core engine:
+- **Hosted remote server runtime**: Streamable HTTP `/mcp` + gateway OAuth,
+  implemented by `src/server.ts` / `src/interfaces/http/*` and exercised locally
+  by tests and `pnpm run smoke:hosted`. This repo does **not** ship a public
+  hosted deployment, container image, ECS service, or cloudflared route.
+- **Self-contained local binary runtime**: the same engine can be compiled (Bun
+  `--compile`) into one executable an agent runs locally — no deployment, no
+  auth, single-user/single-agent use. (wreq-js native prebuilts bundle
+  alongside.) The entrypoint is the stdio bridge
+  (`src/interfaces/mcp/stdio-bridge.ts`); under Node the stdio-safe client
+  command is `node --no-warnings src/interfaces/mcp/stdio-bridge.ts` (a bare
+  process so stdout stays a pure JSON-RPC channel). `pnpm run bridge` must **not**
+  be used as the client command — pnpm prints a lifecycle banner to stdout and
+  corrupts the protocol stream; use `corepack pnpm --silent run bridge` if a
+  package script is required. The binary is built with `pnpm run build:binary`
+  (Bun external tool). `build:binary` fails loudly with the exact command to run
+  elsewhere when Bun is absent, and never reports success unless the binary was
+  actually produced. Local mode still routes every fetch through the same
+  guarded-fetch SSRF primitive — "local" is not permission to skip SSRF.

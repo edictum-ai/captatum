@@ -1,0 +1,58 @@
+{
+  "name": "render-disabled",
+  "input": {
+    "url": "https://fixture.test/spa",
+    "output": "raw"
+  },
+  "structuredContent": {
+    "url": "https://fixture.test/spa",
+    "bytes": 244,
+    "code": 200,
+    "codeText": "OK",
+    "durationMs": 0,
+    "result": "",
+    "schemaVersion": 1,
+    "finalUrl": "https://fixture.test/spa",
+    "redirects": [],
+    "tier": "render-blocked",
+    "output": "raw",
+    "platform": {
+      "adapterId": "generic",
+      "label": "Generic HTML",
+      "detectedFrom": "tier1"
+    },
+    "jsRequired": true,
+    "resolvedVia": "render-blocked",
+    "attempts": [
+      {
+        "step": 1,
+        "tier": 1,
+        "outcome": "escalate",
+        "status": 200,
+        "durationMs": 0,
+        "bytes": 244,
+        "reason": "empty-spa-shell"
+      },
+      {
+        "step": 3,
+        "tier": "render-blocked",
+        "outcome": "block",
+        "durationMs": 0,
+        "reason": "allowRender=false"
+      }
+    ],
+    "contentType": "text/html; charset=utf-8",
+    "title": "SPA Fixture",
+    "structured": {
+      "meta": {
+        "viewport": "width=device-width, initial-scale=1"
+      }
+    },
+    "timings": {
+      "totalMs": 0,
+      "fetchMs": 0
+    },
+    "errors": []
+  },
+  "mcpText": "<!-- smart-fetch tier=render-blocked output=raw status=200 bytes=244 finalUrl=https://fixture.test/spa platform=generic jsRequired=true resolvedVia=render-blocked -->\n"
+}

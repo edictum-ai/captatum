@@ -1,0 +1,48 @@
+{
+  "name": "blocked-ssrf",
+  "input": {
+    "url": "http://169.254.169.254/latest/meta-data",
+    "output": "raw"
+  },
+  "structuredContent": {
+    "url": "https://169.254.169.254/latest/meta-data",
+    "bytes": 0,
+    "code": 0,
+    "codeText": "FETCH_REJECTED",
+    "durationMs": 0,
+    "result": "Host resolves to a private or reserved address",
+    "schemaVersion": 1,
+    "finalUrl": "https://169.254.169.254/latest/meta-data",
+    "redirects": [],
+    "tier": "error",
+    "output": "raw",
+    "platform": {
+      "adapterId": "generic",
+      "label": "Generic HTML",
+      "detectedFrom": "tier1"
+    },
+    "jsRequired": false,
+    "resolvedVia": "guarded-fetch",
+    "attempts": [
+      {
+        "step": 1,
+        "tier": 1,
+        "outcome": "block",
+        "durationMs": 0,
+        "reason": "private_address"
+      }
+    ],
+    "contentType": "",
+    "timings": {
+      "totalMs": 0,
+      "fetchMs": 0
+    },
+    "errors": [
+      {
+        "code": "private_address",
+        "message": "Host resolves to a private or reserved address"
+      }
+    ]
+  },
+  "mcpText": "<!-- smart-fetch tier=error output=raw status=0 bytes=0 finalUrl=https://169.254.169.254/latest/meta-data platform=generic jsRequired=false resolvedVia=guarded-fetch -->\nHost resolves to a private or reserved address"
+}
