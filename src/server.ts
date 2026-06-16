@@ -1,0 +1,82 @@
+import type { AuditLoggerPort, AuthAuditEvent, ToolAuditEvent } from "./application/ports/audit.ts";
+import type { ClockPort } from "./application/ports/clock.ts";
+import { loadAuthRuntimeConfig, type AuthRuntimeConfig } from "./application/use-cases/oauth-config.ts";
+import { createSmartFetchUseCase } from "./application/use-cases/smart-fetch.ts";
+import { config } from "./config.ts";
+import { extractHtml } from "./infrastructure/extract/index.ts";
+import { createWreqGuardedFetcher } from "./infrastructure/wreq/requester.ts";
+import { createDefaultLlmTransformer } from "./infrastructure/llm/model-router.ts";
+import { PlaywrightRenderer } from "./infrastructure/render/index.ts";
+import { createTidbStore } from "./infrastructure/tidb/index.ts";
+import type { StorePort } from "./application/ports/store.ts";
+import { createHttpApp } from "./interfaces/http/app.ts";
+
+const clock: ClockPort = { nowMs: () => Date.now() };
+const audit: AuditLoggerPort = {
+  async writeAuthEvent(event: AuthAuditEvent): Promise<void> {
+    console.log(JSON.stringify({ type: "audit.auth", ...event }));
+  },
+  async writeToolEvent(event: ToolAuditEvent): Promise<void> {
+    console.log(JSON.stringify({ type: "audit.tool", ...event }));
+  },
+};
+const runtime = loadAuthRuntimeConfig();
+const host = config.http.host();
+const port = config.http.port();
+const security = mcpSecurity(runtime, host, port);
+const store = await storeFor(runtime);
+const smartFetch = createSmartFetchUseCase({
+  fetcher: createWreqGuardedFetcher(),
+  extractHtml,
+  transformer: createDefaultLlmTransformer(),
+  renderer: new PlaywrightRenderer(),
+  clock,
+});
+const app = await createHttpApp({
+  smartFetch,
+  runtime,
+  clock,
+  audit,
+  store,
+  ...security,
+});
+
+await app.listen({ host, port });
+console.log(`smart-fetch server listening on http://${host}:${port}`);
+
+process.once("SIGINT", () => void shutdown());
+process.once("SIGTERM", () => void shutdown());
+
+async function shutdown(): Promise<void> {
+  await app.close();
+  await store?.close();
+}
+
+async function storeFor(runtimeConfig: AuthRuntimeConfig): Promise<StorePort | undefined> {
+  if (runtimeConfig.flavor !== "hosted") return undefined;
+  return await createTidbStore({
+    host: config.tidb.host(),
+    port: config.tidb.port(),
+    database: config.tidb.database(),
+    user: config.tidb.user(),
+    password: config.tidb.password(),
+    waitForConnections: true,
+    connectionLimit: 5,
+  });
+}
+
+function mcpSecurity(runtimeConfig: AuthRuntimeConfig, host: string, port: number) {
+  const allowedHosts = config.mcp.allowedHosts();
+  const allowedOrigins = config.mcp.allowedOrigins();
+  if (runtimeConfig.flavor === "hosted" && (!allowedHosts.length || !allowedOrigins.length)) {
+    throw new Error("Hosted MCP requires MCP_ALLOWED_HOSTS and MCP_ALLOWED_ORIGINS");
+  }
+  return {
+    allowedHosts: allowedHosts.length ? allowedHosts : localHosts(host, port),
+    allowedOrigins,
+  };
+}
+
+function localHosts(host: string, port: number): string[] {
+  return [...new Set([host, `${host}:${port}`, `localhost:${port}`, `127.0.0.1:${port}`])];
+}

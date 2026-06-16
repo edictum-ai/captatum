@@ -2,9 +2,8 @@
 
 Status: v1 direction. The guarded egress primitive, Tier-1 extraction,
 adapter registry seam, gated Tier-3 render, OAuth state stores, hosted OAuth
-route/use-case slice, and Transform router are implemented; the remaining
-vertical slice (MCP server) is next. This document describes the approved
-shape. `docs/contracts.md` is the source of truth for tool I/O, ports,
+route/use-case slice, Transform router, and hosted Streamable HTTP MCP server
+are implemented. This document describes the approved shape. `docs/contracts.md` is the source of truth for tool I/O, ports,
 provenance, OAuth, and errors; this file does not duplicate it.
 
 ## Shape
@@ -30,7 +29,7 @@ local-binary flavor simply runs without an auth port.
   concrete adapters.
 - `src/infrastructure`: concrete adapters behind ports (`wreq/`, `playwright/`,
   `sqlite/`, `tidb/`, `llm/`, `<platform>/`).
-- `src/interfaces`: HTTP + MCP entrypoints.
+- `src/interfaces`: HTTP + MCP entrypoints. Hosted MCP lives at `POST /mcp` with a fresh stateless SDK transport per request.
 - `src/config.ts`: centralized configurable values.
 - `src/dev`: local checks and scaffold smoke tests.
 - root `src/*.ts`: CLI/compat entrypoints.
@@ -104,6 +103,25 @@ smart_fetch(url, { prompt?, output?, schema?, budget?, transform?, maxBytes?, ti
   Because summary is the default, this setup is first-run-critical and must be
   documented prominently in the tool description and `docs/`.
 
+## Hosted MCP server
+
+`src/interfaces/http/app.ts` composes Fastify, `/healthz`, hosted OAuth routes,
+and the MCP route. `src/interfaces/http/mcp-route.ts` authenticates every
+`POST /mcp` before SDK dispatch, creates a fresh stateless
+`StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`,
+`enableJsonResponse: true`) and a fresh MCP server for that request, and enables
+SDK Host/Origin DNS-rebinding protection. Hosted mode requires explicit
+`MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`; local mode falls back to loopback
+host values. `GET`/`DELETE /mcp` return 405. Tool registration is in
+`src/interfaces/mcp/`; the tool schema has `additionalProperties: false`, the
+default output is summary, and raw output is advertised.
+
+Scope enforcement happens after authentication and input validation, before the
+core engine runs: `output: raw` requires `fetch:read`; summary/extract or a
+transform override requires `fetch:transform`. Tool results mirror the shared
+`Result` as MCP `structuredContent` and include a model-visible provenance line
+in the text content. Tool calls write metadata-only audit events.
+
 ## OAuth flow (hosted flavor only)
 
 Applies only to the hosted flavor; the local-binary flavor has no auth. Mirrors
@@ -156,8 +174,7 @@ Split by layer or responsibility when a file gets close to the limit.
 
 ## Not Implemented Yet
 
-- The guarded fetch egress primitive, Tier-1 requester seam/extraction, the
-  Tier-2 adapter registry seam, gated Tier-3 Playwright render, both `StorePort`
-  impls, hosted gateway OAuth route/use-case slice, and Transform router exist.
-  The Streamable HTTP MCP server is still pending. `docs/contracts.md` describes
-  the whole product; nothing is version-gated or deferred, it all gets built.
+- Public deployment packaging/infrastructure wiring is still outside this repo
+  slice. The hosted Streamable HTTP MCP runtime exists locally and in tests.
+  `docs/contracts.md` describes the whole product; nothing is version-gated or
+  deferred.

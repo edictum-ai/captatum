@@ -11,6 +11,8 @@ export const config = {
     endpointPath: "/mcp",
     stableProtocolVersion: "2025-11-25",
     forwardDesignVersion: "2026-07-28",
+    allowedHosts: () => envList("MCP_ALLOWED_HOSTS"),
+    allowedOrigins: () => envList("MCP_ALLOWED_ORIGINS"),
   },
   auth: {
     localHeaderMode: () => envString("LOCAL_HEADER_MODE", "false") === "true",
@@ -66,4 +68,8 @@ function envPositiveInteger(name: string, fallback: number): number {
 
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function envList(name: string): string[] {
+  return envString(name, "").split(",").map((s) => s.trim()).filter(Boolean);
 }

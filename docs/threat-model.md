@@ -48,7 +48,9 @@ the contract reference; this file is the security reasoning.
   enforced; browser runs in a separate child process with **no env**; OS sandbox
   on, **never `--no-sandbox`**.
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
-  (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`).
+  (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted
+  mode fails boot unless `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS` are
+  explicit; local mode must stay loopback-only.
 - Response guards: reject `Content-Length` > max before reading; stream through a
   counting `TransformStream`.
 - Logging: metadata-only allow-list (tier, finalUrl, platform, status, bytes,
@@ -102,6 +104,7 @@ the contract reference; this file is the security reasoning.
   `169.254.169.254`, `::ffff:169.254.169.254`, `localhost`, `gopher://`, `file://`,
   `302 → 127.0.0.1`, and a DNS-rebind stub.
 - No hosted-flavor ship before `OAUTH_SIGNING_PRIVATE_JWK` injection, the TiDB
-  OAuth migration, and authenticated client compatibility tests pass.
+  OAuth migration, explicit `MCP_ALLOWED_HOSTS` / `MCP_ALLOWED_ORIGINS`, and
+  authenticated client compatibility tests pass.
 - No Tier-3 default-on: `allowRender` must default to **false** so a bare
   `smart-fetch` never spawns a browser.

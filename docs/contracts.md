@@ -14,13 +14,14 @@ Why it beats `WebFetch`: `WebFetch` is a static GET + Turndown (which drops `<sc
 
 ## Protocol
 
-- MCP protocol: support `2025-11-25` clients; **write the server in the `2026-07-28` RC style now** (stateless, self-contained requests), mirroring `personal-memory-gateway`'s investigation (runbook §"2026-07-28 RC changes that matter": no protocol sessions / `MCP-Session-Id`, no `initialize`, per-request auth, request metadata in `_meta.io.modelcontextprotocol/*`, `server/discover`, `subscriptions/listen` over long-lived POST, HTTP+SSE deprecated; `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers matter). Do not depend on sessions or `initialize` for security.
-- Transport: **Streamable HTTP** at `POST /mcp` (stateless: `sessionIdGenerator: undefined`, `enableJsonResponse: true`). `GET/DELETE /mcp` → 405.
+- MCP protocol: support `2025-11-25` clients; **write the server in the `2026-07-28` RC style where the pinned SDK permits** (stateless, self-contained requests), mirroring `personal-memory-gateway`'s investigation. Do not depend on sessions or `initialize` for security.
+- Compatibility note for the pinned `@modelcontextprotocol/sdk@1.29.0`: its latest supported protocol is `2025-11-25`, not the forward `2026-07-28` RC. The hosted server therefore implements the compatible forward pieces only: fresh server + fresh Streamable HTTP transport per `POST /mcp`, `sessionIdGenerator: undefined`, `enableJsonResponse: true`, per-request bearer auth before MCP dispatch, and no `MCP-Session-Id` auth. SDK features not exposed in this pin, such as `server/discover` and `subscriptions/listen`, are not implemented yet. SDK 1.29.0 also requires clients to send an `Accept` header that includes both `application/json` and `text/event-stream`.
+- Transport: **Streamable HTTP** at `POST /mcp` (stateless: fresh transport per request, `sessionIdGenerator: undefined`, `enableJsonResponse: true`). `GET/DELETE /mcp` → 405.
 - `GET /healthz` is the only unauthenticated route → `{ status: "ok" }`.
 - Every `/mcp` request is authenticated and authorized independently. Session IDs are never auth.
 - **Deployment is the primary path**: a hosted remote server reachable from every client, including web agents (claude.ai, chatgpt.com), which **cannot** use a stdio bridge. The local **stdio bridge** (`src/interfaces/mcp/stdio-bridge.ts`) is a secondary/legacy client adapter that proxies to the remote `/mcp`; it is **not** an auth boundary and does not serve web agents.
 - Auth is conditional on deployment flavor (see OAuth / Deployment): the hosted flavor requires gateway OAuth bearer tokens; a self-contained local-binary flavor runs without auth.
-- Inbound Host/Origin DNS-rebinding protection via the SDK transport (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`).
+- Inbound Host/Origin DNS-rebinding protection via the SDK transport (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted boot requires explicit `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`; local defaults are loopback-only.
 
 ## Tool: `smart_fetch`
 

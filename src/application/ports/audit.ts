@@ -21,12 +21,32 @@ export interface AuthAuditEvent {
   reason?: string;
 }
 
+export interface ToolAuditEvent {
+  occurredAt: string;
+  subject?: string;
+  clientId?: string;
+  tool: "smart_fetch";
+  url_host?: string;
+  tier?: string | number;
+  platform?: string;
+  output?: string;
+  status: number;
+  bytes: number;
+  durationMs: number;
+  transformProvider?: string;
+  transformModel?: string;
+}
+
 export interface AuditLoggerPort {
   writeAuthEvent(event: AuthAuditEvent): Promise<void>;
+  writeToolEvent(event: ToolAuditEvent): Promise<void>;
 }
 
 export const noopAuditLogger: AuditLoggerPort = {
   async writeAuthEvent(): Promise<void> {
+    // Intentionally empty for tests/local composition.
+  },
+  async writeToolEvent(): Promise<void> {
     // Intentionally empty for tests/local composition.
   },
 };
