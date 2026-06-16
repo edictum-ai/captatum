@@ -1,0 +1,5 @@
+packages:
+  - "."
+
+# 15 days, in minutes. Requires pnpm >= 10.16.0.
+minimumReleaseAge: 21600

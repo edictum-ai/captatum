@@ -1,0 +1,40 @@
+{
+  "name": "smart-fetch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Adaptive MCP web-fetch tool for AI agents: fetch any URL, render JS when needed, return clean structured content + provenance.",
+  "license": "MIT",
+  "packageManager": "pnpm@10.32.0",
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=10.32.0"
+  },
+  "scripts": {
+    "check": "pnpm run check:syntax && pnpm run check:lines && pnpm run typecheck",
+    "check:syntax": "find src -name '*.ts' -print0 | xargs -0 -n1 node --check",
+    "check:lines": "node --no-warnings src/dev/check-line-limits.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "server": "node --no-warnings src/server.ts",
+    "bridge": "node --no-warnings src/interfaces/mcp/stdio-bridge.ts",
+    "smoke": "node --no-warnings src/dev/smoke-test.ts",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "fastify": "5.8.5",
+    "jose": "6.2.3",
+    "mysql2": "3.22.3",
+    "oauth4webapi": "3.8.6",
+    "pino": "10.3.1",
+    "wreq-js": "2.3.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.4",
+    "typescript": "6.0.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": []
+  }
+}
