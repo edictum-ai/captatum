@@ -40,9 +40,12 @@ the contract reference; this file is the security reasoning.
     original host) so DNS cannot rebind post-check.
   - manual redirects re-validated each hop, `maxHops=5`.
   - decompressed-byte cap; `AbortController` timeout.
-- Tier-3 in-browser SSRF: `page.route` isPrivate on every subresource;
-  `page.on('websocket')` → close; Service Workers disabled; downloads blocked;
-  render-byte cap; browser in a separate child process with **no env**; OS sandbox
+- Tier-3 in-browser SSRF: `page.route` guards every browser request before the
+  browser can egress. Document/script/fetch/XHR/stylesheet requests are fulfilled
+  only through `FetcherPort`; image/font/media/analytics URLs are checked with
+  the same P1 URL/DNS private-IP guard and then aborted. WebSockets are closed;
+  Service Workers are disabled; downloads are blocked; render-byte cap is
+  enforced; browser runs in a separate child process with **no env**; OS sandbox
   on, **never `--no-sandbox`**.
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
   (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`).
@@ -78,8 +81,10 @@ the contract reference; this file is the security reasoning.
   `output: raw` and provenance records `transform: { provider: "none" }`. Because
   summary is the default output, misconfiguration silently changes behavior.
 - Advisory-only SSRF is unacceptable for the hosted flavor. Every egress path —
-  Tier-1, Tier-2, every redirect hop, every Tier-3 subresource — must route through
-  the enforced `guardedFetch`/`page.route` controls, not a linter.
+  Tier-1, Tier-2, every redirect hop, every Tier-3 document/script/fetch/XHR/
+  stylesheet request — must route through enforced `guardedFetch`/`page.route`
+  controls, and aborted Tier-3 body types must still pass P1 URL/DNS private-IP
+  checks before being aborted.
 - Current Tier-1 HTTPS egress intentionally falls back to the Node requester
   instead of `wreq-js` so checked-IP connect semantics can preserve original-host
   SNI and certificate verification. This keeps SSRF controls intact but means the

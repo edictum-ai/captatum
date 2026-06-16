@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
 import type { ClockPort } from "../src/application/ports/clock.ts";
-import type { RenderInput, RenderPort } from "../src/application/ports/renderer.ts";
+import type {
+  RenderInput,
+  RenderOutput,
+  RenderPort,
+} from "../src/application/ports/renderer.ts";
 import type { TransformInput, TransformPort, TransformResult } from "../src/application/ports/transformer.ts";
 import { createSmartFetchUseCase } from "../src/application/use-cases/smart-fetch.ts";
 import type { HtmlExtraction, HtmlExtractionInput } from "../src/application/use-cases/tier1-extract.ts";
@@ -184,6 +188,52 @@ test("allowRender defaults false and render port is not called on shell gate", a
   ]);
 });
 
+test("allowRender true renders shell and returns Tier-3 provenance", async () => {
+  const shellHtml = "<div id=\"root\"></div><script src=\"/app.js\"></script>";
+  const renderedHtml = "<main>Rendered content from the client app</main>";
+  const renderer = new FakeRenderer({
+    rendered: true,
+    fetchResult: fetchResult({
+      html: renderedHtml,
+      finalUrl: "https://spa.test/app",
+    }),
+    actions: [{
+      type: "websocket-closed",
+      reason: "websockets disabled",
+      url: "wss://spa.test/socket",
+    }],
+  });
+  const extractor = new ScriptedExtractor((input) => {
+    if (input.html === renderedHtml) {
+      return extraction({ text: "Rendered content from the client app" });
+    }
+    return extraction({ text: "", jsRequired: true, shellReason: "empty-spa-shell" });
+  });
+
+  const result = await createSmartFetchUseCase({
+    fetcher: new FakeFetcher(fetchResult({
+      html: shellHtml,
+      finalUrl: "https://spa.test/",
+    })),
+    extractHtml: extractor.extract,
+    renderer,
+    clock: new FakeClock([0, 5, 6, 7, 19, 20, 21]),
+  }).execute({ url: "https://spa.test/", output: "raw", allowRender: true });
+
+  assert.equal(renderer.calls.length, 1);
+  assert.equal(renderer.calls[0]?.url, "https://spa.test/");
+  assert.equal(renderer.calls[0]?.timeoutMs, 20_000);
+  assert.equal(result.tier, 3);
+  assert.equal(result.resolvedVia, "tier3-playwright");
+  assert.equal(result.result, "Rendered content from the client app");
+  assert.equal(result.timings.renderMs, 12);
+  assert.deepEqual(result.attempts.map((attempt) => [attempt.tier, attempt.outcome, attempt.reason]), [
+    [1, "escalate", "empty-spa-shell"],
+    [3, "ok", "rendered"],
+    [3, "block", "websocket-closed:websockets disabled:wss://spa.test/socket"],
+  ]);
+});
+
 test("configured transform receives prompt, schema, budget, and transform override", async () => {
   const transformer = new FakeTransform({
     result: "Transformed summary",
@@ -264,6 +314,20 @@ class FakeExtractor {
   };
 }
 
+class ScriptedExtractor {
+  readonly calls: HtmlExtractionInput[] = [];
+  private readonly handler: (input: HtmlExtractionInput) => HtmlExtraction;
+
+  constructor(handler: (input: HtmlExtractionInput) => HtmlExtraction) {
+    this.handler = handler;
+  }
+
+  extract = (input: HtmlExtractionInput): HtmlExtraction => {
+    this.calls.push(input);
+    return this.handler(input);
+  };
+}
+
 class FakeTransform implements TransformPort {
   readonly calls: TransformInput[] = [];
   private readonly result: TransformResult;
@@ -283,10 +347,19 @@ class FakeTransform implements TransformPort {
 
 class FakeRenderer implements RenderPort {
   readonly calls: RenderInput[] = [];
+  private readonly output: RenderOutput;
 
-  async render(input: RenderInput): Promise<FetcherResult | RejectResult> {
+  constructor(output: RenderOutput = {
+    rendered: true,
+    fetchResult: fetchResult({ html: "<main>rendered</main>" }),
+    actions: [],
+  }) {
+    this.output = output;
+  }
+
+  async render(input: RenderInput): Promise<RenderOutput> {
     this.calls.push(input);
-    return fetchResult({ html: "<main>rendered</main>" });
+    return this.output;
   }
 }
 

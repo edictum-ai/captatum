@@ -4,12 +4,12 @@ import type { ClockPort } from "../ports/clock.ts";
 import type { RenderPort } from "../ports/renderer.ts";
 import type { TransformPort, TransformResult } from "../ports/transformer.ts";
 import type { Platform } from "../../domain/platform.ts";
-import type { AttemptTrace, Result, TransformInfo } from "../../domain/result.ts";
-import type { Output, Tier } from "../../domain/tier.ts";
+import type { Result, TransformInfo } from "../../domain/result.ts";
 import {
   extractTier1FromFetchResult,
   type HtmlExtractor,
 } from "./tier1-extract.ts";
+import { maybeRender } from "./render.ts";
 import {
   DEFAULT_SMART_FETCH_DEFAULTS,
   normalizeSmartFetchInput,
@@ -83,8 +83,15 @@ export class SmartFetchUseCase {
       fetchedAt: context.fetchedAt,
     });
     stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);
-    applyRenderGate(base, request, this.renderer);
-    return await this.applyOutputMode(base, request, startMs, fetchMs);
+    const resolved = await maybeRender({
+      result: base,
+      request,
+      renderer: this.renderer,
+      fetcher: this.fetcher,
+      extractHtml: this.extractHtml,
+      clock: this.clock,
+    });
+    return await this.applyOutputMode(resolved, request, startMs, fetchMs);
   }
 
   private async applyOutputMode(
@@ -141,40 +148,6 @@ export class SmartFetchUseCase {
 
 export function createSmartFetchUseCase(deps: SmartFetchDeps): SmartFetchUseCase {
   return new SmartFetchUseCase(deps);
-}
-
-function applyRenderGate(
-  result: Result,
-  request: NormalizedSmartFetchInput,
-  renderer?: RenderPort,
-): void {
-  if (!result.jsRequired) return;
-
-  if (!request.allowRender) {
-    result.tier = "render-blocked";
-    result.resolvedVia = "render-blocked";
-    result.attempts.push(renderAttempt("render-blocked", "allowRender=false"));
-    return;
-  }
-
-  const reason = renderer ? "render implementation pending" : "render port unconfigured";
-  result.tier = "render-unavailable";
-  result.resolvedVia = "render-unavailable";
-  result.attempts.push(renderAttempt("render-unavailable", reason));
-  result.errors.push({
-    code: "render_unavailable",
-    message: "Tier-3 render is not configured",
-  });
-}
-
-function renderAttempt(tier: Tier, reason: string): AttemptTrace {
-  return {
-    step: 2,
-    tier,
-    outcome: "block",
-    durationMs: 0,
-    reason,
-  };
 }
 
 function rejectResult(

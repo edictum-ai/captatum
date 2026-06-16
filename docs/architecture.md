@@ -1,10 +1,10 @@
 # Architecture
 
-Status: v1 direction. The guarded egress primitive is implemented; the remaining
-vertical slice (extraction, adapters, render, transform, OAuth, MCP server) is
-next. This document describes the approved shape. `docs/contracts.md` is the
-source of truth for tool I/O, ports, provenance, OAuth, and errors; this file
-does not duplicate it.
+Status: v1 direction. The guarded egress primitive, Tier-1 extraction, adapter
+registry seam, and gated Tier-3 render are implemented; the remaining vertical
+slice (transform, OAuth, MCP server) is next. This document describes the
+approved shape. `docs/contracts.md` is the source of truth for tool I/O, ports,
+provenance, OAuth, and errors; this file does not duplicate it.
 
 ## Shape
 
@@ -88,8 +88,12 @@ smart_fetch(url, { prompt?, output?, schema?, budget?, transform?, maxBytes?, ti
 - **Tier-3** renders with Playwright when Tier-1 finds an empty SPA shell or no
   usable structured data (client-rendered React/Vue/Svelte, JS-only docs/demos,
   anti-bot interstitials, embedded third-party widgets). Gated by `allowRender`
-  (default **false**) so a bare `smart-fetch` never spawns a browser. Lazy
-  `import('playwright')`; one warm browser context per process.
+  (default **false**) so a bare `smart-fetch` never spawns a browser. The
+  adapter uses lazy `import('playwright')`, disables Service Workers, blocks
+  downloads, closes WebSockets, routes document/script/fetch/XHR/style requests
+  through `FetcherPort`, checks blocked body types with the same P1 URL/DNS
+  private-IP guard before aborting them, and returns `page.content()` to the
+  Tier-1 extractor with tier-3 provenance.
 - **Transform** is the **default** output path (`output: summary`): resolved
   content → token-efficient answer to `prompt` via the free-model router. If no
   transform provider is configured, it degrades to `output: raw` and provenance
@@ -129,9 +133,12 @@ invariants; `docs/threat-model.md` is the security reference.
   validated connection target; direct `wreq-js` fetches are not a safe substitute.
   Current guarded Tier-1 HTTPS requests intentionally use the Node fallback above
   rather than weakening checked-IP connect semantics.
-- Tier-3 in-browser: `page.route` isPrivate on every subresource; websocket-close;
-  Service Workers off; downloads blocked; render-byte cap; browser in a separate
-  child process with no env; OS sandbox on (never `--no-sandbox`).
+- Tier-3 in-browser: `page.route` guards every browser request; document/script/
+  fetch/XHR/stylesheet requests are fulfilled only through `FetcherPort`;
+  image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted;
+  WebSockets are closed; Service Workers off; downloads blocked; render-byte cap;
+  browser in a separate child process with no env; OS sandbox on (never
+  `--no-sandbox`).
 
 ## File Size Rule
 
@@ -145,8 +152,8 @@ Split by layer or responsibility when a file gets close to the limit.
 
 ## Not Implemented Yet
 
-- The guarded fetch egress primitive, Tier-1 requester seam, extraction, and both
-  `StorePort` impls exist. The Tier-2 adapter registry, Tier-3 Playwright render,
-  the Transform router, gateway OAuth, and the Streamable HTTP MCP server are
-  still pending. `docs/contracts.md` describes the whole product; nothing is
-  version-gated or deferred, it all gets built.
+- The guarded fetch egress primitive, Tier-1 requester seam/extraction, the
+  Tier-2 adapter registry seam, gated Tier-3 Playwright render, and both
+  `StorePort` impls exist. The Transform router, gateway OAuth, and the
+  Streamable HTTP MCP server are still pending. `docs/contracts.md` describes
+  the whole product; nothing is version-gated or deferred, it all gets built.

@@ -36,7 +36,7 @@ One tool. Input (v0):
 | `transform` | no | Override the default router/model/provider: `{ model?, provider?, ... }`. |
 | `maxBytes` | no | Response byte cap (decompressed). Default 5 MB, server hard-capped. |
 | `timeoutMs` | no | Per-tier wall-clock. Default 15 s (Tier-1/2), 20 s (Tier-3). |
-| `allowRender` | no | Default **false**. If false, Tier-3 is skipped and provenance reports `renderBlocked`. |
+| `allowRender` | no | Default **false**. If false, Tier-3 is skipped and provenance reports `render-blocked`. |
 
 **Default behavior is `output: summary`** — resolved content is passed through the Transform router (free-first OpenRouter, or local Ollama) to produce a token-efficient answer to `prompt`. This is exactly the role WebFetch's Haiku step plays, but cheaper and fed by accurate rendered/extracted content. `output: raw` returns the clean resolved content (markdown + parsed structured data) with no LLM pass. Output is MCP `text` with a provenance footer as the first line (HTML-comment-wrapped, always model-visible), mirrored as `structuredContent` per the Result schema. Token-efficiency signals (`bytes`, `truncated`, `contentType`, `transform.inTokens/outTokens`) let the caller follow up.
 
@@ -93,7 +93,25 @@ core still returns a contract-shaped `Result`: `code: 0`,
   plus original-host SNI/certificate verification, so `wreq-js` TLS/JA3+JA4
   fingerprinting is not active for HTTPS yet.
 - **Tier-2 (optional).** If a registered `PlatformAdapter` detects the URL, it resolves via that platform's public API (clean JSON), short-circuiting extraction/render. Adapters are optional and general; their endpoints live in adapter code/fixtures, not this contract.
-- **Tier-3 (core, gated by `allowRender`).** Lazy `import('playwright')`; one warm browser context per process; render with hard timeouts + request interception (abort image/font/media/analytics, block private IPs at the browser network layer, close websockets, disable Service Workers, block downloads); reuse the Tier-1 extractor on `page.content()` and inject Readability.js via `page.evaluate` for main content. Chromium pinned to version+digest. If Playwright is absent → `render-unavailable`. **When it applies:** Tier-3 fires when Tier-1 finds an empty SPA shell or no usable structured data — e.g. client-rendered React/Vue/Svelte apps whose HTML is a `<div id="root">` stub; pages that load content via XHR/fetch after `load`; JS-only docs/demos (Docusaurus/Storybook in SPA mode); content behind a Cloudflare/anti-bot interstitial that needs a real browser; and embedded widgets rendered client-side on a third-party domain (e.g. an Ashby board). Gated by `allowRender` (default false) so a bare `smart-fetch` never spawns a browser.
+- **Tier-3 (core, gated by `allowRender`).** Lazy `import('playwright')`;
+  render with hard timeouts + request interception. Document/script/fetch/XHR/
+  stylesheet requests route through `FetcherPort`; image/font/media/analytics
+  URLs are checked with the same P1 URL/DNS private-IP guard and then aborted;
+  websockets are closed; Service Workers are disabled; downloads are blocked;
+  cumulative browser fetch bytes and final rendered HTML bytes are capped. The
+  rendered `page.content()` is reused by the Tier-1 extractor and provenance
+  records tier 3 plus browser control actions (`service-workers-disabled`,
+  `request-blocked`, `resource-aborted`, `websocket-closed`,
+  `download-blocked`). Chromium/browser process is owned by Playwright and
+  launched with sandboxing enabled and an empty environment. If Playwright is
+  absent → `render-unavailable`. **When it applies:** Tier-3 fires when Tier-1
+  finds an empty SPA shell or no usable structured data — e.g. client-rendered
+  React/Vue/Svelte apps whose HTML is a `<div id="root">` stub; pages that load
+  content via XHR/fetch after `load`; JS-only docs/demos (Docusaurus/Storybook
+  in SPA mode); content behind a Cloudflare/anti-bot interstitial that needs a
+  real browser; and embedded widgets rendered client-side on a third-party
+  domain (e.g. an Ashby board). Gated by `allowRender` (default false) so a bare
+  `smart-fetch` never spawns a browser.
 
 ## Transform (default output path)
 
@@ -134,7 +152,7 @@ Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). 
 
 - OUTBOUND rebinding-proof `guardedFetch`: scheme `http|https` only; reject raw CRLF; reject userinfo-bearing URLs and strip credentials from all sanitized URL values; resolve → `isPrivate` CIDR (v4 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16 incl. metadata, 0.0.0.0/8, 100.64/10, 224/4; v6 ::1, fe80/10, fc00/7, ff00/8, `::ffff:0:0/96`, NAT64 `64:ff9b::`, IPv4-compatible) → connect to the resolved IP (`node:https` with `servername`/`Host` = original host); manual redirects re-validated each hop (`maxHops=5`); decompressed-byte cap; `AbortController` timeout.
 - INBOUND: SDK transport Host/Origin DNS-rebinding protection.
-- TIER-3 in-browser SSRF: `page.route` isPrivate on every subresource; websocket-close; SW off; downloads blocked; render-byte cap; browser in a separate child process with no env; OS sandbox on (never `--no-sandbox`).
+- TIER-3 in-browser SSRF: `page.route` guards every browser request; document/script/fetch/XHR/stylesheet requests are fulfilled only through `FetcherPort`; image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap; browser in a separate child process with no env; OS sandbox on (never `--no-sandbox`).
 - Response guards: reject `Content-Length` > max before reading; stream through a counting `TransformStream`.
 - Logging: allow-list only (tier, finalUrl, platform, status, bytes, timing, blockReason); never body, never `Set-Cookie`/`Authorization`; canonicalize logged URLs to scheme+host when host is private. Per-call audit event.
 - Per-host throttle + global concurrency cap + in-flight URL dedupe + per-job max-egress-fetch counter.
