@@ -1,4 +1,5 @@
-import { deepEqual, finiteNumber, hasDuplicate, invalid, isMultipleOf, isRecord, matchesType, nonNegativeInteger, objectMap, ok, schemaList, stringArray, stripJsonFence, toRegExp, type SchemaValidationResult } from "./json-schema-utils.ts";
+import { deepEqual, finiteNumber, hasDuplicate, invalid, isMultipleOf, isRecord, matchesType, nonNegativeInteger, objectMap, ok, stringArray, stripJsonFence, unsupported, toRegExp, type SchemaValidationResult } from "./json-schema-utils.ts";
+import { validateComposites } from "./json-schema-composites.ts";
 
 export type { SchemaValidationResult } from "./json-schema-utils.ts";
 
@@ -33,7 +34,7 @@ function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Re
   try {
     for (const result of [
       validateSupported(schema, path),
-      validateComposites(value, schema, path, stack),
+      validateComposites(value, schema, path, stack, validateAt),
       validateEnum(value, schema, path),
       validateType(value, schema, path),
       validateString(value, schema, path),
@@ -50,33 +51,8 @@ function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Re
 }
 
 function validateSupported(schema: Record<string, unknown>, path: string): SchemaValidationResult {
-  const unsupported = Object.keys(schema).find((key) => !SUPPORTED_KEYS.has(key));
-  return unsupported ? invalid(`${path} schema keyword "${unsupported}" is not supported`) : ok();
-}
-
-function validateComposites(value: unknown, schema: Record<string, unknown>, path: string, stack: Set<Record<string, unknown>>): SchemaValidationResult {
-  const allOf = schemaList(schema.allOf, "allOf", path);
-  if (!allOf.valid) return allOf;
-  for (const subschema of allOf.value) {
-    const result = validateAt(value, subschema, path, stack);
-    if (!result.valid) return result;
-  }
-
-  const anyOf = schemaList(schema.anyOf, "anyOf", path);
-  if (!anyOf.valid) return anyOf;
-  if (anyOf.value.length > 0 && !anyOf.value.some((choice) => validateAt(value, choice, path, stack).valid)) {
-    return invalid(`${path} must match at least one anyOf schema`);
-  }
-
-  const oneOf = schemaList(schema.oneOf, "oneOf", path);
-  if (!oneOf.valid) return oneOf;
-  const matches = oneOf.value.filter((choice) => validateAt(value, choice, path, stack).valid).length;
-  if (oneOf.value.length > 0 && matches !== 1) return invalid(`${path} must match exactly one oneOf schema`);
-
-  if ("not" in schema && validateAt(value, schema.not, path, stack).valid) {
-    return invalid(`${path} must not match not schema`);
-  }
-  return ok();
+  const unsupportedKey = Object.keys(schema).find((key) => !SUPPORTED_KEYS.has(key));
+  return unsupportedKey ? unsupported(`${path} schema keyword "${unsupportedKey}" is not supported`) : ok();
 }
 
 function validateEnum(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {

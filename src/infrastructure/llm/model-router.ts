@@ -3,7 +3,7 @@ import type { ClockPort } from "../../application/ports/clock.ts";
 import type { ModelPick, ModelPickOptions, ModelRouterPort, ModelScore, RouterProvider, RouterTask } from "../../application/ports/model-router.ts";
 import { TransformError, type TransformInput, type TransformPort, type TransformResult } from "../../application/ports/transformer.ts";
 import { config } from "../../config.ts";
-import { parseJsonResult, validateJsonSchema } from "./json-schema.ts";
+import { clamp, finalize } from "./finalize.ts";
 import { OllamaProvider } from "./ollama.ts";
 import { OpenRouterProvider } from "./openrouter.ts";
 import { buildMessages } from "./prompts.ts";
@@ -130,6 +130,7 @@ export class LlmTransformer implements TransformPort {
           outTokens: finalized.outTokens,
           latencyMs,
           costUsd: generated.costUsd,
+          ...(finalized.schemaIssue ? { schemaIssue: finalized.schemaIssue } : {}),
         },
       };
     }
@@ -158,41 +159,6 @@ export async function createDefaultLlmTransformer(): Promise<LlmTransformer> {
   return new LlmTransformer({ router: new ModelRouter([...openRouter.candidates(), ...ollama.candidates()]), providers });
 }
 
-function finalize(
-  input: TransformInput,
-  text: string,
-  model: string,
-  router: ModelRouterPort,
-  latencyMs: number,
-  reportedOutTokens?: number,
-): { result: string; outTokens: number } {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    router.feedback({ model, score: 0, valid: false });
-    throw new TransformError("transform_empty", "Provider returned an empty transform");
-  }
-  const result = input.mode === "extract" ? finalizeExtract(trimmed, input.schema, model, router) : trimmed;
-  const outTokens = reportedOutTokens ?? estimateTokens(result);
-  router.feedback({ model, score: scoreTransform(result, outTokens, input.budget, latencyMs), valid: true });
-  return { result, outTokens };
-}
-
-function finalizeExtract(text: string, schema: unknown, model: string, router: ModelRouterPort): string {
-  let parsed: unknown;
-  try {
-    parsed = parseJsonResult(text);
-  } catch {
-    router.feedback({ model, score: 0, valid: false });
-    throw new TransformError("extract_invalid_json", "Provider returned invalid JSON for extract output");
-  }
-  const validation = validateJsonSchema(parsed, schema);
-  if (!validation.valid) {
-    router.feedback({ model, score: 0.3, valid: false });
-    // Advisory: return parsed JSON even on schema mismatch — imperfect structured data > raw fallback.
-  }
-  return JSON.stringify(parsed, null, 2);
-}
-
 function fits(candidate: LlmModelCandidate, task: RouterTask, inputTokens: number, options: ModelPickOptions): boolean {
   if (options.provider && candidate.provider !== options.provider) return false;
   if (options.model && candidate.model !== options.model) return false;
@@ -207,13 +173,6 @@ function noneReason(options: ModelPickOptions, configuredCount: number): string 
   if (options.provider) return "provider_unconfigured";
   if (options.model) return "model_unavailable";
   return configuredCount === 0 ? "unconfigured" : "no_model_fit";
-}
-
-function scoreTransform(result: string, outTokens: number, budget: number | undefined, latencyMs: number): number {
-  let score = result ? 1 : 0;
-  if (budget && outTokens > budget) score -= 0.35;
-  if (latencyMs > 30_000) score -= 0.2;
-  return clamp(score);
 }
 
 function overrideProvider(value: unknown): Exclude<RouterProvider, "none"> | "unsupported" | undefined {
@@ -232,10 +191,6 @@ function candidateKey(candidate: LlmModelCandidate): string {
 
 function splitList(value: string): string[] {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
-}
-
-function clamp(value: number): number {
-  return Math.max(0, Math.min(1, value));
 }
 
 function elapsed(startMs: number, endMs: number): number {

@@ -25,6 +25,14 @@ export interface TransformInfo {
   latencyMs?: number;
   costUsd?: number;
   reason?: string;
+  /**
+   * Non-fatal extract-schema mismatch message. When `output: extract` returns
+   * parsed JSON that violates the requested schema, the data is still returned
+   * (imperfect structured data > raw fallback) but this carries the validator's
+   * message so the caller is not silently handed schema-violating data. The use
+   * case surfaces it as a non-fatal `extract_schema_invalid` error.
+   */
+  schemaIssue?: string;
 }
 
 export interface Timings {

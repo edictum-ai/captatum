@@ -102,7 +102,7 @@ test("output extract validates provider JSON against requested schema", async ()
   assert.deepEqual(result.errors, []);
 });
 
-test("output extract rejects later array item that violates item schema", async () => {
+test("output extract keeps parsed JSON on array-item schema mismatch and surfaces a non-fatal advisory", async () => {
   const provider = new RecordingProvider(
     candidate("openrouter", "free/model", { free: true }),
     { text: "[\"ok\",123]" },
@@ -121,12 +121,14 @@ test("output extract rejects later array item that violates item schema", async 
     clock: new FakeClock([0, 4, 5, 5, 8, 8]),
   }).execute({ url: "https://extract.test/array", output: "extract", schema });
 
-  assert.equal(result.output, "raw");
-  assert.equal(result.result, "Original array source");
+  // Advisory: parsed JSON is kept (imperfect structured data > raw fallback), but
+  // the schema mismatch is surfaced as a non-fatal error so the caller is warned.
+  assert.equal(result.output, "extract");
+  assert.equal(result.result, JSON.stringify(["ok", 123], null, 2));
   assert.deepEqual(result.errors, [{ code: "extract_schema_invalid", message: "$[1] must be string" }]);
 });
 
-test("output extract rejects provider JSON that violates requested minLength schema", async () => {
+test("output extract keeps parsed JSON on minLength schema mismatch and surfaces a non-fatal advisory", async () => {
   const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), {
     text: '{"title":"Hi"}',
   });
@@ -148,9 +150,63 @@ test("output extract rejects provider JSON that violates requested minLength sch
     clock: new FakeClock([0, 4, 5, 5, 8, 8]),
   }).execute({ url: "https://extract.test/minlength", output: "extract", schema });
 
-  assert.equal(result.output, "raw");
-  assert.equal(result.result, "Original minLength source");
+  assert.equal(result.output, "extract");
+  assert.equal(result.result, JSON.stringify({ title: "Hi" }, null, 2));
   assert.deepEqual(result.errors, [{ code: "extract_schema_invalid", message: "$.title length must be at least 10" }]);
+});
+
+test("output extract fails closed for an unsupported schema keyword (cannot be verified)", async () => {
+  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), {
+    text: '{"title":"Hi"}',
+  });
+  // `format` is a keyword this validator does not support, so the value cannot
+  // be checked — the contract requires failing closed rather than accepting it.
+  const schema = { type: "object", properties: { title: { type: "string", format: "email" } } };
+  const transformer = new LlmTransformer({
+    router: new ModelRouter(provider.candidates()),
+    providers: { openrouter: provider },
+    clock: new FakeClock([10, 15]),
+  });
+
+  const result = await createSmartFetchUseCase({
+    fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
+    extractHtml: new FakeExtractor(extraction({ text: "Original unsupported source" })).extract,
+    transformer,
+    clock: new FakeClock([0, 4, 5, 5, 8, 8]),
+  }).execute({ url: "https://extract.test/unsupported", output: "extract", schema });
+
+  assert.equal(result.output, "raw");
+  assert.equal(result.result, "Original unsupported source");
+  assert.deepEqual(result.errors, [{ code: "extract_schema_invalid", message: "$.title schema keyword \"format\" is not supported" }]);
+});
+
+test("output extract fails closed for an unsupported keyword nested in anyOf/oneOf/not", async () => {
+  // The unsupported flag must propagate out of composites (which collapse nested
+  // results to a boolean), not just direct properties/items/allOf.
+  for (const schema of [
+    { anyOf: [{ type: "string" }, { type: "number", format: "email" }] },
+    { oneOf: [{ type: "string" }, { type: "number", format: "email" }] },
+    { not: { type: "string", format: "email" } },
+  ]) {
+    const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), {
+      text: '{"x":5}',
+    });
+    const transformer = new LlmTransformer({
+      router: new ModelRouter(provider.candidates()),
+      providers: { openrouter: provider },
+      clock: new FakeClock([10, 15]),
+    });
+    const result = await createSmartFetchUseCase({
+      fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
+      extractHtml: new FakeExtractor(extraction({ text: "Original composite source" })).extract,
+      transformer,
+      clock: new FakeClock([0, 4, 5, 5, 8, 8]),
+    }).execute({ url: "https://extract.test/composite", output: "extract", schema });
+
+    assert.equal(result.output, "raw", `composite ${JSON.stringify(schema)} should fail closed, got output=${result.output}`);
+    assert.equal(result.errors[0]?.code, "extract_schema_invalid");
+    assert.ok(result.errors[0]?.message.includes("format"), `expected format in message: ${result.errors[0]?.message}`);
+  }
 });
 
 test("JSON schema validator enforces common requested constraints", () => {

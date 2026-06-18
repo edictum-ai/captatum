@@ -141,6 +141,12 @@ export class SmartFetchUseCase {
     base.result = transformed.result;
     base.output = transformed.info.provider === "none" ? "raw" : request.requestedOutput;
     base.transform = transformed.info;
+    // Non-fatal: extract returned parsed JSON that violated the requested schema.
+    // The data is kept (advisory), but the mismatch is surfaced so the caller
+    // is not silently handed schema-violating structured data.
+    if (transformed.info.schemaIssue) {
+      base.errors.push({ code: "extract_schema_invalid", message: transformed.info.schemaIssue });
+    }
     base.timings.transformMs = transformMs;
     stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);
     return base;

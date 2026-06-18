@@ -1,6 +1,14 @@
 export interface SchemaValidationResult {
   valid: boolean;
   message?: string;
+  /**
+   * Set when validation failed because the schema used a keyword this validator
+   * does not support (and therefore cannot check). Callers distinguish this from
+   * a supported-keyword value mismatch: an unsupported keyword cannot be
+   * verified, so the safe behavior is to fail closed rather than accept
+   * unvalidated structured data.
+   */
+  unsupported?: boolean;
 }
 
 export function schemaList(
@@ -72,6 +80,10 @@ export function ok(): SchemaValidationResult {
 
 export function invalid(message: string): SchemaValidationResult {
   return { valid: false, message };
+}
+
+export function unsupported(message: string): SchemaValidationResult {
+  return { valid: false, message, unsupported: true };
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
