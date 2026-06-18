@@ -134,8 +134,7 @@ core still returns a contract-shaped `Result`: `code: 0`,
   rendered `page.content()` is reused by the Tier-1 extractor and provenance
   records tier 3 plus browser control actions (`service-workers-disabled`,
   `request-blocked`, `resource-aborted`, `websocket-closed`,
-  `download-blocked`). Chromium/browser process is owned by Playwright and
-  launched with sandboxing enabled and an empty environment. If Playwright is
+  `download-blocked`). The browser runs with an empty environment. **Two acquisition modes** (factory `createRenderer()`, config-driven): (a) **CDP sidecar** — connect to a long-lived Chromium in its OWN container via `CAPTATUM_BROWSER_CDP_ENDPOINT` (the hosted path; connection cached + reused, never closed per-render; `--no-sandbox` is acceptable there because the container is the isolation boundary); (b) **in-process launch** — `chromiumSandbox` defaults **true** (the local-binary path; `--no-sandbox` in-process is only a transitional opt-in via `CAPTATUM_BROWSER_INPROCESS_SANDBOX=false`). Either way the browser never runs in-process with `--no-sandbox` against the gateway's blast radius. The `page.route` SSRF guard applies identically in both modes. If Playwright is
   absent → `render-unavailable`. **When it applies:** Tier-3 fires when Tier-1
   finds an empty SPA shell or no usable structured data — e.g. client-rendered
   React/Vue/Svelte apps whose HTML is a `<div id="root">` stub; pages that load
@@ -186,7 +185,7 @@ Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). 
 
 - OUTBOUND rebinding-proof `guardedFetch`: scheme `http|https` only; reject raw CRLF; reject userinfo-bearing URLs and strip credentials from all sanitized URL values; resolve → `isPrivate` CIDR (v4 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16 incl. metadata, 0.0.0.0/8, 100.64/10, 224/4; v6 ::1, fe80/10, fc00/7, ff00/8, `::ffff:0:0/96`, NAT64 `64:ff9b::`, IPv4-compatible) → connect to the resolved IP (`node:https` with `servername`/`Host` = original host); manual redirects re-validated each hop (`maxHops=5`); decompressed-byte cap; `AbortController` timeout.
 - INBOUND: SDK transport Host/Origin DNS-rebinding protection.
-- TIER-3 in-browser SSRF: `page.route` guards every browser request; document/script/fetch/XHR/stylesheet requests are fulfilled only through `FetcherPort`; image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap (advisory truncation); browser in a separate child process with no env; OS sandbox on (never `--no-sandbox`).
+- TIER-3 in-browser SSRF: `page.route` guards every browser request; document/script/fetch/XHR/stylesheet requests are fulfilled only through `FetcherPort`; image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap (advisory truncation); browser in a separate process/container with no env — in-process launch keeps the OS sandbox ON (`chromiumSandbox` default true), and the hosted path uses a CDP sidecar container (`CAPTATUM_BROWSER_CDP_ENDPOINT`) where `--no-sandbox` is acceptable (container-isolated). The browser never runs in-process with `--no-sandbox` against the gateway.
 - Response guards: reject `Content-Length` > max before reading; stream through a counting `TransformStream`.
 - Logging: allow-list only (tier, finalUrl, platform, status, bytes, timing, blockReason); never body, never `Set-Cookie`/`Authorization`; canonicalize logged URLs to scheme+host when host is private. Per-call audit event.
 - Per-host throttle + global concurrency cap + in-flight URL dedupe + per-job max-egress-fetch counter.

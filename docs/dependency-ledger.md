@@ -127,3 +127,16 @@ This ledger is the source of truth for which versions are allowed into the
 lockfile. Do not add a new direct dependency or bump an existing pin without
 rechecking it here against the registry and the 15-day rule, and resolving or
 documenting any `pnpm audit --prod` finding.
+
+## Browser sidecar image (Dockerfile.browser)
+
+The Tier-3 sidecar runs Chromium in its own container; the gateway connects over
+CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`). The sidecar image MUST ship a Chromium
+whose major version matches the gateway's `playwright` pin above (`1.60.0` →
+Chromium 133), or the CDP connection can break.
+
+- Image: `mcr.microsoft.com/playwright:v1.60.0-noble` (matches the npm pin; reuse
+  Microsoft's signed Playwright image rather than building Chromium from source).
+- Re-check the image tag's publish date against the 15-day rule before pinning a
+  newer one; record it here. `--no-sandbox` runs inside this container only
+  (container-isolated) — never in-process with the gateway (see threat-model.md).

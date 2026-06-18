@@ -1,0 +1,17 @@
+# Captatum browser sidecar image — runs the long-lived Chromium the gateway
+# connects to over CDP. This is a SEPARATE container from the gateway so a
+# browser compromise cannot reach OAuth keys / DB creds (blast-radius separation).
+#
+# Pin the tag to match the gateway's `playwright` version (package.json) — a
+# Chromium/CDP major-version mismatch can break the connection. playwright
+# 1.60.0 ships Chromium 133; use the matching -noble tag.
+# (Supply chain: prefer a tag >= 15 days old; verify in docs/dependency-ledger.md.)
+FROM mcr.microsoft.com/playwright:v1.60.0-noble
+
+ENV CAPTATUM_BROWSER_CDP_PORT=9222
+COPY scripts/browser-sidecar.sh /usr/local/bin/browser-sidecar.sh
+RUN chmod +x /usr/local/bin/browser-sidecar.sh
+
+# No network listener besides CDP; the gateway reaches it over the task network.
+EXPOSE 9222
+CMD ["/usr/local/bin/browser-sidecar.sh"]

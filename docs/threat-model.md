@@ -57,8 +57,16 @@ the contract reference; this file is the security reasoning.
   only through `FetcherPort`; image/font/media/analytics URLs are checked with
   the same P1 URL/DNS private-IP guard and then aborted. WebSockets are closed;
   Service Workers are disabled; downloads are blocked; render-byte cap is
-  enforced; browser runs in a separate child process with **no env**; OS sandbox
-  on, **never `--no-sandbox`**.
+  enforced; the browser runs with an empty environment. **Sandbox model: an
+  in-process launch keeps the OS sandbox ON (`chromiumSandbox` defaults true —
+  `--no-sandbox` in-process is a release blocker). The hosted path instead runs
+  Chromium in a separate sidecar container connected over CDP
+  (`CAPTATUM_BROWSER_CDP_ENDPOINT`, `Dockerfile.browser`, `scripts/browser-sidecar.sh`);
+  there `--no-sandbox` is acceptable because the container is the isolation
+  boundary and a browser compromise cannot reach the gateway's OAuth keys / DB.
+  Either way the browser never runs in-process with `--no-sandbox` inside the
+  gateway's blast radius. The `page.route` SSRF guard applies identically in both
+  modes.**
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
   (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted
   mode fails boot unless `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS` are
