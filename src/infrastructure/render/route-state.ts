@@ -78,10 +78,6 @@ export class RenderRouteState {
   }
 }
 
-export function maxBytesReject(): RejectResult {
-  return { rejected: true, code: "max_bytes", message: "Rendered page exceeds the byte cap" };
-}
-
 function shouldAbortWithoutBody(url: string, resourceType: string): boolean {
   return BLOCKED_TYPES.has(resourceType) || isAnalytics(url);
 }

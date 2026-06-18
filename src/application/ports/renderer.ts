@@ -1,4 +1,5 @@
 import type { FetcherPort, FetcherResult, RejectResult } from "./fetcher.ts";
+import type { ProvenanceError } from "../../domain/result.ts";
 
 export interface RenderInput {
   url: string;
@@ -26,6 +27,12 @@ export interface RenderSuccess {
   rendered: true;
   fetchResult: FetcherResult;
   actions: RenderAction[];
+  /**
+   * Advisory provenance note for a successful-but-degraded render (e.g. the
+   * rendered HTML exceeded the byte cap and was truncated rather than rejected).
+   * Surfaced into Result.errors by the use case; non-fatal.
+   */
+  notice?: ProvenanceError;
 }
 
 export type RenderFailure = RejectResult & {

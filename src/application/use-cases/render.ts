@@ -19,7 +19,13 @@ export interface MaybeRenderInput {
 }
 
 export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
-  if (!input.request.allowRender && !input.result.jsRequired) return input.result;
+  // The shell-gate (jsRequired) is the arbiter of whether to render — NOT
+  // allowRender. SSR pages already have content (jsRequired=false) and must
+  // return at Tier-1 even when allowRender=true (which clients like ChatGPT
+  // send on every call). Only a true empty SPA shell (jsRequired=true) reaches
+  // the allowRender gate below. Letting allowRender force a render of SSR pages
+  // made every response Tier-3 with multi-second latency.
+  if (!input.result.jsRequired) return input.result;
 
   if (!input.request.allowRender) {
     input.result.tier = "render-blocked";
@@ -60,7 +66,9 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
     output: "raw",
     fetchedAt: input.result.fetchedAt,
   });
-  return promoteRenderedResult(input.result, extracted, renderMs, controlAttempts);
+  const promoted = promoteRenderedResult(input.result, extracted, renderMs, controlAttempts);
+  if (rendered.notice) promoted.errors.push(rendered.notice);
+  return promoted;
 }
 
 function renderUnavailable(result: Result, reason: string): Result {

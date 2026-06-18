@@ -1,4 +1,5 @@
 import type { RejectResult } from "../../application/ports/fetcher.ts";
+import type { ProvenanceError } from "../../domain/result.ts";
 import type {
   RenderAction,
   RenderFailure,
@@ -8,7 +9,7 @@ import type {
 } from "../../application/ports/renderer.ts";
 import { streamFromBytes } from "../http/body.ts";
 import { P1BrowserUrlGuard, safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
-import { maxBytesReject, RenderRouteState } from "./route-state.ts";
+import { RenderRouteState } from "./route-state.ts";
 import type {
   PlaywrightDownload,
   PlaywrightContext,
@@ -69,11 +70,16 @@ export class PlaywrightRenderer implements RenderPort {
           if (frameContent.length > 100) content += "\n" + frameContent;
         }
       } catch { /* iframe capture best-effort */ }
-      const bytes = new TextEncoder().encode(content);
-      if (bytes.byteLength > input.maxBytes) {
-        return renderFailure(maxBytesReject(), actions);
-      }
-      return renderSuccess(input, page, response?.status() ?? state.status, bytes, state);
+      // Advisory byte cap: the rendered HTML is already in memory, so truncate
+      // at the cap and keep rendering (with a provenance note) rather than
+      // throwing the whole render away. Matches the advisory philosophy used
+      // when render itself fails. The fetch-path cap stays a hard reject (it is
+      // a pre-download bandwidth/abuse guard).
+      const { bytes, truncated } = capRenderedBytes(content, input.maxBytes);
+      const notice: ProvenanceError | undefined = truncated
+        ? { code: "max_bytes", message: `Rendered content truncated at ${input.maxBytes} bytes` }
+        : undefined;
+      return renderSuccess(input, page, response?.status() ?? state.status, bytes, state, notice);
     } catch (error) {
       return renderFailure(state.fatal ?? rejectFromError(error), actions);
     } finally {
@@ -126,6 +132,7 @@ function renderSuccess(
   status: number,
   bytes: Uint8Array,
   state: RenderRouteState,
+  notice?: ProvenanceError,
 ): RenderOutput {
   return {
     rendered: true,
@@ -138,7 +145,22 @@ function renderSuccess(
       bytes: bytes.byteLength,
     },
     actions: state.actions,
+    ...(notice ? { notice } : {}),
   };
+}
+
+/**
+ * UTF-8-safe truncation that never exceeds the cap. Encode once, then cut at the
+ * largest character boundary at or below maxBytes by walking back past any
+ * trailing continuation bytes (0x80–0xBF) — so the slice never splits a
+ * multibyte sequence and is always valid UTF-8.
+ */
+function capRenderedBytes(content: string, maxBytes: number): { bytes: Uint8Array; truncated: boolean } {
+  const full = new TextEncoder().encode(content);
+  if (full.byteLength <= maxBytes) return { bytes: full, truncated: false };
+  let cut = maxBytes;
+  while (cut > 0 && (full[cut] & 0xc0) === 0x80) cut -= 1;
+  return { bytes: full.subarray(0, cut), truncated: true };
 }
 
 function renderFailure(rejected: RejectResult, actions: RenderAction[]): RenderFailure {

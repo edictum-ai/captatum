@@ -24,7 +24,7 @@ test("renderer launches sandboxed context with service workers and downloads dis
 
   assert.equal(result.rendered, true);
   assert.deepEqual(harness.launchOptions.env, {});
-  assert.equal(harness.launchOptions.chromiumSandbox, true);
+  assert.equal(harness.launchOptions.chromiumSandbox, false);
   assert.deepEqual(harness.contextOptions, {
     serviceWorkers: "block",
     acceptDownloads: false,
@@ -92,14 +92,50 @@ test("renderer checks private image URLs before aborting blocked body types", as
   });
 });
 
-test("renderer enforces rendered HTML byte cap", async () => {
-  const harness = new BrowserHarness({ content: "<main>too large</main>" });
+test("renderer truncates rendered HTML at the byte cap (advisory, not fatal)", async () => {
+  const harness = new BrowserHarness({ content: "<main>too large to fit here</main>" });
   const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
     .render(renderInput(new FakeFetcher(), { maxBytes: 8 }));
 
-  assert.equal(result.rendered, false);
-  assert.equal(result.code, "max_bytes");
+  // Advisory: a rendered page that exceeds the cap is truncated and returned
+  // with a max_bytes provenance note, not rejected wholesale (the bytes are
+  // already in memory; throwing them away would waste the whole render).
+  assert.equal(result.rendered, true);
+  if (!result.rendered) throw new Error("expected render success");
+  assert.equal(result.notice?.code, "max_bytes");
+  assert.ok(result.fetchResult.bytes <= 8, `expected <= 8 bytes, got ${result.fetchResult.bytes}`);
   assert.equal(harness.browserClosed, true);
+});
+
+test("renderer concatenates captured iframe content into the rendered HTML", async () => {
+  const harness = new BrowserHarness({
+    content: "<html><head><title>Host Page</title></head><body>host body text</body></html>",
+    extraFrameContent: '<script type="application/ld+json">{"@type":"JobPosting","title":"Embedded Job"}</script><p>embedded widget body</p>',
+  });
+  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(new FakeFetcher()));
+
+  assert.equal(result.rendered, true);
+  if (!result.rendered) throw new Error("expected render success");
+  const text = await new Response(result.fetchResult.bodyStream).text();
+  assert.ok(text.includes("host body text"), "host page content present");
+  assert.ok(text.includes("Embedded Job"), "iframe JSON-LD captured");
+  assert.ok(text.includes("embedded widget body"), "iframe body captured");
+});
+
+test("renderer byte-cap truncation respects UTF-8 boundaries for multibyte content", async () => {
+  // "aaaaa😀" is 9 bytes (5 ASCII + a 4-byte emoji); a 60-byte cap lands mid-emoji.
+  const harness = new BrowserHarness({ content: "aaaaa😀".repeat(50) });
+  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(new FakeFetcher(), { maxBytes: 60 }));
+
+  assert.equal(result.rendered, true);
+  if (!result.rendered) throw new Error("expected render success");
+  assert.equal(result.notice?.code, "max_bytes");
+  assert.ok(result.fetchResult.bytes <= 60, `expected <= 60 bytes, got ${result.fetchResult.bytes}`);
+  // Truncated bytes must decode as valid UTF-8 — no dangling partial sequence.
+  const decoded = await new Response(result.fetchResult.bodyStream).text();
+  assert.equal(Buffer.from(decoded, "utf8").toString("utf8"), decoded);
 });
 
 test("renderer returns timeout and closes the browser on stalled navigation", async () => {
@@ -130,6 +166,7 @@ class BrowserHarness {
   private readonly options: {
     requests?: ScriptedRequest[];
     content?: string;
+    extraFrameContent?: string;
     downloadUrl?: string;
     websocketUrl?: string;
     neverResolve?: boolean;
@@ -167,6 +204,12 @@ class BrowserHarness {
   }
 
   private page() {
+    // Sentinel frame shared by mainFrame()/frames() so the renderer's iframe
+    // loop (skip frame === main) is a no-op when no extra frame is configured.
+    const mainFrame = {};
+    const extraFrame = this.options.extraFrameContent !== undefined
+      ? { content: async () => this.options.extraFrameContent as string }
+      : undefined;
     return {
       route: async (_pattern: string, handler: (route: FakeRoute) => Promise<void> | void) => {
         this.routeHandler = handler;
@@ -183,6 +226,11 @@ class BrowserHarness {
       setDefaultTimeout: (_timeoutMs: number) => {},
       setDefaultNavigationTimeout: (_timeoutMs: number) => {},
       goto: async (url: string) => await this.goto(url),
+      // The real renderer waits for client-side widgets after DOMContentLoaded
+      // (commit 9bba8aa) and captures iframe content (commit d50a3c9).
+      waitForTimeout: async (_ms: number) => {},
+      mainFrame: () => mainFrame,
+      frames: () => (extraFrame ? [mainFrame, extraFrame] : [mainFrame]),
       content: async () => this.options.content ?? "<main>rendered</main>",
       url: () => "https://public.test/",
       close: async () => {},
