@@ -87,11 +87,8 @@ function resultPayload(output: Output, extraction: HtmlExtraction): string {
 
   const parts: string[] = [];
   if (extraction.text) parts.push(extraction.text);
-  // Supplement thin Readability content with JSON-LD description (JobPosting, Article, etc.)
-  if (parts.length === 0 || parts[0].length < 500) {
-    const desc = jsonLdDescription(extraction.structured);
-    if (desc) parts.push(desc);
-  }
+  const desc = jsonLdDescription(extraction.structured);
+  if (desc) parts.push(desc);
   return parts.join("\n\n");
 }
 
