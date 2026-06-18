@@ -58,10 +58,14 @@ function compactResult(result: Result): Record<string, unknown> {
     result: result.result,
     bytes: result.bytes,
     code: result.code,
+    codeText: result.codeText,
+    platform: result.platform,
     jsRequired: result.jsRequired,
     resolvedVia: result.resolvedVia,
     errors: result.errors,
+    timings: result.timings,
   };
+  if (result.transform) compact.transform = result.transform;
   if (result.structured?.jsonLd) {
     const items = Array.isArray(result.structured.jsonLd) ? result.structured.jsonLd : [result.structured.jsonLd];
     const stripped = items.map((item) => {
