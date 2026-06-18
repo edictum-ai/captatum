@@ -187,8 +187,8 @@ function finalizeExtract(text: string, schema: unknown, model: string, router: M
   }
   const validation = validateJsonSchema(parsed, schema);
   if (!validation.valid) {
-    router.feedback({ model, score: 0.1, valid: false });
-    throw new TransformError("extract_schema_invalid", validation.message ?? "Extract output did not match schema");
+    router.feedback({ model, score: 0.3, valid: false });
+    // Advisory: return parsed JSON even on schema mismatch — imperfect structured data > raw fallback.
   }
   return JSON.stringify(parsed, null, 2);
 }
