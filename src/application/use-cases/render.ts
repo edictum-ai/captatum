@@ -19,7 +19,7 @@ export interface MaybeRenderInput {
 }
 
 export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
-  if (!input.result.jsRequired) return input.result;
+  if (!input.request.allowRender && !input.result.jsRequired) return input.result;
 
   if (!input.request.allowRender) {
     input.result.tier = "render-blocked";

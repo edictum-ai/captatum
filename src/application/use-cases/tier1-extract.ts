@@ -85,8 +85,30 @@ function resultPayload(output: Output, extraction: HtmlExtraction): string {
     return JSON.stringify(extraction.structured, null, 2);
   }
 
-  if (extraction.text) return extraction.text;
-  return "";
+  const parts: string[] = [];
+  if (extraction.text) parts.push(extraction.text);
+  // Supplement thin Readability content with JSON-LD description (JobPosting, Article, etc.)
+  if (parts.length === 0 || parts[0].length < 500) {
+    const desc = jsonLdDescription(extraction.structured);
+    if (desc) parts.push(desc);
+  }
+  return parts.join("\n\n");
+}
+
+function jsonLdDescription(structured: StructuredData): string | undefined {
+  if (!structured.jsonLd) return undefined;
+  const items = Array.isArray(structured.jsonLd) ? structured.jsonLd : [structured.jsonLd];
+  for (const item of items) {
+    if (item && typeof item === "object" && "description" in item) {
+      const desc = (item as Record<string, unknown>).description;
+      if (typeof desc === "string" && desc.length > 50) return stripHtml(desc);
+    }
+  }
+  return undefined;
+}
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ").trim();
 }
 
 function resolvedVia(extraction: HtmlExtraction): string {
