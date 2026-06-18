@@ -42,6 +42,7 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
     ? extraction.structured
     : undefined;
   const output = input.output ?? "raw";
+  const title = preferredTitle(extraction.title, extraction.structured);
 
   return {
     url: input.requestedUrl,
@@ -68,7 +69,7 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
       reason: extraction.shellGate.reason,
     }],
     contentType: input.fetchResult.contentType,
-    title: extraction.title,
+    title,
     structured,
     timings: { totalMs: input.durationMs, fetchMs: input.fetchMs ?? input.durationMs },
     errors: extraction.errors,
@@ -78,6 +79,82 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
 
 function hasStructuredFields(structured: StructuredData): boolean {
   return Object.keys(structured).length > 0;
+}
+
+/**
+ * JSON-LD schema.org types whose `name`/`headline`/`title` IS the page's
+ * subject (a job, an article, a product). For these, the structured-data title
+ * is more specific than the page `<title>` — e.g. an Ashby board embedded in an
+ * iframe reports `<title>Careers — E2B</title>` while the iframe's JobPosting
+ * JSON-LD carries the real title ("Platform Engineer"). Organization/WebSite
+ * are intentionally excluded so a homepage `<title>` is kept over a generic
+ * org name.
+ */
+const CONTENT_TITLE_TYPES = new Set([
+  "jobposting", "article", "newsarticle", "blogposting", "techarticle",
+  "scholarlyarticle", "report", "product", "event", "recipe", "course",
+  "review", "webapplication", "softwareapplication", "videoobject",
+  "musicrecording", "book",
+]);
+
+/**
+ * Pick the best title. When a content-bearing JSON-LD node exists, prefer its
+ * title — but keep the raw `<title>` when it already contains the JSON-LD title
+ * (it is a superset and usually richer, e.g. "Platform Engineer @ E2B"). This
+ * fixes iframe/embedded-widget pages whose `<title>` is the host page, not the
+ * embedded content.
+ */
+export function preferredTitle(rawTitle: string | undefined, structured: StructuredData): string | undefined {
+  const fromJsonLd = contentTitleFromJsonLd(structured.jsonLd);
+  if (!fromJsonLd) return rawTitle;
+  if (!rawTitle) return fromJsonLd;
+  return rawTitle.toLowerCase().includes(fromJsonLd.toLowerCase()) ? rawTitle : fromJsonLd;
+}
+
+function contentTitleFromJsonLd(jsonLd: unknown): string | undefined {
+  for (const item of asArray(jsonLd)) {
+    const node = item as Record<string, unknown> | null;
+    if (!node || typeof node !== "object") continue;
+    const direct = contentTitleOfNode(node);
+    if (direct) return direct;
+    // schema.org @graph wrapper (array or single node): descend one level.
+    for (const child of graphNodes(node["@graph"])) {
+      const nested = contentTitleOfNode(child);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+function graphNodes(graph: unknown): Record<string, unknown>[] {
+  if (Array.isArray(graph)) {
+    return graph.filter((g): g is Record<string, unknown> => g !== null && typeof g === "object");
+  }
+  if (graph !== null && typeof graph === "object") return [graph as Record<string, unknown>];
+  return [];
+}
+
+function contentTitleOfNode(node: Record<string, unknown> | null): string | undefined {
+  if (!node || typeof node !== "object") return undefined;
+  const type = node["@type"];
+  const types = Array.isArray(type) ? type.map(String) : type === undefined ? [] : [String(type)];
+  // Accept short ("JobPosting") and full-IRI ("https://schema.org/JobPosting") forms.
+  if (!types.some((t) => CONTENT_TITLE_TYPES.has(shortSchemaType(t)))) return undefined;
+  for (const key of ["title", "name", "headline"]) {
+    const value = node[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/** Normalize a schema.org @type to its short lowercase form (e.g. "jobposting"). */
+function shortSchemaType(value: string): string {
+  const lower = value.toLowerCase().replace(/^https?:\/\/schema\.org\//, "");
+  return lower.includes("/") ? lower.slice(lower.lastIndexOf("/") + 1) : lower;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : value === undefined ? [] : [value];
 }
 
 function resultPayload(output: Output, extraction: HtmlExtraction): string {

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { FetcherResult } from "../src/application/ports/fetcher.ts";
-import { extractTier1FromFetchResult } from "../src/application/use-cases/tier1-extract.ts";
+import { extractTier1FromFetchResult, preferredTitle } from "../src/application/use-cases/tier1-extract.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 
 const FIXTURE_DIR = join(process.cwd(), "test", "fixtures", "extract");
@@ -182,6 +182,61 @@ test("Tier-1 use case returns Result-compatible structured data and shell eviden
   assert.equal(result.result, "");
   assert.equal(JSON.stringify(result).includes("Set-Cookie"), false);
   assert.equal(JSON.stringify(result).includes("Authorization"), false);
+});
+
+test("preferredTitle uses a content-bearing JSON-LD title when <title> is generic", () => {
+  // e2b-style iframe case: host page <title> is "Careers — E2B" but the
+  // embedded JobPosting JSON-LD carries the real title.
+  const iframe = preferredTitle("Careers — E2B", {
+    jsonLd: { "@type": "JobPosting", title: "Platform Engineer" },
+  });
+  assert.equal(iframe, "Platform Engineer");
+
+  // Ashby direct: <title> already contains the JSON-LD title and is richer,
+  // so the <title> is kept.
+  const ashby = preferredTitle("Platform Engineer @ E2B", {
+    jsonLd: { "@type": "JobPosting", title: "Platform Engineer" },
+  });
+  assert.equal(ashby, "Platform Engineer @ E2B");
+
+  // Homepage with an Organization node: Organization is not a content type, so
+  // the page <title> is preserved over the generic org name.
+  const home = preferredTitle("E2B — Sandboxes for AI agents", {
+    jsonLd: { "@type": "Organization", name: "E2B" },
+  });
+  assert.equal(home, "E2B — Sandboxes for AI agents");
+
+  // headline + @graph wrapper.
+  const graph = preferredTitle("Site Name", {
+    jsonLd: { "@graph": [{ "@type": "NewsArticle", headline: "Breaking Story" }] },
+  });
+  assert.equal(graph, "Breaking Story");
+
+  // Full-IRI @type form (https://schema.org/JobPosting).
+  const iri = preferredTitle("Generic", {
+    jsonLd: { "@type": "https://schema.org/JobPosting", title: "Platform Engineer" },
+  });
+  assert.equal(iri, "Platform Engineer");
+
+  // Single-object @graph wrapper (not an array).
+  const singleGraph = preferredTitle("Site", {
+    jsonLd: { "@graph": { "@type": "NewsArticle", headline: "Solo Graph Story" } },
+  });
+  assert.equal(singleGraph, "Solo Graph Story");
+
+  // Multiple content-bearing nodes: first in document order wins (the page's
+  // primary content). This is a deliberate heuristic, locked here intentionally.
+  const multi = preferredTitle("Site", {
+    jsonLd: [
+      { "@type": "NewsArticle", headline: "First Story Wins" },
+      { "@type": "JobPosting", title: "Some Job" },
+    ],
+  });
+  assert.equal(multi, "First Story Wins");
+
+  // No structured data: <title> passes through.
+  assert.equal(preferredTitle("Just a title", {}), "Just a title");
+  assert.equal(preferredTitle(undefined, {}), undefined);
 });
 
 function fixture(name: string): string {
