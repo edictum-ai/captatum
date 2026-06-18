@@ -50,7 +50,7 @@ test("wreq adapter HTTP path uses mocked wreq-js response shape", async () => {
   assert.deepEqual(init.headers, {
     Host: "public.test:8080",
     "Accept-Encoding": "gzip, br, deflate",
-    "User-Agent": "smart-fetch/0.1",
+    "User-Agent": "captatum/0.1",
   });
 });
 

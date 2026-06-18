@@ -50,7 +50,7 @@ test("local mode starts without OAuth secrets and returns a contract-shaped raw 
     assert.equal(result.output, "raw");
     assert.equal(result.code, 200);
     assert.equal((result.platform as { adapterId?: string }).adapterId, "generic");
-    assert.match(firstText(call), /^<!-- smart-fetch /);
+    assert.match(firstText(call), /^<!-- captatum /);
     await ctx.close();
   } finally {
     restore();

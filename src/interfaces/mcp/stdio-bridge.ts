@@ -59,6 +59,6 @@ async function startStdioBridge(): Promise<Server> {
 
 startStdioBridge().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`smart-fetch stdio bridge failed to start: ${message}\n`);
+  process.stderr.write(`captatum stdio bridge failed to start: ${message}\n`);
   process.exitCode = 1;
 });

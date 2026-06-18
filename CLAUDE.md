@@ -1,6 +1,8 @@
-# smart-fetch
+# Captatum
 
-Adaptive MCP web-fetch tool for AI agents. One tool, any URL: fetch → render JS only when needed → return **token-efficient** content + **provenance** (tier / finalUrl / platform / jsRequired). Default output is a concise **summary** (like WebFetch, but cheaper via the free-model router and actually working on JS pages); **raw** content is available on request. Beats WebFetch (static GET + Turndown + Haiku, no JS) via anti-bot `wreq-js` fetch, JS rendering, raw-HTML structured extraction, and per-response provenance.
+Captatum is an adaptive MCP web-fetch tool for AI agents. One tool, any URL: fetch → render JS only when needed → return **token-efficient** content + **provenance** (tier / finalUrl / platform / jsRequired). Default output is a concise **summary** (like WebFetch, but cheaper via the free-model router and actually working on JS pages); **raw** content is available on request. Beats WebFetch (static GET + Turndown + Haiku, no JS) via anti-bot `wreq-js` fetch, JS rendering, raw-HTML structured extraction, and per-response provenance.
+
+> **Brand note:** the product/package is **Captatum**. The MCP **tool identifier remains `smart_fetch`** (already registered in live ChatGPT/Claude.ai configs — renaming it would break connections), and internal file/identifier names (`smart-fetch.ts`, `SmartFetchUseCase`, etc.) are unchanged. Only the public brand + wire-visible strings (package name, README, User-Agent, provenance marker) were renamed.
 
 ## Source of truth for house rules
 

@@ -1,9 +1,9 @@
 {
-  "name": "smart-fetch",
-  "version": "0.1.0",
+  "name": "captatum",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Adaptive MCP web-fetch tool for AI agents: fetch any URL, render JS when needed, return clean structured content + provenance.",
+  "description": "Captatum — adaptive MCP web-fetch tool for AI agents: fetch any URL, render JS when needed, return clean structured content + provenance.",
   "license": "MIT",
   "packageManager": "pnpm@10.32.0",
   "engines": {

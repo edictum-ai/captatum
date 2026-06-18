@@ -55,5 +55,5 @@
       "reason": "unconfigured"
     }
   },
-  "mcpText": "<!-- smart-fetch tier=1 output=raw status=200 bytes=444 finalUrl=https://fixture.test/contract platform=generic jsRequired=false resolvedVia=tier1-meta -->\nContract Fixture Smart fetch fixture body for contract reconciliation."
+  "mcpText": "<!-- captatum tier=1 output=raw status=200 bytes=444 finalUrl=https://fixture.test/contract platform=generic jsRequired=false resolvedVia=tier1-meta -->\nContract Fixture Smart fetch fixture body for contract reconciliation."
 }

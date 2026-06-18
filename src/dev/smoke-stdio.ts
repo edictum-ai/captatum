@@ -72,7 +72,7 @@ const result = call.structuredContent as Record<string, unknown> | undefined;
 if (fetcher.calls.length !== 1) {
   throw new Error(`stdio smoke: expected one guarded fetch, saw ${fetcher.calls.length}`);
 }
-if (!text.startsWith("<!-- smart-fetch ") || !text.includes(FIXTURE_TEXT)) {
+if (!text.startsWith("<!-- captatum ") || !text.includes(FIXTURE_TEXT)) {
   throw new Error(`stdio smoke: provenance/content missing from text: ${text}`);
 }
 assertContractShape(result);

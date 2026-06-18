@@ -39,7 +39,7 @@ export class NodeHttpRequester implements HttpRequester {
         headers: {
           Host: input.hostHeader,
           "Accept-Encoding": "gzip, br, deflate",
-          "User-Agent": "smart-fetch/0.1",
+          "User-Agent": "captatum/0.1",
         },
       }, (response) => {
         resolve({

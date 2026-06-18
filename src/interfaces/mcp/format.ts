@@ -15,7 +15,7 @@ function provenanceLine(result: Result): string {
     ["jsRequired", String(result.jsRequired)],
     ["resolvedVia", result.resolvedVia],
   ];
-  return `<!-- smart-fetch ${fields.map(([key, value]) => `${key}=${escapeField(value)}`).join(" ")} -->`;
+  return `<!-- captatum ${fields.map(([key, value]) => `${key}=${escapeField(value)}`).join(" ")} -->`;
 }
 
 function escapeField(value: string): string {

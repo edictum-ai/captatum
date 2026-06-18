@@ -64,7 +64,7 @@ test("authenticated fetch:read call can perform output raw", async () => {
   const body = response.json() as RpcSuccess;
   assert.equal(body.result.structuredContent.output, "raw");
   assert.equal(body.result.structuredContent.result, "Fixture raw body");
-  assert.match(body.result.content[0]?.text ?? "", /^<!-- smart-fetch /);
+  assert.match(body.result.content[0]?.text ?? "", /^<!-- captatum /);
   assert.equal(ctx.fetcher.calls.length, 1);
   assert.equal(ctx.audit.toolEvents.at(-1)?.url_host, "https://fixture.test");
   await ctx.app.close();

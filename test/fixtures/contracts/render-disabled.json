@@ -54,5 +54,5 @@
     },
     "errors": []
   },
-  "mcpText": "<!-- smart-fetch tier=render-blocked output=raw status=200 bytes=244 finalUrl=https://fixture.test/spa platform=generic jsRequired=true resolvedVia=render-blocked -->\n"
+  "mcpText": "<!-- captatum tier=render-blocked output=raw status=200 bytes=244 finalUrl=https://fixture.test/spa platform=generic jsRequired=true resolvedVia=render-blocked -->\n"
 }

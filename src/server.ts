@@ -47,7 +47,7 @@ const app = await createHttpApp({
 });
 
 await app.listen({ host, port });
-console.log(`smart-fetch server listening on http://${host}:${port}`);
+console.log(`captatum server listening on http://${host}:${port}`);
 
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());

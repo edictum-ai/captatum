@@ -44,5 +44,5 @@
       }
     ]
   },
-  "mcpText": "<!-- smart-fetch tier=error output=raw status=0 bytes=0 finalUrl=https://169.254.169.254/latest/meta-data platform=generic jsRequired=false resolvedVia=guarded-fetch -->\nHost resolves to a private or reserved address"
+  "mcpText": "<!-- captatum tier=error output=raw status=0 bytes=0 finalUrl=https://169.254.169.254/latest/meta-data platform=generic jsRequired=false resolvedVia=guarded-fetch -->\nHost resolves to a private or reserved address"
 }

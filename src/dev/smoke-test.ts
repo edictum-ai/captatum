@@ -168,8 +168,8 @@ function spaHtml(): string {
 function hostedConfig(): HostedOAuthConfig {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   return {
-    issuer: "https://smart-fetch.test",
-    resource: "https://smart-fetch.test/mcp",
+    issuer: "https://captatum.test",
+    resource: "https://captatum.test/mcp",
     consentSigningSecret: "smoke-consent-secret-with-enough-entropy",
     signingPrivateJwk: { ...privateKey.export({ format: "jwk" }), alg: "ES256", kid: "smoke-key-1" } as JWK,
     signingKeyId: "smoke-key-1",
