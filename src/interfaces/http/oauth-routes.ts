@@ -204,6 +204,7 @@ function setConsentCookie(reply: FastifyReply, token: string, ttlSeconds: number
 }
 
 function assertAllowedRedirect(value: string, allowlist: string[]): void {
+  if (allowlist.includes("*")) return;
   const url = new URL(value);
   url.hash = "";
   const href = url.href;

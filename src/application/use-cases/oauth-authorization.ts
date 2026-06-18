@@ -123,7 +123,9 @@ export class OAuthAuthorizationUseCase {
     } catch {
       throw new OAuthError("invalid_redirect_uri", "redirect_uri is invalid");
     }
-    if (!this.config.redirectAllowlist.some((e) => (e.endsWith("*") ? normalized.startsWith(e.slice(0, -1)) : e === normalized))) {
+    if (this.config.redirectAllowlist.includes("*")) {
+      // global wildcard: allow all
+    } else if (!this.config.redirectAllowlist.some((e) => (e.endsWith("*") ? normalized.startsWith(e.slice(0, -1)) : e === normalized))) {
       throw new OAuthError("invalid_redirect_uri", "redirect_uri is not allowed");
     }
     return normalized;
