@@ -161,7 +161,9 @@ function rejectFromError(error: unknown): RejectResult {
   if (error instanceof Error && error.message === "render_timeout") {
     return { rejected: true, code: "timeout", message: "Render timed out" };
   }
-  return { rejected: true, code: "render_error", message: "Tier-3 render failed" };
+  const detail = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`smart-fetch render error: ${detail}\n`);
+  return { rejected: true, code: "render_error", message: `Tier-3 render failed: ${detail}` };
 }
 
 function serviceWorkerAction(): RenderAction {

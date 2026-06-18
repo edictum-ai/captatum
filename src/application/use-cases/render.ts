@@ -40,6 +40,14 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
 
   if (!rendered.rendered) {
     input.result.attempts.push(...controlAttempts);
+    if (input.result.result && input.result.result.length > 100) {
+      input.result.timings.renderMs = renderMs;
+      input.result.errors.push({
+        code: rendered.code ?? "render_error",
+        message: `Render failed (advisory — Tier-1 content available): ${rendered.message ?? ""}`,
+      });
+      return input.result;
+    }
     return renderRejected(input.result, rendered, renderMs);
   }
 
