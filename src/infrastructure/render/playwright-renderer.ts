@@ -44,7 +44,7 @@ export class PlaywrightRenderer implements RenderPort {
       const playwright = await this.loadPlaywright();
       browser = await playwright.chromium.launch({
         headless: true,
-        chromiumSandbox: true,
+        chromiumSandbox: false,
         env: {},
       });
       context = await browser.newContext({
