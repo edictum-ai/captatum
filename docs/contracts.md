@@ -80,7 +80,7 @@ Result {
   contentType,
   title,                                          // when derivable
   structured: { canonicalUrl?, jsonLd?, og?, meta?, appState? }, // parsed from raw HTML (present when found)
-  transform: { provider, model?, free?, inTokens?, outTokens?, latencyMs?, costUsd?, reason? }, // present on summary/extract or fallback
+  transform: { provider, model?, free?, inTokens?, outTokens?, latencyMs?, costUsd?, reason?, schemaIssue? }, // present on summary/extract or fallback; schemaIssue carries the non-fatal extract-schema advisory message
   timings: { totalMs, fetchMs, renderMs?, transformMs? },
   errors: [{ code, message }],
 }
@@ -107,18 +107,30 @@ core still returns a contract-shaped `Result`: `code: 0`,
 
 ## Tiers
 
-- **Tier-1 (default).** `wreq-js` fetch (browser TLS/JA3+JA4 fingerprint impersonation → anti-bot) + raw-HTML extraction: JSON-LD `<script application/ld+json>`, Open Graph/twitter meta, canonical, and embedded app state (`__NEXT_DATA__`, `__INITIAL_STATE__`) via a prototype-pollution-safe reviver. Tier-1 egress is still behind `FetcherPort`; direct `wreq-js` calls are not allowed to bypass guarded DNS/IP checks. A **shell-gate** decides whether the page has real content (→ done) or is an empty SPA shell (→ escalate). Generic main-content extraction may use `defuddle` when added.
-  Current P1 limitation: the guarded adapter uses `wreq-js` only for plain HTTP.
-  HTTPS delegates to the Node requester to preserve checked-IP connect semantics
-  plus original-host SNI/certificate verification, so `wreq-js` TLS/JA3+JA4
-  fingerprinting is not active for HTTPS yet.
+- **Tier-1 (default).** `wreq-js` fetch (browser TLS/JA3+JA4 fingerprint impersonation → anti-bot) + raw-HTML extraction: JSON-LD `<script application/ld+json>`, Open Graph/twitter meta, canonical, and embedded app state (`__NEXT_DATA__`, `__INITIAL_STATE__`) via a prototype-pollution-safe reviver. Tier-1 egress is still behind `FetcherPort`; direct `wreq-js` calls are not allowed to bypass guarded DNS/IP checks. A **shell-gate** decides whether the page has real content (→ done) or is an empty SPA shell (→ escalate). Generic main-content extraction uses a hand-rolled visible-text extractor; `defuddle` was **evaluated and not added** — empirical probes against rendered SPAs (Vue/Angular RealWorld, TodoMVC) showed the existing extractor already yields clean main content, and a DOM-parser dependency would expand the untrusted-HTML parse surface without justification (house rule: minimal deps). The `<title>` is derived from JSON-LD when a content-bearing node (JobPosting/Article/…) carries a more specific title than the page `<title>` — fixes embedded-widget/iframe pages whose `<title>` is the host page. When multiple content-bearing JSON-LD nodes are present, the **first in document order wins** (treated as the page's primary content); this is a deliberate heuristic, not a type ranking.
+  Limitation (security-required, not a deferral): `wreq-js` is used only for
+  plain HTTP; HTTPS delegates to the Node requester, so `wreq-js` TLS/JA3+JA4
+  fingerprinting is not active for HTTPS. `wreq-js` exposes no connect-to-
+  resolved-IP or custom-DNS option — its `RequestInit` offers only `proxy`/
+  `browser`/`os`/`insecure`/`transport`, and DNS is resolved internally in the
+  native layer. Using it for HTTPS would force an unsafe choice: let wreq
+  self-resolve (a **rebinding SSRF hole** — the guard checks IP A, wreq may
+  connect to IP B) or set `insecure: true` (a **MITM hole** — disables cert
+  verification). The rebinding-proof SSRF guarantee is non-negotiable, so HTTPS
+  keeps the checked-IP Node path. Revisit only if `wreq-js` adds a connect-to-IP
+  or custom-resolver API.
 - **Tier-2 (optional).** If a registered `PlatformAdapter` detects the URL, it resolves via that platform's public API (clean JSON), short-circuiting extraction/render. Adapters are optional and general; their endpoints live in adapter code/fixtures, not this contract.
 - **Tier-3 (core, gated by `allowRender`).** Lazy `import('playwright')`;
   render with hard timeouts + request interception. Document/script/fetch/XHR/
   stylesheet requests route through `FetcherPort`; image/font/media/analytics
   URLs are checked with the same P1 URL/DNS private-IP guard and then aborted;
   websockets are closed; Service Workers are disabled; downloads are blocked;
-  cumulative browser fetch bytes and final rendered HTML bytes are capped. The
+  cumulative browser fetch bytes are capped. Final rendered HTML bytes that
+  exceed the cap are **truncated** (UTF-8-safe) and surfaced as a non-fatal
+  `max_bytes` provenance note rather than rejecting the render — the bytes are
+  already in memory, so a truncated render beats throwing it away. The Tier-1
+  fetch-path byte cap remains a **hard reject** (a pre-download bandwidth/abuse
+  guard). The
   rendered `page.content()` is reused by the Tier-1 extractor and provenance
   records tier 3 plus browser control actions (`service-workers-disabled`,
   `request-blocked`, `resource-aborted`, `websocket-closed`,
@@ -139,7 +151,7 @@ The Transform stage is the **default** output path (`output: summary`): resolved
 
 Modes: `summarize` (default — concise answer to `prompt`, optionally to a token `budget`) and `extract` (structured JSON per `schema`). `output: raw` skips the LLM and returns clean resolved content.
 
-`extract` validates the provider's JSON before returning it. The validator enforces the supported JSON Schema subset used by this tool (`type`, `required`, `properties`, `additionalProperties`, `items`, `enum`/`const`, string length/pattern, numeric bounds, array/property counts, uniqueness, and `allOf`/`anyOf`/`oneOf`/`not`) and fails closed with `extract_schema_invalid` for unsupported validation keywords instead of accepting schema-invalid output.
+`extract` validates the provider's JSON before returning it. The validator enforces the supported JSON Schema subset used by this tool (`type`, `required`, `properties`, `additionalProperties`, `items`, `enum`/`const`, string length/pattern, numeric bounds, array/property counts, uniqueness, and `allOf`/`anyOf`/`oneOf`/`not`) and fails closed with `extract_schema_invalid` for unsupported validation keywords instead of accepting schema-invalid output. For **supported** keywords, a value mismatch (wrong type, `minLength`, etc.) is **advisory**: the parsed JSON is still returned (imperfect structured data > raw fallback) but the mismatch is surfaced as a non-fatal `extract_schema_invalid` error so the caller is not silently handed schema-violating data.
 
 Provider-configurable via `transform`: **OpenRouter** (default; OpenAI-compatible `chat/completions` over plain `node:https`, key from config) or **local Ollama** (zero egress). The model router enforces a policy hosted routers won't: free-first (`pricing.prompt=="0"`), per-request fit (context length, text modality — filter out audio/coding/image models, JSON-schema support for `extract`), with deterministic **feedback EMA** (score each result: valid JSON? in-budget? non-empty? latency → per-model EMA → flaky/garbage self-demotes) and a fallback chain: best free → cheap paid (Flash/Haiku) → local Ollama. Provenance records `{provider, model, free, inTokens, outTokens, latencyMs}`. On failure, fall back to raw content + a provenance flag.
 
@@ -174,7 +186,7 @@ Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). 
 
 - OUTBOUND rebinding-proof `guardedFetch`: scheme `http|https` only; reject raw CRLF; reject userinfo-bearing URLs and strip credentials from all sanitized URL values; resolve → `isPrivate` CIDR (v4 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16 incl. metadata, 0.0.0.0/8, 100.64/10, 224/4; v6 ::1, fe80/10, fc00/7, ff00/8, `::ffff:0:0/96`, NAT64 `64:ff9b::`, IPv4-compatible) → connect to the resolved IP (`node:https` with `servername`/`Host` = original host); manual redirects re-validated each hop (`maxHops=5`); decompressed-byte cap; `AbortController` timeout.
 - INBOUND: SDK transport Host/Origin DNS-rebinding protection.
-- TIER-3 in-browser SSRF: `page.route` guards every browser request; document/script/fetch/XHR/stylesheet requests are fulfilled only through `FetcherPort`; image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap; browser in a separate child process with no env; OS sandbox on (never `--no-sandbox`).
+- TIER-3 in-browser SSRF: `page.route` guards every browser request; document/script/fetch/XHR/stylesheet requests are fulfilled only through `FetcherPort`; image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap (advisory truncation); browser in a separate child process with no env; OS sandbox on (never `--no-sandbox`).
 - Response guards: reject `Content-Length` > max before reading; stream through a counting `TransformStream`.
 - Logging: allow-list only (tier, finalUrl, platform, status, bytes, timing, blockReason); never body, never `Set-Cookie`/`Authorization`; canonicalize logged URLs to scheme+host when host is private. Per-call audit event.
 - Per-host throttle + global concurrency cap + in-flight URL dedupe + per-job max-egress-fetch counter.
@@ -246,7 +258,12 @@ Tool input validation failures use the same HTTP error wrapper and include
 Guarded fetch reject codes include `unsupported_scheme`, `invalid_url`,
 `crlf_url`, `userinfo_url`, `private_address`, `dns_error`, `dns_empty`,
 `redirect_limit`, `max_bytes`, `timeout`, `unsupported_encoding`,
-`body_read_error`, `network_error`, and `invalid_options`.
+`body_read_error`, `network_error`, and `invalid_options`. Note `max_bytes`
+and `extract_schema_invalid` each have two roles: a **hard** guarded-fetch
+reject (Tier-1 pre-download) and a **non-fatal advisory** entry inside a
+*successful* `Result.errors` (Tier-3 rendered HTML truncated at the cap;
+`output: extract` parsed JSON that violated a supported-keyword schema). The
+`tier`/`code` distinguish the two — advisory entries never set `tier: "error"`.
 
 ## Audit event
 
