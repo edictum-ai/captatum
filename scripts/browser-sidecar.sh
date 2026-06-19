@@ -14,13 +14,25 @@
 set -euo pipefail
 
 PORT="${CAPTATUM_BROWSER_CDP_PORT:-9222}"
-# Bind 0.0.0.0 inside the container; the task network / a firewall constrains who
-# may reach it. The gateway connects over the (same-task) loopback or private net.
-exec chromium \
+
+# Locate the bundled Chromium. The mcr.microsoft.com/playwright image lays it out
+# at /ms-playwright/chromium-<ver>/chrome-linux/chrome; fall back to PATH names.
+CHROME="$(ls /ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1 || true)"
+CHROME="${CHROME:-$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)}"
+if [ -z "${CHROME:-}" ]; then
+  echo "browser-sidecar: no chromium binary found" >&2
+  exit 1
+fi
+
+# Bind loopback only: ECS awsvpc tasks share one network namespace, so the
+# gateway container reaches the browser via 127.0.0.1 (same pattern as the
+# cloudflared -> gateway 127.0.0.1:3000 hop). Loopback-only also keeps CDP off
+# the task ENI. (Chromium binds 127.0.0.1 by default; --remote-debugging-address
+# is intentionally NOT set to 0.0.0.0.)
+exec "${CHROME}" \
   --headless=new \
   --no-sandbox \
   --remote-debugging-port="${PORT}" \
-  --remote-debugging-address=0.0.0.0 \
   --disable-gpu \
   --disable-dev-shm-usage \
   --disable-background-networking \
