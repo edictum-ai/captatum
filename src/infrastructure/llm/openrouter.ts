@@ -37,8 +37,15 @@ export class OpenRouterProvider implements LlmProvider {
    */
   async discover(): Promise<void> {
     if (this.discovered !== undefined) return;
-    if (!this.apiKey) {
+    // A configured OPENROUTER_MODELS list is AUTHORITATIVE — do not let the live
+    // free-model discovery override the user's chosen models. Discovery (which churns
+    // and once pulled in coding models) is only the fallback when nothing is configured.
+    if (this.models.length > 0) {
       this.discovered = this.models;
+      return;
+    }
+    if (!this.apiKey) {
+      this.discovered = DEFAULT_MODELS;
       return;
     }
     try {
@@ -47,7 +54,7 @@ export class OpenRouterProvider implements LlmProvider {
         signal: AbortSignal.timeout(DISCOVER_TIMEOUT_MS),
       });
       if (!response.ok) {
-        this.discovered = this.models;
+        this.discovered = DEFAULT_MODELS;
         return;
       }
       const payload = (await response.json()) as { data?: OpenRouterModel[] };
@@ -55,9 +62,9 @@ export class OpenRouterProvider implements LlmProvider {
         .filter(isFreeTextModel)
         .map((model) => model.id)
         .filter(Boolean);
-      this.discovered = free.length > 0 ? [...new Set([...free, "openrouter/auto"])] : this.models;
+      this.discovered = free.length > 0 ? [...new Set([...free, "openrouter/auto"])] : DEFAULT_MODELS;
     } catch {
-      this.discovered = this.models;
+      this.discovered = DEFAULT_MODELS;
     }
   }
 
@@ -99,7 +106,7 @@ export class OpenRouterProvider implements LlmProvider {
 interface OpenRouterModel {
   id: string;
   pricing?: { prompt?: string; completion?: string };
-  architecture?: { input_modality?: string };
+  architecture?: { input_modality?: string; output_modality?: string };
   context_length?: number;
 }
 
@@ -112,10 +119,18 @@ interface OpenRouterResponse {
   };
 }
 
-function isFreeTextModel(model: OpenRouterModel): boolean {
+export function isFreeTextModel(model: OpenRouterModel): boolean {
   if (model.pricing?.prompt !== "0") return false;
   const modality = model.architecture?.input_modality ?? "text";
-  return modality.includes("text");
+  if (!modality.includes("text")) return false;
+  // Reject code/image/audio/embed-specialized models for a general summarize/extract
+  // tool. The contract (docs/contracts.md) promises this filter; without it the live
+  // free-model discovery picked cohere/north-mini-code:free (a small coding model) for
+  // summarize, producing vague output.
+  const tags = `${model.id ?? ""} ${model.architecture?.output_modality ?? ""}`.toLowerCase();
+  if (/\b(code|coder|coding)\b/.test(tags)) return false;
+  if (/(image|text-to-image|diffusion|tts|speech|audio|whisper|rerank|embed)/.test(tags)) return false;
+  return true;
 }
 
 function numeric(value: unknown): number | undefined {

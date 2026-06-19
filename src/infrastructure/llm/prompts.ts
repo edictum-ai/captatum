@@ -20,7 +20,7 @@ export function buildMessages(input: TransformInput): LlmMessage[] {
 
 function summaryInstruction(input: TransformInput): string {
   const budget = input.budget ? ` Keep the answer within ${input.budget} tokens.` : "";
-  return `User request: ${input.prompt}${budget}`;
+  return `User request: ${input.prompt}${budget} Answer concretely from the provided content. When the request asks to list, extract, or enumerate items, output every matching item verbatim as it appears in the content — do not say items were "found" or "detected" without listing them. If specific items are genuinely not in the content, say so explicitly rather than hedging.`;
 }
 
 function extractInstruction(input: TransformInput): string {
