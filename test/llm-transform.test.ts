@@ -54,7 +54,9 @@ test("default summary with unconfigured router returns raw fallback provenance",
   }).execute({ url: "https://fallback.test/" });
 
   assert.equal(result.output, "raw");
-  assert.equal(result.result, "Raw fallback body");
+  // Fallback returns the transform content, which now carries the page-metadata envelope hint.
+  assert.match(result.result, /Page metadata:/);
+  assert.ok(result.result.endsWith("Raw fallback body"));
   assert.deepEqual(result.transform, { provider: "none", reason: "unconfigured" });
 });
 

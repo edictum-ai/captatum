@@ -53,7 +53,8 @@ test("transformContent strips articleBody/description from JSON-LD (keeps metada
   assert.ok(!c.includes("long verbose description"), "description must be stripped");
 });
 
-test("transformContent has no preamble when no metadata", () => {
+test("transformContent always includes the page-metadata envelope hint", () => {
   const c = transformContent(bare({ result: "just body" }));
-  assert.equal(c, "just body");
+  assert.match(c, /^Page metadata: contentType=unknown, finalUrl=https:\/\/x\.test, access=public, images=0\n\n/);
+  assert.ok(c.endsWith("just body"));
 });

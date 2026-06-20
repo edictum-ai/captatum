@@ -1,5 +1,5 @@
 import type { ProvenanceError, Result, TransformInfo } from "../../domain/result.ts";
-import { classifyAccess, classifyContentType, hasContent, type AccessInfo, type ContentType } from "./classify.ts";
+import { classifyAccess, classifyContentType, hasContent, type AccessInfo, type ContentType } from "../../application/classify.ts";
 
 export type Status = "pass" | "partial" | "fail";
 

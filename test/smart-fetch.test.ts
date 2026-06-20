@@ -258,16 +258,17 @@ test("configured transform receives prompt, schema, budget, and transform overri
 
   assert.equal(result.output, "summary");
   assert.equal(result.result, "Transformed summary");
-  assert.deepEqual(transformer.calls[0], {
-    mode: "summarize",
-    output: "summary",
-    content: "Source content",
-    prompt: "Summarize this",
-    sourceUrl: "https://example.test/",
-    schema,
-    budget: 200,
-    transform: override,
-  });
+  const call = transformer.calls[0];
+  assert.equal(call.mode, "summarize");
+  assert.equal(call.output, "summary");
+  assert.equal(call.prompt, "Summarize this");
+  assert.equal(call.sourceUrl, "https://example.test/");
+  assert.equal(call.schema, schema);
+  assert.equal(call.budget, 200);
+  assert.deepEqual(call.transform, override);
+  // content is transformContent(): the body plus the page-metadata envelope hint.
+  assert.ok(call.content.endsWith("Source content"), `body present in content: ${call.content}`);
+  assert.match(call.content, /Page metadata:/);
   assert.deepEqual(result.transform, { provider: "openrouter", model: "free/model", free: true });
   assert.equal(result.timings.transformMs, 3);
 });

@@ -45,7 +45,10 @@ export const config = {
     openRouterBaseUrl: () => envString("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
     openRouterModels: () => envString(
       "OPENROUTER_MODELS",
-      "deepseek/deepseek-v4-flash,openrouter/auto",
+      // Primary = deepseek-v4-flash (cheap, large context). Fallback = gpt-4o-mini
+      // (reliable) — NOT openrouter/auto, whose unpredictable routing produced
+      // truncated/garbage completions when the primary failed.
+      "deepseek/deepseek-v4-flash,openai/gpt-4o-mini",
     ),
     ollamaBaseUrl: () => envString("OLLAMA_BASE_URL", ""),
     ollamaModel: () => envString("OLLAMA_MODEL", "llama3.1"),

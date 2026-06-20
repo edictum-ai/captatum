@@ -1,5 +1,5 @@
 import type { Result } from "../../domain/result.ts";
-import { classifyAccess, classifyContentType } from "./classify.ts";
+import { classifyAccess, classifyContentType } from "../../application/classify.ts";
 
 /**
  * The MCP text returned to the caller: a machine provenance comment (always

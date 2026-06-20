@@ -1,4 +1,4 @@
-import type { Result } from "../../domain/result.ts";
+import type { Result } from "../domain/result.ts";
 
 /**
  * Agent-facing classification of a Result's content kind and access state.

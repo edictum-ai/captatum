@@ -1,13 +1,17 @@
+import { classifyAccess, classifyContentType } from "../classify.ts";
 import type { Result } from "../../domain/result.ts";
 
 /**
  * Build the content sent to the transform model. Prepends the page's extracted
- * metadata (title + OG/meta description) so the model has it even when the body
- * is gated or thin (e.g. Pinterest OG-meta-only pages where the body is behind a
- * login wall). JSON-LD, when present, is appended as verified structured data —
- * but with `articleBody`/`description` stripped, because those duplicate the
- * body text already in `result` and inflate the prompt (which made the primary
- * model fail/time out on large news articles — Estadão, El Mundo).
+ * metadata (title + OG/meta description + a compact envelope hint) so the model
+ * has it even when the body is gated or thin (e.g. Pinterest OG-meta-only pages
+ * where the body is behind a login wall). The envelope hint tells the model the
+ * fetched page's classified kind/access/images so it does not claim those fields
+ * are "not provided" (they are returned structured alongside the summary).
+ * JSON-LD, when present, is appended as verified structured data — but with
+ * `articleBody`/`description` stripped, because those duplicate the body text
+ * already in `result` and inflate the prompt (which made the primary model
+ * fail/time out on large news articles — Estadão, El Mundo).
  */
 export function transformContent(base: Result): string {
   const og = base.structured?.og;
@@ -15,6 +19,7 @@ export function transformContent(base: Result): string {
   const meta = [
     base.title ? `Title: ${base.title}` : null,
     description ? `Description: ${description}` : null,
+    envelopeHint(base),
   ].filter((line): line is string => line !== null);
   const stripped = stripVerboseFields(base.structured?.jsonLd);
   const jsonLd = stripped !== undefined
@@ -22,6 +27,19 @@ export function transformContent(base: Result): string {
     : "";
   const preamble = meta.length > 0 ? `${meta.join("\n")}\n\n` : "";
   return `${preamble}${base.result}${jsonLd}`;
+}
+
+/**
+ * Compact one-line hint of the fetched page's envelope (the same fields returned
+ * structured alongside the summary). Giving the model the actual values keeps it
+ * from inventing "field not provided" when citing contentType/finalUrl/access.
+ * Neutral wording so it also reads fine if it surfaces in a raw fallback result.
+ */
+function envelopeHint(base: Result): string {
+  const access = classifyAccess(base);
+  const images = base.structured?.images?.length ?? 0;
+  const accessLabel = access.gated ? `gated:${access.gateReason}` : "public";
+  return `Page metadata: contentType=${classifyContentType(base)}, finalUrl=${base.finalUrl}, access=${accessLabel}, images=${images}`;
 }
 
 /**
