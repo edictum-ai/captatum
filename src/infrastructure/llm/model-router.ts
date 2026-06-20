@@ -115,6 +115,7 @@ export class LlmTransformer implements TransformPort {
         this.router.feedback({ model: pick.model, score: 0, valid: false });
         tried.push(pick.model);
         lastError = error instanceof Error ? error : new Error(String(error));
+        process.stderr.write(`captatum transform: ${pick.model} failed: ${lastError.message}\n`);
         continue;
       }
 

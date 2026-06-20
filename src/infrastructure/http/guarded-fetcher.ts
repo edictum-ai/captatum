@@ -116,6 +116,7 @@ export class GuardedHttpFetcher implements FetcherPort {
       bodyStream: streamFromBytes(body.bytes),
       contentType: headerValue(response.headers, "content-type"),
       bytes: body.byteLength,
+      ...(body.truncated ? { truncated: true } : {}),
     };
   }
 }

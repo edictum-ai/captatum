@@ -19,6 +19,7 @@ export interface FetcherResult {
   bodyStream: ReadableStream<Uint8Array>;
   contentType: string;
   bytes: number;
+  truncated?: boolean;
 }
 
 export interface RejectResult {

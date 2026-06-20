@@ -8,19 +8,21 @@ export type ResponseHeaders = Record<string, string | string[] | number | undefi
 export interface CappedBody {
   bytes: Uint8Array;
   byteLength: number;
+  truncated: boolean;
 }
 
+/**
+ * Read up to `maxBytes` from a response body (decompressing if needed).
+ * Advisory: when the body exceeds the cap, returns the first `maxBytes` and
+ * marks `truncated=true` rather than rejecting — partial content > no content.
+ * The caller surfaces a max_bytes provenance note.
+ */
 export async function readCappedBody(
   body: Readable,
   headers: ResponseHeaders,
   maxBytes: number,
   signal: AbortSignal,
 ): Promise<CappedBody> {
-  const declaredLength = Number(headerValue(headers, "content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    body.destroy();
-    reject("max_bytes", "Response exceeds the configured byte cap");
-  }
   throwIfAborted(signal);
 
   const stream = decodedStream(body, headerValue(headers, "content-encoding"));
@@ -33,17 +35,24 @@ export async function readCappedBody(
 
   const chunks: Buffer[] = [];
   let total = 0;
+  let truncated = false;
 
   try {
     for await (const chunk of stream) {
       throwIfAborted(signal);
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      total += buffer.byteLength;
-      if (total > maxBytes) {
+      if (total + buffer.byteLength > maxBytes) {
+        const remaining = maxBytes - total;
+        if (remaining > 0) {
+          chunks.push(buffer.subarray(0, remaining));
+          total += remaining;
+        }
+        truncated = true;
         body.destroy();
-        stream.destroy();
-        reject("max_bytes", "Response exceeds the configured byte cap");
+        if (stream !== body) stream.destroy();
+        break;
       }
+      total += buffer.byteLength;
       chunks.push(buffer);
     }
   } catch (error) {
@@ -55,7 +64,7 @@ export async function readCappedBody(
   }
 
   const bytes = new Uint8Array(Buffer.concat(chunks, total));
-  return { bytes, byteLength: total };
+  return { bytes, byteLength: total, truncated };
 }
 
 export function streamFromBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {

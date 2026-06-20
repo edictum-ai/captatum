@@ -107,7 +107,7 @@ test("DNS rebind stub connects to the checked IP instead of re-resolving", async
   assert.equal(resolver.calls.length, 1);
 });
 
-test("decompressed byte cap rejects oversized response bodies", async () => {
+test("decompressed byte cap truncates oversized response bodies (advisory, not fatal)", async () => {
   const body = gzipSync("abcdef");
   const fetcher = new GuardedHttpFetcher({
     resolver: resolverFor({ "bytes.test": [{ address: SAFE_IP, family: 4 }] }),
@@ -119,7 +119,9 @@ test("decompressed byte cap rejects oversized response bodies", async () => {
     maxBytes: 5,
   });
 
-  assertReject(result, "max_bytes");
+  if ("rejected" in result) throw new Error(`expected truncation, got reject: ${result.code}`);
+  assert.equal(result.truncated, true);
+  assert.equal(result.bytes, 5);
 });
 
 test("timeout aborts a stalled guarded fetch", async () => {

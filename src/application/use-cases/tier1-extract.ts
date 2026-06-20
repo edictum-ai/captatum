@@ -74,7 +74,12 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
     contentSha256: sha256Hex(html),
     structured,
     timings: { totalMs: input.durationMs, fetchMs: input.fetchMs ?? input.durationMs },
-    errors: extraction.errors,
+    errors: [
+      ...extraction.errors,
+      ...(input.fetchResult.truncated
+        ? [{ code: "max_bytes", message: "Content truncated at the byte cap" }]
+        : []),
+    ],
     ...(input.fetchedAt !== undefined ? { fetchedAt: input.fetchedAt } : {}),
   };
 }
