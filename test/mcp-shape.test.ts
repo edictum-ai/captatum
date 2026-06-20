@@ -206,6 +206,33 @@ test("structuredContent.result is snippeted when large; full text stays in the t
   assert.ok(resultToMcpText(result).includes(big));
 });
 
+test("summary text carries a deterministic envelope header for cross-client visibility", () => {
+  const result = base({
+    output: "summary",
+    finalUrl: "https://example.test/article",
+    title: "Example Article",
+    transform: { provider: "openrouter", model: "deepseek/deepseek-v4-flash" },
+    structured: { images: ["https://cdn.test/a.jpg", "https://cdn.test/b.jpg"] },
+  });
+  const text = resultToMcpText(result);
+  assert.match(text, /^<!-- captatum /);
+  assert.match(text, /contentType: unknown/);
+  assert.match(text, /title: Example Article/);
+  assert.match(text, /finalUrl: https:\/\/example\.test\/article/);
+  assert.match(text, /access: public/);
+  assert.match(text, /images: 2 \(e\.g\. https:\/\/cdn\.test\/a\.jpg\)/);
+  assert.match(text, /transformModel: deepseek\/deepseek-v4-flash/);
+  // header sits between the provenance comment and the summary body
+  assert.ok(text.indexOf("transformModel:") < text.indexOf("Clean extracted content"));
+});
+
+test("raw output has no envelope header (text unchanged for the contract fixtures)", () => {
+  const text = resultToMcpText(base({ output: "raw" }));
+  assert.doesNotMatch(text, /contentType:|transformModel:|^access:/m);
+  // single newline between the provenance comment and the body (fixture contract)
+  assert.match(text, /^<!-- captatum[^\n]*-->\n/);
+});
+
 test("fatal errors (tier error) surface in errors; advisories become warnings", () => {
   const rejected = base({
     tier: "error",
