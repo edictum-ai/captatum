@@ -20,7 +20,7 @@ export interface HtmlElement {
 
 const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
-export function findStartTags(html: string, tagName: string): HtmlTag[] {
+export function findStartTags(html: string, tagName: string, limit = Number.POSITIVE_INFINITY): HtmlTag[] {
   const wanted = tagName.toLowerCase();
   const tags: HtmlTag[] = [];
   let offset = 0;
@@ -30,7 +30,10 @@ export function findStartTags(html: string, tagName: string): HtmlTag[] {
     if (start === -1) break;
     const tag = readStartTag(html, start);
     offset = Math.max(start + 1, tag?.end ?? start + 1);
-    if (tag?.name === wanted) tags.push(tag);
+    if (tag?.name === wanted) {
+      tags.push(tag);
+      if (tags.length >= limit) break;
+    }
   }
 
   return tags;

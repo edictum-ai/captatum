@@ -18,6 +18,7 @@ import {
 } from "../../application/use-cases/smart-fetch-input.ts";
 import type { Result } from "../../domain/result.ts";
 import { resultToMcpText } from "./format.ts";
+import { buildStructuredContent } from "./shape.ts";
 import { SMART_FETCH_TOOL_NAME, smartFetchToolDefinition } from "./schema.ts";
 
 const AUTH_JSONRPC_CODE = -32001;
@@ -48,48 +49,16 @@ export function createSmartFetchMcpServer(deps: SmartFetchMcpServerDeps): Server
   return server;
 }
 
-function compactResult(result: Result): Record<string, unknown> {
-  const compact: Record<string, unknown> = {
-    schemaVersion: result.schemaVersion,
-    tier: result.tier,
-    output: result.output,
-    finalUrl: result.finalUrl,
-    title: result.title,
-    result: result.result,
-    bytes: result.bytes,
-    code: result.code,
-    codeText: result.codeText,
-    platform: result.platform,
-    jsRequired: result.jsRequired,
-    resolvedVia: result.resolvedVia,
-    errors: result.errors,
-    timings: result.timings,
-  };
-  if (result.transform) compact.transform = result.transform;
-  if (result.structured?.jsonLd) {
-    const items = Array.isArray(result.structured.jsonLd) ? result.structured.jsonLd : [result.structured.jsonLd];
-    const stripped = items.map((item) => {
-      if (item && typeof item === "object" && "description" in item) {
-        const { description: _, ...rest } = item as Record<string, unknown>;
-        return rest;
-      }
-      return item;
-    });
-    compact.structured = { jsonLd: stripped.length === 1 ? stripped[0] : stripped };
-  }
-  return compact;
-}
-
 async function callSmartFetch(args: unknown, deps: SmartFetchMcpServerDeps): Promise<CallToolResult> {
   const started = deps.clock.nowMs();
   try {
-    normalizeSmartFetchInput(args);
+    const normalized = normalizeSmartFetchInput(args);
     requireScope(deps.auth, requiredScopeForSmartFetch(args));
     const result = await deps.smartFetch.execute(args, { fetchedAt: new Date(deps.clock.nowMs()).toISOString() });
     await auditResult(deps, result);
     return {
       content: [{ type: "text", text: resultToMcpText(result) }],
-      structuredContent: compactResult(result),
+      structuredContent: buildStructuredContent(result, normalized.debug),
     };
   } catch (error) {
     await auditFailure(deps, args, started, error);

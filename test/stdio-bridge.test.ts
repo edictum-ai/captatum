@@ -106,6 +106,32 @@ test("local mode runs the transform default with no token, matching hosted seman
   await ctx.close();
 });
 
+test("debug flag gates heavy diagnostic fields through the real MCP server", async () => {
+  // HTML carries structured data so `structured` is present and debug-gating is observable.
+  const richHtml = `<html><head><title>T</title><meta property="og:title" content="Debug Fixture"></head><main>Body</main></html>`;
+  const ctx = await connect({ fetcher: new FakeFetcher(richHtml) });
+
+  const lean = await ctx.client.callTool({
+    name: "smart_fetch",
+    arguments: { url: "https://fixture.test/", output: "raw" },
+  });
+  const leanShape = lean.structuredContent as Record<string, unknown>;
+  assert.equal("timings" in leanShape, false, "timings leaked into default payload");
+  assert.equal("structured" in leanShape, false, "structured leaked into default payload");
+  assert.equal("attempts" in leanShape, false, "attempts leaked into default payload");
+
+  const debug = await ctx.client.callTool({
+    name: "smart_fetch",
+    arguments: { url: "https://fixture.test/", output: "raw", debug: true },
+  });
+  const debugShape = debug.structuredContent as Record<string, unknown>;
+  assert.ok(Array.isArray(debugShape.attempts), "debug: true must expose attempts");
+  assert.ok(typeof debugShape.timings === "object", "debug: true must expose timings");
+  assert.ok(typeof debugShape.structured === "object", "debug: true must expose structured");
+
+  await ctx.close();
+});
+
 interface ConnectOptions {
   fetcher: FetcherPort;
   transformer?: TransformPort;

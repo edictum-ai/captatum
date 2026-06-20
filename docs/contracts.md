@@ -53,8 +53,9 @@ One tool. Input (v0):
 | `maxBytes` | no | Response byte cap (decompressed). Default 5 MB, server hard-capped. |
 | `timeoutMs` | no | Per-tier wall-clock. Default 15 s (Tier-1/2), 20 s (Tier-3). |
 | `allowRender` | no | Default **false**. If false, Tier-3 is skipped and provenance reports `render-blocked`. |
+| `debug` | no | Default **false**. When true, the MCP `structuredContent` adds heavy diagnostic fields (`attempts`, `timings`, full `structured` incl. JSON-LD `description`/`articleBody`, `redirects`, `durationMs`, `httpContentType`, `contentSha256`, `provenanceHash`, verbose `transform`). Default payload is lean (see "MCP structuredContent"). |
 
-**Default behavior is `output: summary`** — resolved content is passed through the Transform router (free-first OpenRouter, or local Ollama) to produce a token-efficient answer to `prompt`. This is exactly the role WebFetch's Haiku step plays, but cheaper and fed by accurate rendered/extracted content. `output: raw` returns the clean resolved content (markdown + parsed structured data) with no LLM pass. Output is MCP `text` with a provenance line as the first line (HTML-comment-wrapped, always model-visible), mirrored as `structuredContent` per the Result schema. Token-efficiency signals (`bytes`, `contentType`, `transform.inTokens/outTokens`) let the caller follow up.
+**Default behavior is `output: summary`** — resolved content is passed through the Transform router (free-first OpenRouter, or local Ollama) to produce a token-efficient answer to `prompt`. This is exactly the role WebFetch's Haiku step plays, but cheaper and fed by accurate rendered/extracted content. `output: raw` returns the clean resolved content (markdown + parsed structured data) with no LLM pass. Output is MCP `text` with a provenance line as the first line (HTML-comment-wrapped, always model-visible). The companion `structuredContent` is a **lean agent payload** (see "MCP structuredContent"), not the full Result — heavy fields are gated behind `debug`. Token-efficiency signals (`bytes`, `contentType`, `transform.inTokens/outTokens`) let the caller follow up.
 
 ## Provenance / Result schema
 
@@ -79,7 +80,7 @@ Result {
   attempts: [{ step, tier, outcome, status?, durationMs, bytes?, reason? }],
   contentType,
   title,                                          // when derivable
-  structured: { canonicalUrl?, jsonLd?, og?, meta?, appState? }, // parsed from raw HTML (present when found)
+  structured: { canonicalUrl?, jsonLd?, og?, meta?, appState?, images? }, // parsed from raw HTML (present when found); images = bounded absolute http(s) image URLs (og:image*, JSON-LD image/ImageObject, <img>/<source srcset>); private/localhost hosts stripped, never fetched by this service
   transform: { provider, model?, free?, inTokens?, outTokens?, latencyMs?, costUsd?, reason?, schemaIssue? }, // present on summary/extract or fallback; schemaIssue carries the non-fatal extract-schema advisory message
   timings: { totalMs, fetchMs, renderMs?, transformMs? },
   errors: [{ code, message }],
@@ -93,6 +94,70 @@ core still returns a contract-shaped `Result`: `code: 0`,
 `codeText: "FETCH_REJECTED"`, `tier: "error"`, `resolvedVia:
 "guarded-fetch"`, `errors[0]` preserves the original guarded-fetch
 `{ code, message }`, and extraction/render/transform are not called.
+
+## MCP structuredContent (agent-facing, lean)
+
+The `Result` above is the **internal** record (full provenance, used by tests,
+the audit log, and `debug` mode). What the tool returns as MCP
+`structuredContent` is a **lean agent payload** built from that Result: it keeps
+the load-bearing primitives agents/connectors already read at the same paths
+(`result`, `tier`, `title`, `output`, `code`, `bytes`, `platform`, `errors`,
+lean `transform`) and adds a tiered envelope, while gating the heavy diagnostic
+fields behind `debug: true`. The MCP `text` content (provenance line + result)
+is unchanged either way — that is the primary agent channel.
+
+Default (lean) `structuredContent`:
+
+```
+{
+  schemaVersion: 1,
+  ok: boolean,                         // status !== "fail"
+  status: "pass" | "partial" | "fail",
+  url, finalUrl, title, output,
+  contentType: "article" | "job" | "pin" | "product" | "spa" | "unknown",   // classified from JSON-LD @type / og:type / host / jsRequired (distinct from the raw HTTP contentType)
+  result,                              // summary text | raw content | extracted JSON (string)
+  tier, code, codeText, bytes,         // kept for existing consumers
+  resolvedVia, platform, jsRequired,
+  access: { mainContentAccessible, gated, gateReason: "paywall"|"login"|"captcha"|"byte_cap"|"none" },
+  provenance: { tier, resolvedVia, code, bytes },     // convenience envelope
+  warnings: [{ code, message }],       // non-fatal (tier !== "error"): advisories, render-failed-but-tier1-ok, byte-cap truncation, extract_schema_invalid
+  images: ["https://…"],               // bounded absolute http(s) URLs for optional multimodal vision fetch
+  errors: [{ code, message }],         // fatal only (tier === "error")
+  transform: { provider, model?, free?, inTokens?, outTokens? },   // lean token-efficiency signal; present when a transform ran
+}
+```
+
+Rules:
+- **errors vs warnings:** fatal ⟺ `tier === "error"` (per the note above: "advisory entries never set `tier: error`"). Everything else in `Result.errors` becomes a `warning`.
+- **status:** `fail` when `tier === "error"` or no body content was returned; `partial` when content was returned but warnings exist or the summary/extract transform fell back to raw (`transform.provider === "none"`); else `pass`.
+- **access.gateReason:** `paywall` when JSON-LD declares `isAccessibleForFree: false`; `byte_cap` when the response was truncated at the cap; `login` when no content was returned on a page that needed JS we could not run (render-blocked/render-unavailable/`jsRequired`); else `none`.
+- **contentType:** `pin` for pinterest.*/pin.it hosts; else from the first content-bearing JSON-LD `@type` (`JobPosting`→job, `Product`→product, Article family→article); else `og:type`; else `spa` when `jsRequired`; else `unknown`.
+- **images:** never fetched by this service — surfaced for the calling agent's optional vision fetch. Private/loopback hosts are stripped (string check, no DNS).
+
+`debug: true` adds the heavy fields (`attempts`, `timings`, full `structured`
+including JSON-LD `description`/`articleBody`, `redirects`, `durationMs`,
+`httpContentType`, `contentSha256`, `provenanceHash`, and the verbose `transform`
+with `latencyMs`/`costUsd`/`schemaIssue`) and replaces the lean `transform` with
+the full one. The lean payload never carries the full `structured` blob, so
+JSON-LD `description`/`articleBody` no longer duplicate the `result` text by
+default. The lean `transform` keeps `reason` (the small fallback signal that
+distinguishes a real summary from a silent raw fallback); only `latencyMs`/
+`costUsd`/`schemaIssue` are debug-gated.
+
+**v0 wire-shape evolution (noted breaking changes vs the previous default
+`structuredContent`):** under v0 (fields may be added freely; removals/renames
+are breaking and noted here) the default payload now (a) drops `timings` and the
+`structured` blob (moved behind `debug`), (b) moves non-fatal advisories out of
+`errors` into `warnings` (so `errors` now holds fatal entries only — `tier:
+"error"`), and (c) trims `transform` to the lean fields above. The MCP `text`
+channel and the load-bearing primitives (`result`, `tier`, `title`, `output`,
+`code`, `bytes`, `platform`, `errors` for fatal cases) are unchanged. Consumers
+that read `structuredContent.timings`, `structuredContent.structured`, or
+success-tier `errors` should pass `debug: true` or read `warnings`. The domain
+`Result` and its `schemaVersion: 1` are unchanged — only the presentation changed.
+
+`access.gateReason: "captcha"` is reserved in the union but not yet emitted (no
+detector); captcha/challenge pages currently fall to `"login"` or `"none"`.
 
 ## Ports
 
@@ -222,7 +287,9 @@ transform seams; they do not require public internet or secrets.
 - `render-disabled.json` — an empty SPA shell with default `allowRender: false`
   returns `tier: "render-blocked"` and records the skipped render attempt.
 
-Example `structuredContent` shape from `raw-safe.json`:
+The fixture `structuredContent` field locks the **full domain `Result`** record
+returned by the use case (not the lean MCP payload above — see "MCP
+structuredContent"). Example from `raw-safe.json`:
 
 ```json
 {

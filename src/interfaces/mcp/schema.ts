@@ -30,6 +30,12 @@ export const smartFetchInputJsonSchema: Tool["inputSchema"] = {
     maxBytes: { type: "integer", minimum: 1, description: "Decompressed response byte cap." },
     timeoutMs: { type: "integer", minimum: 1, description: "Per-tier timeout in milliseconds." },
     allowRender: { type: "boolean", default: false, description: "Allow gated Playwright render tier." },
+    debug: {
+      type: "boolean",
+      default: false,
+      description:
+        "Include heavy diagnostic fields in structuredContent (attempts, timings, full structured data, redirects, hashes). Defaults to a lean agent payload.",
+    },
   },
 };
 

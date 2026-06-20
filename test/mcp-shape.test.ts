@@ -1,0 +1,253 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { Result } from "../src/domain/result.ts";
+import { buildStructuredContent } from "../src/interfaces/mcp/shape.ts";
+
+function base(overrides: Partial<Result> = {}): Result {
+  return {
+    url: "https://example.test/article",
+    bytes: 1000,
+    code: 200,
+    codeText: "OK",
+    durationMs: 50,
+    result: "Clean extracted content the agent can read.",
+    schemaVersion: 1,
+    finalUrl: "https://example.test/article",
+    redirects: [],
+    tier: 1,
+    output: "raw",
+    platform: { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" },
+    jsRequired: false,
+    resolvedVia: "tier1-jsonld",
+    attempts: [{ step: 1, tier: 1, outcome: "ok", status: 200, durationMs: 50, bytes: 1000, reason: "content-present" }],
+    contentType: "text/html; charset=utf-8",
+    title: "Example Article",
+    timings: { totalMs: 50, fetchMs: 50 },
+    errors: [],
+    ...overrides,
+  };
+}
+
+test("lean payload carries the tiered fields and load-bearing primitives", () => {
+  const shape = buildStructuredContent(base({ structured: { images: ["https://cdn.test/a.jpg"] } }), false);
+  assert.equal(shape.ok, true);
+  assert.equal(shape.status, "pass");
+  assert.equal(shape.contentType, "unknown");
+  assert.deepEqual(shape.access, { mainContentAccessible: true, gated: false, gateReason: "none" });
+  assert.deepEqual(shape.provenance, { tier: 1, resolvedVia: "tier1-jsonld", code: 200, bytes: 1000 });
+  assert.deepEqual(shape.images, ["https://cdn.test/a.jpg"]);
+  assert.deepEqual(shape.warnings, []);
+  assert.deepEqual(shape.errors, []);
+  // load-bearing primitives kept at top level for existing connectors
+  assert.equal(shape.result, "Clean extracted content the agent can read.");
+  assert.equal(shape.tier, 1);
+  assert.equal(shape.title, "Example Article");
+});
+
+test("heavy fields are absent by default and unlocked with debug: true", () => {
+  const lean = buildStructuredContent(base(), false);
+  assert.equal("attempts" in lean, false);
+  assert.equal("timings" in lean, false);
+  assert.equal("structured" in lean, false);
+  assert.equal("redirects" in lean, false);
+  assert.equal("contentSha256" in lean, false);
+  assert.equal("provenanceHash" in lean, false);
+
+  const debug = buildStructuredContent(
+    base({ structured: { jsonLd: { "@type": "Article", articleBody: "x".repeat(500) } } }),
+    true,
+  );
+  assert.ok(Array.isArray(debug.attempts));
+  assert.ok(typeof debug.timings === "object");
+  assert.ok(typeof debug.structured === "object");
+  assert.equal((debug.structured as { jsonLd: { articleBody: string } }).jsonLd.articleBody.length, 500);
+});
+
+test("transform stays lean by default; verbose fields only in debug", () => {
+  const transform = {
+    provider: "openrouter",
+    model: "deepseek/deepseek-v4-flash",
+    free: true,
+    inTokens: 1200,
+    outTokens: 80,
+    latencyMs: 900,
+    costUsd: 0.0001,
+    reason: "selected",
+  };
+  const lean = buildStructuredContent(base({ output: "summary", transform }), false);
+  assert.deepEqual(lean.transform, {
+    provider: "openrouter",
+    model: "deepseek/deepseek-v4-flash",
+    free: true,
+    inTokens: 1200,
+    outTokens: 80,
+    reason: "selected", // small + load-bearing fallback signal; stays in the lean payload
+  });
+
+  const debug = buildStructuredContent(base({ output: "summary", transform }), true);
+  assert.equal((debug.transform as { latencyMs: number }).latencyMs, 900);
+  assert.equal((debug.transform as { costUsd: number }).costUsd, 0.0001);
+});
+
+test("founder regression guard: JSON-LD description/articleBody never leak into the lean payload", () => {
+  const lean = buildStructuredContent(
+    base({ structured: { jsonLd: { "@type": "Article", description: "SSECRET_DESC", articleBody: "SSECRET_BODY" } } }),
+    false,
+  );
+  const serialized = JSON.stringify(lean);
+  assert.ok(!serialized.includes("SSECRET_DESC"), "description leaked into lean payload");
+  assert.ok(!serialized.includes("SSECRET_BODY"), "articleBody leaked into lean payload");
+  // ...but they ARE available in debug.
+  const debug = buildStructuredContent(
+    base({ structured: { jsonLd: { "@type": "Article", description: "SSECRET_DESC", articleBody: "SSECRET_BODY" } } }),
+    true,
+  );
+  assert.ok(JSON.stringify(debug).includes("SSECRET_BODY"));
+});
+
+test("lean payload preserves the legacy top-level field set connectors already read", () => {
+  const lean = buildStructuredContent(base(), false);
+  assert.deepEqual(
+    Object.keys(lean).sort(),
+    [
+      "access", "bytes", "code", "codeText", "contentType", "errors", "finalUrl",
+      "images", "jsRequired", "ok", "output", "platform", "provenance", "resolvedVia",
+      "result", "schemaVersion", "status", "tier", "title", "url", "warnings",
+    ],
+  );
+});
+
+test("tier 2 (platform adapter) success is status pass with content accessible", () => {
+  const shape = buildStructuredContent(
+    base({ tier: 2, resolvedVia: "tier2-adapter", platform: { adapterId: "ashby", label: "Ashby", detectedFrom: "tier2" } }),
+    false,
+  );
+  assert.equal(shape.status, "pass");
+  assert.equal(shape.access.mainContentAccessible, true);
+  assert.equal(shape.access.gateReason, "none");
+});
+
+test("tier none / render-unavailable with empty content is status fail", () => {
+  const none = buildStructuredContent(base({ tier: "none", result: "" }), false);
+  assert.equal(none.status, "fail");
+  assert.equal(none.access.mainContentAccessible, false);
+
+  const unavailable = buildStructuredContent(
+    base({ tier: "render-unavailable", resolvedVia: "render-unavailable", jsRequired: true, result: "" }),
+    false,
+  );
+  assert.equal(unavailable.status, "fail");
+  assert.equal(unavailable.access.gateReason, "login");
+});
+
+test("contentType handles @graph, @type arrays, full IRIs, and multi-type precedence", () => {
+  // @graph + full IRI
+  assert.equal(
+    buildStructuredContent(base({ structured: { jsonLd: { "@graph": [{ "@type": "https://schema.org/JobPosting" }] } } }), false).contentType,
+    "job",
+  );
+  // @type array: [Article, JobPosting] -> job wins by precedence (not array order)
+  assert.equal(
+    buildStructuredContent(base({ structured: { jsonLd: { "@type": ["Article", "JobPosting"] } } }), false).contentType,
+    "job",
+  );
+  // WebPage is NOT an article
+  assert.equal(
+    buildStructuredContent(base({ structured: { jsonLd: { "@type": "WebPage" } } }), false).contentType,
+    "unknown",
+  );
+  // explicit JobPosting on a pinterest.* host wins over the pin heuristic
+  assert.equal(
+    buildStructuredContent(
+      base({ finalUrl: "https://www.pinterest.com/careers/1", structured: { jsonLd: { "@type": "JobPosting" } } }),
+      false,
+    ).contentType,
+    "job",
+  );
+  // www.pin.it short link (no structured data) -> pin
+  assert.equal(buildStructuredContent(base({ finalUrl: "https://www.pin.it/abc" }), false).contentType, "pin");
+});
+
+test("render-failed-but-tier1-ok is a warning, not a fatal error", () => {
+  const shape = buildStructuredContent(
+    base({ tier: 1, result: "Tier-1 body present", errors: [{ code: "render_error", message: "Playwright crashed (advisory)" }] }),
+    false,
+  );
+  assert.deepEqual(shape.errors, []);
+  assert.deepEqual(shape.warnings, [{ code: "render_error", message: "Playwright crashed (advisory)" }]);
+  assert.equal(shape.status, "partial");
+});
+
+test("successful extract carries the JSON result and still classifies contentType", () => {
+  const shape = buildStructuredContent(
+    base({ output: "extract", result: JSON.stringify({ title: "Hello" }), structured: { jsonLd: { "@type": "Product" } } }),
+    false,
+  );
+  assert.equal(shape.result, JSON.stringify({ title: "Hello" }));
+  assert.equal(shape.contentType, "product");
+  assert.equal(shape.status, "pass");
+});
+
+test("images is an empty array (never absent) when none are found", () => {
+  const lean = buildStructuredContent(base(), false);
+  assert.ok("images" in lean);
+  assert.deepEqual(lean.images, []);
+});
+
+test("fatal errors (tier error) surface in errors; advisories become warnings", () => {
+  const rejected = base({
+    tier: "error",
+    code: 0,
+    codeText: "FETCH_REJECTED",
+    resolvedVia: "guarded-fetch",
+    result: "Host resolves to a private or reserved address",
+    jsRequired: false,
+    attempts: [{ step: 1, tier: 1, outcome: "block", durationMs: 0, reason: "private_address" }],
+    errors: [{ code: "private_address", message: "Host resolves to a private or reserved address" }],
+  });
+  const shape = buildStructuredContent(rejected, false);
+  assert.equal(shape.ok, false);
+  assert.equal(shape.status, "fail");
+  assert.deepEqual(shape.errors, [{ code: "private_address", message: "Host resolves to a private or reserved address" }]);
+  assert.deepEqual(shape.warnings, []);
+  assert.equal(shape.access.mainContentAccessible, false);
+});
+
+test("non-fatal advisory (extract_schema_invalid) is a warning and status partial", () => {
+  const shape = buildStructuredContent(
+    base({ output: "extract", errors: [{ code: "extract_schema_invalid", message: "missing required field" }] }),
+    false,
+  );
+  assert.equal(shape.status, "partial");
+  assert.deepEqual(shape.errors, []);
+  assert.deepEqual(shape.warnings, [{ code: "extract_schema_invalid", message: "missing required field" }]);
+});
+
+test("summary that fell back to raw (provider none) is status partial", () => {
+  const shape = buildStructuredContent(
+    base({ output: "raw", transform: { provider: "none", reason: "unconfigured" } }),
+    false,
+  );
+  assert.equal(shape.status, "partial");
+});
+
+test("contentType classification: job / product / article / pin / spa", () => {
+  assert.equal(buildStructuredContent(base({ structured: { jsonLd: { "@type": "JobPosting" } } }), false).contentType, "job");
+  assert.equal(buildStructuredContent(base({ structured: { jsonLd: { "@type": "Product" } } }), false).contentType, "product");
+  assert.equal(buildStructuredContent(base({ structured: { jsonLd: { "@type": "NewsArticle" } } }), false).contentType, "article");
+  assert.equal(buildStructuredContent(base({ structured: { og: { "og:type": "article" } } }), false).contentType, "article");
+  assert.equal(buildStructuredContent(base({ finalUrl: "https://www.pinterest.com/pin/123/" }), false).contentType, "pin");
+  assert.equal(buildStructuredContent(base({ jsRequired: true, tier: "render-blocked", resolvedVia: "render-blocked", result: "" }), false).contentType, "spa");
+});
+
+test("access gating: paywall / byte_cap / login", () => {
+  const paywall = buildStructuredContent(base({ structured: { jsonLd: { "@type": "Article", isAccessibleForFree: false } } }), false);
+  assert.deepEqual(paywall.access, { mainContentAccessible: true, gated: true, gateReason: "paywall" });
+
+  const truncated = buildStructuredContent(base({ errors: [{ code: "max_bytes", message: "Content truncated at the byte cap" }] }), false);
+  assert.deepEqual(truncated.access, { mainContentAccessible: true, gated: true, gateReason: "byte_cap" });
+
+  const login = buildStructuredContent(base({ jsRequired: true, tier: "render-blocked", resolvedVia: "render-blocked", result: "" }), false);
+  assert.deepEqual(login.access, { mainContentAccessible: false, gated: true, gateReason: "login" });
+  assert.equal(login.status, "fail");
+});

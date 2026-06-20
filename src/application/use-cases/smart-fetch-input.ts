@@ -21,6 +21,7 @@ const smartFetchInputSchema = z.object({
   maxBytes: positiveInteger.optional(),
   timeoutMs: positiveInteger.optional(),
   allowRender: z.boolean().optional(),
+  debug: z.boolean().optional(),
 }).strict();
 
 export interface SmartFetchDefaults {
@@ -53,6 +54,7 @@ export interface SmartFetchInput {
   maxBytes?: number;
   timeoutMs?: number;
   allowRender?: boolean;
+  debug?: boolean;
 }
 
 export interface NormalizedSmartFetchInput {
@@ -67,6 +69,8 @@ export interface NormalizedSmartFetchInput {
   renderTimeoutMs: number;
   maxHops: number;
   allowRender: boolean;
+  /** Presentation-only flag: unlock heavy diagnostic fields in the MCP payload. */
+  debug: boolean;
 }
 
 export interface ContractErrorBody {
@@ -101,6 +105,7 @@ export function normalizeSmartFetchInput(
     renderTimeoutMs: parsed.timeoutMs ?? defaults.renderTimeoutMs,
     maxHops: defaults.maxHops,
     allowRender: parsed.allowRender ?? defaults.allowRender,
+    debug: parsed.debug ?? false,
   };
 }
 

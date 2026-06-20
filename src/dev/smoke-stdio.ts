@@ -81,6 +81,9 @@ console.log("--- smart-fetch local stdio bridge smoke ---");
 console.log(text);
 console.log(JSON.stringify({
   schemaVersion: result.schemaVersion,
+  ok: result.ok,
+  status: result.status,
+  contentType: result.contentType,
   tier: result.tier,
   output: result.output,
   finalUrl: result.finalUrl,
@@ -88,6 +91,8 @@ console.log(JSON.stringify({
   resolvedVia: result.resolvedVia,
   jsRequired: result.jsRequired,
   bytes: result.bytes,
+  images: result.images,
+  access: result.access,
 }, null, 2));
 
 function assertContractShape(value: unknown): asserts value is Record<string, unknown> {
@@ -95,10 +100,20 @@ function assertContractShape(value: unknown): asserts value is Record<string, un
     throw new Error("stdio smoke: result is not contract-shaped structuredContent");
   }
   const record = value as Record<string, unknown>;
-  const missing = ["schemaVersion", "finalUrl", "tier", "output", "platform", "resolvedVia", "jsRequired", "timings"]
-    .filter((key) => !(key in record));
+  const required = [
+    "schemaVersion", "ok", "status", "finalUrl", "tier", "output",
+    "platform", "resolvedVia", "jsRequired", "result", "contentType",
+    "access", "provenance", "warnings", "images", "errors",
+  ];
+  const missing = required.filter((key) => !(key in record));
   if (missing.length) {
-    throw new Error(`stdio smoke: result missing contract fields: ${missing.join(", ")}`);
+    throw new Error(`stdio smoke: result missing lean contract fields: ${missing.join(", ")}`);
+  }
+  // Heavy fields are debug-gated and must be absent from the default payload.
+  const leaked = ["attempts", "timings", "structured", "redirects"]
+    .filter((key) => key in record);
+  if (leaked.length) {
+    throw new Error(`stdio smoke: heavy fields leaked into default payload: ${leaked.join(", ")}`);
   }
   if (record.schemaVersion !== 1 || record.output !== "raw") {
     throw new Error(`stdio smoke: unexpected provenance schemaVersion/output: ${JSON.stringify(record)}`);

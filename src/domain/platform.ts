@@ -33,4 +33,12 @@ export interface StructuredData {
   og?: Record<string, string>;
   meta?: Record<string, string>;
   appState?: unknown;
+  /**
+   * Absolute, deduped, bounded http(s) image URLs derived from og:image*,
+   * JSON-LD image/thumbnailUrl/ImageObject, and `<img src>`/`<source srcset>`.
+   * Surfaced to the agent for optional multimodal vision fetch; never fetched
+   * by this service. Private-IP / localhost hosts are stripped (no DNS — string
+   * check only) so internal targets are not advertised externally.
+   */
+  images?: string[];
 }

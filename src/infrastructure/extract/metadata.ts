@@ -2,6 +2,7 @@ import type { ProvenanceError } from "../../domain/result.ts";
 import type { StructuredData } from "../../domain/platform.ts";
 import { collapseWhitespace, decodeHtmlEntities } from "./entities.ts";
 import { extractAppState } from "./app-state.ts";
+import { extractImages } from "./images.ts";
 import { findElements, findStartTags, firstAttr } from "./html.ts";
 import { parseSafeJson, type SafeJsonIssue } from "./safe-json.ts";
 
@@ -31,6 +32,8 @@ export function extractPageMetadata(
   if (Object.keys(og).length > 0) structured.og = og;
   if (Object.keys(meta).length > 0) structured.meta = meta;
   if (appState !== undefined) structured.appState = appState;
+  const images = extractImages(html, baseUrl, og, jsonLd);
+  if (images) structured.images = images;
 
   return { title, structured };
 }
