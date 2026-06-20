@@ -157,14 +157,17 @@ export class SmartFetchUseCase {
     base.result = transformed.result;
     base.output = transformed.info.provider === "none" ? "raw" : request.requestedOutput;
     base.transform = transformed.info;
-    // The transform fell back to raw content (unconfigured / no model fit / rawFallback).
-    // Bound it so a failed summary does not dump the entire page into the agent context.
-    if (transformed.info.provider === "none") {
-      base.result = fallbackExcerpt(base.result);
+    // Non-fatal: primary model(s) failed and the router fell back — surface it so
+    // status becomes `partial` (not `pass`) and the caller knows the output may be lower quality.
+    if (transformed.info.fallbackFrom) {
+      base.errors.push({
+        code: "transform_model_fallback",
+        message: `Primary model(s) ${transformed.info.fallbackFrom} failed; produced this ${base.output} with ${transformed.info.model ?? transformed.info.provider}. It may be lower quality — retry if it looks off.`,
+      });
     }
-    // Non-fatal: extract returned parsed JSON that violated the requested schema.
-    // The data is kept (advisory), but the mismatch is surfaced so the caller
-    // is not silently handed schema-violating structured data.
+    // Token-safe: bound a raw fallback so a failed summary does not dump the whole page.
+    if (transformed.info.provider === "none") base.result = fallbackExcerpt(base.result);
+    // Non-fatal advisory: extract returned parsed JSON that violated the requested schema.
     if (transformed.info.schemaIssue) {
       base.errors.push({ code: "extract_schema_invalid", message: transformed.info.schemaIssue });
     }

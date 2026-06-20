@@ -309,6 +309,33 @@ test("transform failure on a large page returns a bounded excerpt, not the full 
   assert.deepEqual(result.errors, [{ code: "transform_provider_failed", message: "upstream broke" }]);
 });
 
+test("router fallback surfaces fallbackFrom on the transform info", async () => {
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [
+      candidate("openrouter", "deepseek/deepseek-v4-flash"),
+      candidate("openrouter", "openrouter/auto"),
+    ],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      if (input.model === "deepseek/deepseek-v4-flash") throw new Error("empty completion");
+      return { text: "Real summary produced by the fallback model." };
+    },
+  };
+  const transformer = new LlmTransformer({
+    router: new ModelRouter(provider.candidates()),
+    providers: { openrouter: provider },
+  });
+  const result = await transformer.transform({
+    mode: "summarize",
+    output: "summary",
+    content: "page body",
+    prompt: "Summarize",
+  });
+  assert.equal(result.info.model, "openrouter/auto");
+  assert.equal(result.info.fallbackFrom, "deepseek/deepseek-v4-flash");
+  assert.equal(result.result, "Real summary produced by the fallback model.");
+});
+
 test("router feedback demotes flaky free model before local fallback", () => {
   const router = new ModelRouter([
     candidate("openrouter", "free/model", { free: true }),

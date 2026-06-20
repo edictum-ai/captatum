@@ -34,6 +34,14 @@ export interface TransformInfo {
    * case surfaces it as a non-fatal `extract_schema_invalid` error.
    */
   schemaIssue?: string;
+  /**
+   * Comma-separated list of candidate models that FAILED before the successful
+   * one was used (the router fell back). Present only when a fallback occurred;
+   * the use case surfaces it as a non-fatal `transform_model_fallback` warning
+   * so the caller knows the output may be lower quality (and `status` becomes
+   * `partial` rather than `pass`).
+   */
+  fallbackFrom?: string;
 }
 
 export interface Timings {

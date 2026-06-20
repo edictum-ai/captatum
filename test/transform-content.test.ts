@@ -33,6 +33,26 @@ test("transformContent appends JSON-LD as verified fields when present", () => {
   assert.ok(c.includes("Verified structured data (JSON-LD)"));
 });
 
+test("transformContent strips articleBody/description from JSON-LD (keeps metadata)", () => {
+  const c = transformContent(bare({
+    result: "visible body text",
+    structured: {
+      jsonLd: {
+        "@type": "NewsArticle",
+        headline: "H",
+        articleBody: "HUGE DUPLICATED BODY TEXT",
+        description: "long verbose description",
+        author: { "@type": "Person", name: "Ada" },
+      },
+    },
+  }));
+  assert.ok(c.includes("visible body text"), "body still present");
+  assert.ok(c.includes("NewsArticle"), "metadata kept");
+  assert.ok(c.includes("Ada"), "nested metadata kept");
+  assert.ok(!c.includes("HUGE DUPLICATED BODY TEXT"), "articleBody must be stripped");
+  assert.ok(!c.includes("long verbose description"), "description must be stripped");
+});
+
 test("transformContent has no preamble when no metadata", () => {
   const c = transformContent(bare({ result: "just body" }));
   assert.equal(c, "just body");

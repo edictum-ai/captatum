@@ -132,6 +132,8 @@ export class LlmTransformer implements TransformPort {
           latencyMs,
           costUsd: generated.costUsd,
           ...(finalized.schemaIssue ? { schemaIssue: finalized.schemaIssue } : {}),
+          // tried holds every candidate that failed before this one succeeded.
+          ...(tried.length > 0 ? { fallbackFrom: tried.join(", ") } : {}),
         },
       };
     }
