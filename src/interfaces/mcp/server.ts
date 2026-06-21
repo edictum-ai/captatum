@@ -93,6 +93,9 @@ async function auditResult(deps: SmartFetchMcpServerDeps, result: Result): Promi
     durationMs: result.durationMs,
     transformProvider: result.transform?.provider,
     transformModel: result.transform?.model,
+    transformCostUsd: result.transform?.costUsd,
+    transformInTokens: result.transform?.inTokens,
+    transformOutTokens: result.transform?.outTokens,
   });
 }
 

@@ -35,6 +35,10 @@ export interface ToolAuditEvent {
   durationMs: number;
   transformProvider?: string;
   transformModel?: string;
+  /** Per-call transform cost in USD (from the provider's usage.cost). Queryable in CloudWatch for spend tracking. */
+  transformCostUsd?: number;
+  transformInTokens?: number;
+  transformOutTokens?: number;
 }
 
 export interface AuditLoggerPort {
