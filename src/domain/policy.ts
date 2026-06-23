@@ -3,14 +3,29 @@
  * See docs/contracts.md "Security controls" and docs/threat-model.md.
  */
 export const PRIVATE_IPV4_CIDRS: readonly string[] = [
+  "0.0.0.0/8", // "this network"
   "10.0.0.0/8", // private
-  "172.16.0.0/12", // private
-  "192.168.0.0/16", // private
+  "100.64.0.0/10", // CGNAT
   "127.0.0.0/8", // loopback
   "169.254.0.0/16", // link-local incl. cloud metadata (169.254.169.254)
-  "0.0.0.0/8", // "this network"
-  "100.64.0.0/10", // CGNAT
+  "172.16.0.0/12", // private
+  // 192.0.0.0/24 (IETF Protocol Assignments) is reserved except the globally-
+  // reachable anycast 192.0.0.9/.10 (kept allowed) — block the rest.
+  "192.0.0.0/29",
+  "192.0.0.8/32",
+  "192.0.0.11/32",
+  "192.0.0.12/30",
+  "192.0.0.16/28",
+  "192.0.0.32/27",
+  "192.0.0.64/26",
+  "192.0.0.128/25",
+  "192.0.2.0/24", // TEST-NET-1 (documentation)
+  "192.168.0.0/16", // private
+  "198.18.0.0/15", // benchmarking (RFC 2544)
+  "198.51.100.0/24", // TEST-NET-2 (documentation)
+  "203.0.113.0/24", // TEST-NET-3 (documentation)
   "224.0.0.0/4", // multicast
+  "240.0.0.0/4", // reserved for future use (incl. 255.255.255.255 broadcast)
 ];
 
 /**
@@ -18,12 +33,21 @@ export const PRIVATE_IPV4_CIDRS: readonly string[] = [
  */
 export const PRIVATE_IPV6_CIDRS: readonly string[] = [
   "::1/128", // loopback
+  "::/128", // unspecified
+  "::/96", // IPv4-compatible (deprecated but blocked)
+  "::ffff:0:0/96", // IPv4-mapped
+  "64:ff9b::/96", // NAT64 well-known prefix
+  "64:ff9b:1::/48", // NAT64 local-use prefix (not globally reachable)
+  "100::/64", // discard (RFC 6666)
+  "2001::/32", // Teredo
+  "2001:2::/48", // benchmarking (RFC 5180)
+  "2001:db8::/32", // documentation (RFC 3849)
+  "2002::/16", // 6to4
+  "3fff::/20", // documentation (RFC 9637)
+  "fec0::/10", // site-local (deprecated)
   "fe80::/10", // link-local
   "fc00::/7", // unique-local
   "ff00::/8", // multicast
-  "::ffff:0:0/96", // IPv4-mapped
-  "64:ff9b::/96", // NAT64 well-known prefix
-  "::/96", // IPv4-compatible (deprecated but blocked)
 ];
 
 /**
