@@ -151,13 +151,13 @@ function validateObject(value: unknown, schema: Record<string, unknown>, path: s
     return invalid(`${path} schema required must be an array of strings`);
   }
   for (const key of schema.required ?? []) {
-    if (!(key in value)) return invalid(`${path}.${key} is required`);
+    if (!Object.hasOwn(value, key)) return invalid(`${path}.${key} is required`);
   }
 
   const properties = objectMap(schema.properties, "properties", path);
   if (!properties.valid) return properties;
   for (const [key, propertySchema] of Object.entries(properties.value)) {
-    if (key in value) {
+    if (Object.hasOwn(value, key)) {
       const result = validateAt(value[key], propertySchema, `${path}.${key}`, stack);
       if (!result.valid) return result;
     }
@@ -176,7 +176,10 @@ function validateAdditionalProperties(
   if (additional !== undefined && typeof additional !== "boolean" && !isRecord(additional)) {
     return invalid(`${path} schema additionalProperties must be a boolean or schema`);
   }
-  for (const key of Object.keys(value).filter((candidate) => !(candidate in properties))) {
+  // Object.hasOwn, not `in`: `in` walks the prototype chain, so an attacker-set
+  // own `constructor`/`toString` key would match the inherited property and slip
+  // past additionalProperties:false.
+  for (const key of Object.keys(value).filter((candidate) => !Object.hasOwn(properties, candidate))) {
     if (additional === false) return invalid(`${path}.${key} is not allowed`);
     if (additional !== undefined && additional !== true) {
       const result = validateAt(value[key], additional, `${path}.${key}`, stack);

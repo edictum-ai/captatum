@@ -91,7 +91,24 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function deepEqual(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+/**
+ * Deterministic JSON so two objects equal up to key order compare equal —
+ * uniqueItems/enum/const must treat {a:1,b:2} and {b:2,a:1} as the same value,
+ * and JSON.stringify preserves insertion order (so it would not). Recursively
+ * sorts object keys; arrays preserve order.
+ */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const entries = Object.keys(record).sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 export function hasDuplicate(values: unknown[]): boolean {
