@@ -58,6 +58,12 @@ export function parseRefreshFamilyId(refreshToken: string): string | null {
 }
 
 export function verifyPkceS256(verifier: string, challenge: string): boolean {
+  // RFC 7636 §4.1/§4.2: the verifier is 43-128 unreserved chars and the S256
+  // challenge is the 43-char base64url sha256 of it. Reject malformed inputs
+  // outright — notably a 1-char verifier, whose challenge could otherwise match
+  // a stored challenge.
+  if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return false;
+  if (!/^[A-Za-z0-9_-]{43}$/.test(challenge)) return false;
   const actual = pkceChallenge(verifier);
   const left = Buffer.from(actual);
   const right = Buffer.from(challenge);

@@ -24,7 +24,7 @@ const REDIRECT = "https://client.test/callback";
 
 test("PKCE S256 authorize/approve/token flow issues ES256 access token and hashed refresh", async () => {
   const ctx = await setup();
-  const verifier = "correct-horse-battery-staple-123456789";
+  const verifier = "correct-horse-battery-staple-0123456789abcdef0123";
   const approved = await approveCode(ctx, verifier, "fetch:read fetch:transform");
 
   const token = await postForm(ctx, "/oauth/token", {
@@ -83,7 +83,7 @@ test("authorize rejects redirects outside the allowlist without a redirect", asy
 
 test("invalid verifier consumes auth code and prevents later reuse", async () => {
   const ctx = await setup();
-  const verifier = "valid-verifier-12345678901234567890";
+  const verifier = "valid-verifier-123456789012345678901234567890123";
   const approved = await approveCode(ctx, verifier, "fetch:read");
 
   const bad = await postForm(ctx, "/oauth/token", {
@@ -91,7 +91,7 @@ test("invalid verifier consumes auth code and prevents later reuse", async () =>
     code: approved.code,
     redirect_uri: REDIRECT,
     client_id: "client-1",
-    code_verifier: "wrong-verifier-12345678901234567890",
+    code_verifier: "wrong-verifier-123456789012345678901234567890123",
   });
   assert.equal(bad.statusCode, 400);
   assert.equal((bad.json() as ErrorJson).error.code, "invalid_grant");
@@ -110,7 +110,7 @@ test("invalid verifier consumes auth code and prevents later reuse", async () =>
 
 test("expired auth code returns structured auth error and no token", async () => {
   const ctx = await setup();
-  const verifier = "valid-verifier-abcdef123456789012345";
+  const verifier = "valid-verifier-abcdef123456789012345678901234567890123";
   const approved = await approveCode(ctx, verifier, "fetch:read");
   ctx.clock.advance(301_000);
 
@@ -130,7 +130,7 @@ test("expired auth code returns structured auth error and no token", async () =>
 
 test("refresh token rotates and replay revokes the family", async () => {
   const ctx = await setup();
-  const initial = await exchangeCode(ctx, "refresh-verifier-12345678901234567890");
+  const initial = await exchangeCode(ctx, "refresh-verifier-123456789012345678901234567890123");
 
   const rotated = await postForm(ctx, "/oauth/token", {
     grant_type: "refresh_token",
@@ -157,6 +157,42 @@ test("refresh token rotates and replay revokes the family", async () => {
   assert.equal(afterReplay.statusCode, 400);
   assert.equal((afterReplay.json() as ErrorJson).error.code, "invalid_grant");
   assert.equal(ctx.store.revokedFamilyCount(), 1);
+  await ctx.app.close();
+});
+
+test("PKCE rejects a too-short verifier (RFC 7636 requires 43-128 chars)", async () => {
+  const ctx = await setup();
+  const approved = await approveCode(ctx, "valid-verifier-123456789012345678901234567890123", "fetch:read");
+  const bad = await postForm(ctx, "/oauth/token", {
+    grant_type: "authorization_code",
+    code: approved.code,
+    redirect_uri: REDIRECT,
+    client_id: "client-1",
+    code_verifier: "x", // 1 char — RFC 7636 §4.1 requires 43-128
+  });
+  assert.equal(bad.statusCode, 400);
+  assert.equal((bad.json() as ErrorJson).error.code, "invalid_grant");
+  await ctx.app.close();
+});
+
+test("refresh with a mismatched client_id is rejected and revokes the family (RFC 6749 §6)", async () => {
+  const ctx = await setup();
+  const initial = await exchangeCode(ctx, "refresh-verifier-123456789012345678901234567890123");
+  // The token is bound to client-1; rotating with a different client_id is theft/replay.
+  const mismatched = await postForm(ctx, "/oauth/token", {
+    grant_type: "refresh_token",
+    refresh_token: initial.refresh_token,
+    client_id: "client-2",
+  });
+  assert.equal(mismatched.statusCode, 400);
+  assert.equal((mismatched.json() as ErrorJson).error.code, "invalid_grant");
+  // The mismatch revoked the family, so even the legitimate client can no longer use it.
+  const legit = await postForm(ctx, "/oauth/token", {
+    grant_type: "refresh_token",
+    refresh_token: initial.refresh_token,
+    client_id: "client-1",
+  });
+  assert.equal(legit.statusCode, 400);
   await ctx.app.close();
 });
 

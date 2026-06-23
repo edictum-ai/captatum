@@ -105,6 +105,13 @@ export class OAuthTokenUseCase {
         new Date(this.clock.nowMs()).toISOString(),
       );
       if (!rotated) throw new OAuthError("invalid_grant", "Refresh token is invalid");
+      // RFC 6749 §6: the refresh grant must be bound to the token's client. The
+      // rotated record carries the STORED client_id; a missing/mismatched
+      // client_id signals theft/replay — revoke the family and reject.
+      if (!input.clientId || input.clientId !== rotated.clientId) {
+        await this.store.revokeRefreshTokenFamily(familyId, new Date(this.clock.nowMs()).toISOString());
+        throw new OAuthError("invalid_grant", "Refresh token client binding is invalid");
+      }
       await this.auditToken("oauth.token.refresh", "success", rotated);
       return await this.tokenResponse(rotated, nextRaw);
     } catch (error) {
