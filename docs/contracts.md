@@ -121,9 +121,13 @@ core still returns a contract-shaped `Result`: `code: 0`,
   or custom-resolver API.
 - **Tier-2 (optional).** If a registered `PlatformAdapter` detects the URL, it resolves via that platform's public API (clean JSON), short-circuiting extraction/render. Adapters are optional and general; their endpoints live in adapter code/fixtures, not this contract.
 - **Tier-3 (core, gated by `allowRender`).** Lazy `import('playwright')`;
-  render with hard timeouts + request interception. Document/script/fetch/XHR/
-  stylesheet requests route through `FetcherPort`; image/font/media/analytics
-  URLs are checked with the same P1 URL/DNS private-IP guard and then aborted;
+  render with hard timeouts + request interception. Every non-aborted GET
+  (document/script/fetch/XHR/stylesheet/…) is **fulfilled** through `FetcherPort`
+  via `route.fulfill` — the browser never resolves or connects on its own, so the
+  DNS-rebinding and redirect TOCTOU that a `route.continue()` guard leaves open
+  are impossible, and every redirect hop is re-validated (`maxHops` enforced) by
+  the fetcher. Image/font/media/analytics URLs are checked with the same P1
+  URL/DNS private-IP guard and then aborted;
   websockets are closed; Service Workers are disabled; downloads are blocked;
   cumulative browser fetch bytes are capped. Final rendered HTML bytes that
   exceed the cap are **truncated** (UTF-8-safe) and surfaced as a non-fatal
@@ -185,7 +189,7 @@ Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). 
 
 - OUTBOUND rebinding-proof `guardedFetch`: scheme `http|https` only; reject raw CRLF; reject userinfo-bearing URLs and strip credentials from all sanitized URL values; resolve → `isPrivate` CIDR (v4 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16 incl. metadata, 0.0.0.0/8, 100.64/10, 224/4; v6 ::1, fe80/10, fc00/7, ff00/8, `::ffff:0:0/96`, NAT64 `64:ff9b::`, IPv4-compatible) → connect to the resolved IP (`node:https` with `servername`/`Host` = original host); manual redirects re-validated each hop (`maxHops=5`); decompressed-byte cap; `AbortController` timeout.
 - INBOUND: SDK transport Host/Origin DNS-rebinding protection.
-- TIER-3 in-browser SSRF: `page.route` guards every browser request; document/script/fetch/XHR/stylesheet requests are fulfilled only through `FetcherPort`; image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap (advisory truncation); browser in a separate process/container with no env — in-process launch keeps the OS sandbox ON (`chromiumSandbox` default true), and the hosted path uses a CDP sidecar container (`CAPTATUM_BROWSER_CDP_ENDPOINT`) where `--no-sandbox` is acceptable (container-isolated). The browser never runs in-process with `--no-sandbox` against the gateway.
+- TIER-3 in-browser SSRF: `page.route` intercepts every browser request; **every non-aborted GET is fulfilled through `FetcherPort`** (`route.fulfill`, never `route.continue`) so the browser makes no direct egress — connections are IP-pinned and every redirect hop is re-validated (`maxHops`); image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap (advisory truncation); browser in a separate process/container with no env — in-process launch keeps the OS sandbox ON (`chromiumSandbox` default true), and the hosted path uses a CDP sidecar container (`CAPTATUM_BROWSER_CDP_ENDPOINT`) where `--no-sandbox` is acceptable (container-isolated). The browser never runs in-process with `--no-sandbox` against the gateway.
 - Response guards: reject `Content-Length` > max before reading; stream through a counting `TransformStream`.
 - Logging: allow-list only (tier, finalUrl, platform, status, bytes, timing, blockReason); never body, never `Set-Cookie`/`Authorization`; canonicalize logged URLs to scheme+host when host is private. Per-call audit event.
 - Per-host throttle + global concurrency cap + in-flight URL dedupe + per-job max-egress-fetch counter.

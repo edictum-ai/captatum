@@ -77,6 +77,7 @@ export class PlaywrightRenderer implements RenderPort {
         acceptDownloads: false,
       });
       page = await context.newPage();
+      state.setMainFrame(page.mainFrame());
       await installPageControls(page, actions, input.timeoutMs);
       await page.route("**/*", (route) => state.handle(route));
       const response = await withTimeout(
@@ -97,10 +98,8 @@ export class PlaywrightRenderer implements RenderPort {
         }
       } catch { /* iframe capture best-effort */ }
       // Advisory byte cap: the rendered HTML is already in memory, so truncate
-      // at the cap and keep rendering (with a provenance note) rather than
-      // throwing the whole render away. Matches the advisory philosophy used
-      // when render itself fails. The fetch-path cap stays a hard reject (it is
-      // a pre-download bandwidth/abuse guard).
+      // at the cap and keep rendering with a provenance note rather than throwing
+      // it away. The fetch-path cap stays a hard reject (a pre-download abuse guard).
       const { bytes, truncated } = capRenderedBytes(content, input.maxBytes);
       const notice: ProvenanceError | undefined = truncated
         ? { code: "max_bytes", message: `Rendered content truncated at ${input.maxBytes} bytes` }

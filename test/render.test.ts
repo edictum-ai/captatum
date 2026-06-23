@@ -38,10 +38,13 @@ test("renderer launches sandboxed context with service workers and downloads dis
   ]);
 });
 
-test("renderer continues the public navigation and blocks private subresources", async () => {
+test("renderer fulfills the public navigation through the fetcher and blocks private subresources", async () => {
   const navUrl = "https://public.test/";
   const privateUrl = "http://169.254.169.254/latest.js";
-  const guard = new FakeGuard({
+  // The fetcher is now the SSRF enforcer: every non-aborted request resolves
+  // through fetchGuarded (IP-pinned, per-hop redirect revalidation). A private
+  // subresource is rejected here, not by a name-only browser guard.
+  const fetcher = new FakeFetcher({
     [privateUrl]: {
       rejected: true,
       code: "private_address",
@@ -52,11 +55,16 @@ test("renderer continues the public navigation and blocks private subresources",
     requests: [request(navUrl, "document", true), request(privateUrl, "script")],
   });
 
-  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard })
-    .render(renderInput(new FakeFetcher()));
+  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(fetcher));
 
   assert.equal(result.rendered, true);
-  assert.equal(harness.routes[0]?.continued, true);
+  // The navigation is fulfilled with the fetcher's bytes — never route.continue()'d,
+  // so Chromium makes no egress of its own. Every request routed through the fetcher.
+  assert.equal(harness.routes[0]?.fulfilled, true);
+  assert.equal(harness.routes[0]?.continued, false);
+  assert.equal(harness.routes[0]?.body, "<html>ok</html>");
+  assert.deepEqual(fetcher.calls.map((call) => call.url), [navUrl, privateUrl]);
   assert.equal(harness.routes.at(-1)?.aborted, true);
   assert.deepEqual(result.actions.at(-1), {
     type: "request-blocked",
@@ -64,6 +72,127 @@ test("renderer continues the public navigation and blocks private subresources",
     url: "http://169.254.169.254/latest.js",
     resourceType: "script",
   });
+});
+
+test("renderer fails closed when a navigation redirects (via the fetcher) to a private host", async () => {
+  const navUrl = "https://public.test/redirect";
+  // fetchGuarded follows redirects internally and rejects at the private hop;
+  // the browser never sees the redirect, so Playwright's continue-redirect FSM
+  // (TIER3-NAV-1) is out of the egress path entirely.
+  const fetcher = new FakeFetcher({
+    [navUrl]: {
+      rejected: true,
+      code: "private_address",
+      message: "Redirect target resolves to a private or reserved address",
+    },
+  });
+  const harness = new BrowserHarness({
+    requests: [request(navUrl, "document", true)],
+  });
+
+  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(fetcher));
+
+  assert.equal(result.rendered, false);
+  assert.equal(result.code, "private_address");
+  assert.equal(harness.routes[0]?.aborted, true);
+});
+
+test("renderer fulfills a navigation served without Content-Type as text/html (not a download)", async () => {
+  const navUrl = "https://public.test/";
+  // A navigation whose response carries no Content-Type must still render.
+  // Defaulting to application/octet-stream makes Chromium treat it as a download
+  // (page.goto throws) — a regression vs route.continue()'s MIME sniffing.
+  const fetcher = new FakeFetcher({
+    [navUrl]: { ...fetchResult("<html><body>ok</body></html>", navUrl), contentType: "" },
+  });
+  const harness = new BrowserHarness({ requests: [request(navUrl, "document", true)] });
+
+  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(fetcher));
+
+  assert.equal(result.rendered, true);
+  assert.equal(harness.routes[0]?.fulfilled, true);
+  assert.equal(harness.routes[0]?.contentType, "text/html; charset=utf-8");
+});
+
+test("renderer defaults a header-less script to text/javascript (Chromium won't execute text/html)", async () => {
+  const navUrl = "https://public.test/";
+  const scriptUrl = "https://cdn.test/app.js";
+  // A script whose CDN omits Content-Type must be served as a JS MIME — defaulting
+  // to text/html (as a global default would) makes Chromium refuse to run it.
+  const fetcher = new FakeFetcher({
+    [scriptUrl]: { ...fetchResult("document.body.dataset.app='ran';", scriptUrl), contentType: "" },
+  });
+  const harness = new BrowserHarness({
+    requests: [request(navUrl, "document", true), request(scriptUrl, "script")],
+  });
+
+  await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(fetcher));
+
+  assert.equal(harness.routes.at(-1)?.fulfilled, true);
+  assert.equal(harness.routes.at(-1)?.contentType, "text/javascript");
+});
+
+test("renderer keeps the main-frame finalUrl; an iframe navigation does not overwrite it", async () => {
+  const mainUrl = "https://public.test/";
+  const iframeUrl = "https://embed.test/frame";
+  // Both are navigations; the iframe is a subframe (mainFrame=false). Without the
+  // frame-based guard the iframe would overwrite finalUrl.
+  const fetcher = new FakeFetcher({
+    [iframeUrl]: fetchResult("<html>iframe</html>", iframeUrl),
+  });
+  const harness = new BrowserHarness({
+    requests: [request(mainUrl, "document", true), request(iframeUrl, "document", true, false)],
+  });
+
+  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(fetcher));
+
+  assert.equal(result.rendered, true);
+  if (!result.rendered) throw new Error("expected render success");
+  assert.equal(result.fetchResult.finalUrl, mainUrl);
+});
+
+test("renderer updates finalUrl on a later main-frame navigation (same-tab client-side nav)", async () => {
+  const firstUrl = "https://public.test/first";
+  const canonicalUrl = "https://public.test/canonical";
+  // A page that performs a client-side same-tab navigation after the first load
+  // (location.href = '/canonical') is a SECOND main-frame navigation; provenance
+  // must track it, not stay stuck on the first.
+  const fetcher = new FakeFetcher({
+    [canonicalUrl]: fetchResult("<html>canonical body</html>", canonicalUrl),
+  });
+  const harness = new BrowserHarness({
+    requests: [request(firstUrl, "document", true), request(canonicalUrl, "document", true)],
+  });
+
+  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(fetcher));
+
+  assert.equal(result.rendered, true);
+  if (!result.rendered) throw new Error("expected render success");
+  assert.equal(result.fetchResult.finalUrl, canonicalUrl);
+});
+
+test("renderer tolerates a navigation request whose frame() throws (early navigation)", async () => {
+  const navUrl = "https://public.test/early";
+  // Per Playwright docs, request.frame() throws for a navigation issued before
+  // its frame is created; isMainFrame must swallow that so the route still
+  // resolves instead of turning the render into render_error.
+  const harness = new BrowserHarness({
+    requests: [{
+      url: navUrl, resourceType: "document", navigation: true, mainFrame: true,
+      method: "GET", frameThrows: true,
+    }],
+  });
+
+  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(new FakeFetcher()));
+
+  assert.equal(result.rendered, true);
+  assert.equal(harness.routes[0]?.fulfilled, true);
 });
 
 test("renderer checks private image URLs before aborting blocked body types", async () => {
@@ -169,7 +298,9 @@ interface ScriptedRequest {
   url: string;
   resourceType: string;
   navigation: boolean;
+  mainFrame: boolean;
   method: string;
+  frameThrows?: boolean;
 }
 
 class BrowserHarness {
@@ -182,6 +313,10 @@ class BrowserHarness {
   browserClosed = false;
   downloadCanceled = false;
   websocketClosed = false;
+  // Stable frame sentinels so request.frame() === mainFrame distinguishes the
+  // top-level document from an iframe navigation (matches page.mainFrame()).
+  readonly mainFrame = {};
+  readonly subFrame = {};
   private readonly options: {
     requests?: ScriptedRequest[];
     content?: string;
@@ -228,9 +363,9 @@ class BrowserHarness {
   }
 
   private page() {
-    // Sentinel frame shared by mainFrame()/frames() so the renderer's iframe
-    // loop (skip frame === main) is a no-op when no extra frame is configured.
-    const mainFrame = {};
+    // mainFrame is the harness instance sentinel (=== the detector's mainFrame);
+    // extraFrame is a distinct object so the renderer's iframe loop (skip
+    // frame === main) captures it when configured.
     const extraFrame = this.options.extraFrameContent !== undefined
       ? { content: async () => this.options.extraFrameContent as string }
       : undefined;
@@ -254,8 +389,8 @@ class BrowserHarness {
       // (commit 9bba8aa) and captures iframe content (commit d50a3c9).
       waitForTimeout: async (_ms: number) => {},
       waitForLoadState: async (_state: string, _options?: { timeout?: number }) => {},
-      mainFrame: () => mainFrame,
-      frames: () => (extraFrame ? [mainFrame, extraFrame] : [mainFrame]),
+      mainFrame: () => this.mainFrame,
+      frames: () => (extraFrame ? [this.mainFrame, extraFrame] : [this.mainFrame]),
       content: async () => this.options.content ?? "<main>rendered</main>",
       url: () => "https://public.test/",
       close: async () => {},
@@ -266,7 +401,7 @@ class BrowserHarness {
     if (this.options.neverResolve) return await new Promise<never>(() => {});
     const requests = this.options.requests ?? [request(url, "document", true)];
     for (const scripted of requests) {
-      const route = new FakeRoute(scripted);
+      const route = new FakeRoute(scripted, this);
       this.routes.push(route);
       await this.routeHandler?.(route);
     }
@@ -283,11 +418,16 @@ class BrowserHarness {
 class FakeRoute {
   aborted = false;
   continued = false;
+  fulfilled = false;
   status = 0;
+  body = "";
+  contentType?: string;
   readonly scripted: ScriptedRequest;
+  private readonly harness: BrowserHarness;
 
-  constructor(scripted: ScriptedRequest) {
+  constructor(scripted: ScriptedRequest, harness: BrowserHarness) {
     this.scripted = scripted;
+    this.harness = harness;
   }
 
   request() {
@@ -296,11 +436,20 @@ class FakeRoute {
       method: () => this.scripted.method,
       resourceType: () => this.scripted.resourceType,
       isNavigationRequest: () => this.scripted.navigation,
+      frame: () => {
+        // Per Playwright docs, request.frame() throws for a navigation issued
+        // before its frame is created.
+        if (this.scripted.frameThrows) throw new Error("frame not created yet");
+        return this.scripted.mainFrame ? this.harness.mainFrame : this.harness.subFrame;
+      },
     };
   }
 
-  async fulfill(options: { status: number }): Promise<void> {
+  async fulfill(options: { status: number; body?: Uint8Array; contentType?: string }): Promise<void> {
+    this.fulfilled = true;
     this.status = options.status;
+    this.contentType = options.contentType;
+    this.body = options.body ? new TextDecoder().decode(options.body) : "";
   }
 
   async abort(): Promise<void> {
@@ -389,8 +538,8 @@ function renderInput(
   };
 }
 
-function request(url: string, resourceType: string, navigation = false): ScriptedRequest {
-  return { url, resourceType, navigation, method: "GET" };
+function request(url: string, resourceType: string, navigation = false, mainFrame = true): ScriptedRequest {
+  return { url, resourceType, navigation, mainFrame, method: "GET" };
 }
 
 function fetchResult(html: string, finalUrl: string): FetcherResult {

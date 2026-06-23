@@ -56,6 +56,8 @@ export interface PlaywrightRequest {
   method(): string;
   resourceType(): string;
   isNavigationRequest?(): boolean;
+  /** The frame that issued the request; === page.mainFrame() for top-level requests. */
+  frame?(): PlaywrightFrame;
 }
 
 export interface PlaywrightResponse {

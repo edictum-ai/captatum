@@ -52,10 +52,13 @@ the contract reference; this file is the security reasoning.
     original host) so DNS cannot rebind post-check.
   - manual redirects re-validated each hop, `maxHops=5`.
   - decompressed-byte cap; `AbortController` timeout.
-- Tier-3 in-browser SSRF: `page.route` guards every browser request before the
-  browser can egress. Document/script/fetch/XHR/stylesheet requests are fulfilled
-  only through `FetcherPort`; image/font/media/analytics URLs are checked with
-  the same P1 URL/DNS private-IP guard and then aborted. WebSockets are closed;
+- Tier-3 in-browser SSRF: `page.route` intercepts every browser request before
+  the browser can egress, and **every non-aborted GET is fulfilled through
+  `FetcherPort`** (`route.fulfill`, never `route.continue`) — the browser never
+  resolves or connects on its own, so DNS-rebinding and the redirect TOCTOU are
+  structurally impossible and every redirect hop is re-validated (`maxHops`).
+  Image/font/media/analytics URLs are checked with the same P1 URL/DNS
+  private-IP guard and then aborted. WebSockets are closed;
   Service Workers are disabled; downloads are blocked; render-byte cap is
   enforced; the browser runs with an empty environment. **Sandbox model: an
   in-process launch keeps the OS sandbox ON (`chromiumSandbox` defaults true —
@@ -63,10 +66,12 @@ the contract reference; this file is the security reasoning.
   Chromium in a separate sidecar container connected over CDP
   (`CAPTATUM_BROWSER_CDP_ENDPOINT`, `Dockerfile.browser`, `scripts/browser-sidecar.sh`);
   there `--no-sandbox` is acceptable because the container is the isolation
-  boundary and a browser compromise cannot reach the gateway's OAuth keys / DB.
-  Either way the browser never runs in-process with `--no-sandbox` inside the
-  gateway's blast radius. The `page.route` SSRF guard applies identically in both
-  modes.**
+  boundary. Blast-radius caveat: the fetcher-fulfillment control above closes the
+  page-content SSRF path, but on the current hosted deploy it does not by itself
+  fully bound a browser-process compromise — that needs separate network/role
+  isolation for the sidecar, tracked as its own infra control. Either way the
+  browser never runs in-process with `--no-sandbox` inside the gateway's blast
+  radius. The `page.route` SSRF guard applies identically in both modes.**
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
   (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted
   mode fails boot unless `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS` are
@@ -126,7 +131,11 @@ the contract reference; this file is the security reasoning.
   `169.254.169.254`, `::ffff:169.254.169.254`, `localhost`, `gopher://`, `file://`,
   `302 → 127.0.0.1`, and a DNS-rebind stub. The fixture list is
   `test/fixtures/security/ssrf-payloads.json`, exercised by
-  `test/ssrf-fixtures.test.ts`.
+  `test/ssrf-fixtures.test.ts` (Tier-1 guard). The Tier-3 in-browser path has its
+  own REAL-Chromium regression — a rebinding subresource, a redirect-to-private
+  navigation, and a normal-render sanity — in `test/integration/tier3-ssrf.test.ts`,
+  which drives a real Chromium through the fetcher-fulfillment path and asserts the
+  browser makes no direct egress.
 - No public hosted deployment before `OAUTH_SIGNING_PRIVATE_JWK` injection, the
   TiDB OAuth migration/provisioning, explicit `MCP_ALLOWED_HOSTS` /
   `MCP_ALLOWED_ORIGINS`, and authenticated client compatibility tests pass.
