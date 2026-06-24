@@ -60,8 +60,10 @@ export class PlaywrightRenderer implements RenderPort {
     try {
       const playwright = await this.loadPlaywright();
       if (this.cdpEndpoint) {
-        // Sidecar mode: connect ONCE to a long-lived Chromium in its own container
-        // (blast-radius separation), reuse across renders; never close it here.
+        // TIER3-CDP-1: CDP endpoint must be loopback (operator-set, validate).
+        let cdpHost = ""; try { cdpHost = new URL(this.cdpEndpoint).hostname; } catch {}
+        if (!["localhost", "127.0.0.1", "[::1]"].includes(cdpHost)) throw new RenderError("render_unavailable", "CDP endpoint must be loopback");
+        // Sidecar mode: connect to a long-lived Chromium; reuse, never close here.
         if (!this.cdpBrowser) this.cdpBrowser = await playwright.chromium.connectOverCDP(this.cdpEndpoint);
         browser = this.cdpBrowser;
       } else {
