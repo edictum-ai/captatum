@@ -32,13 +32,24 @@ export function loadAuthRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Aut
 }
 
 export function assertHostedProductionSecrets(env: NodeJS.ProcessEnv = process.env): void {
-  if (readFlavor(env) !== "hosted" || env.NODE_ENV !== "production") return;
+  if (readFlavor(env) !== "hosted") return;
   const missing = [
     ["OAUTH_CONSENT_SIGNING_SECRET", env.OAUTH_CONSENT_SIGNING_SECRET],
     ["OAUTH_SIGNING_PRIVATE_JWK", env.OAUTH_SIGNING_PRIVATE_JWK],
   ].filter(([, value]) => !value || !value.trim()).map(([name]) => name);
   if (missing.length) {
-    throw new AuthConfigError(`Hosted production requires ${missing.join(" and ")}`);
+    throw new AuthConfigError(`Hosted requires ${missing.join(" and ")}`);
+  }
+  // OAUTH-5: validate secret length + JWK shape so a misconfigured boot fails
+  // closed, not silently. jose rejects zero-length keys, but we don't want to
+  // depend on that across upgrades.
+  const consentSecret = env.OAUTH_CONSENT_SIGNING_SECRET ?? "";
+  if (consentSecret.trim().length < 32) {
+    throw new AuthConfigError("OAUTH_CONSENT_SIGNING_SECRET must be at least 32 characters");
+  }
+  const jwk = parsePrivateJwk(env.OAUTH_SIGNING_PRIVATE_JWK ?? "");
+  if (jwk.kty !== "EC" || jwk.crv !== "P-256" || !jwk.d || !jwk.x || !jwk.y) {
+    throw new AuthConfigError("OAUTH_SIGNING_PRIVATE_JWK must be an EC P-256 key with d, x, y");
   }
 }
 
