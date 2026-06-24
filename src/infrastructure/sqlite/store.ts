@@ -3,29 +3,8 @@ import type { AuthCodeRecord, RefreshTokenRecord, SaveAuthCodeInput, SaveRefresh
 import { StoreInputError, assertSha256Hex, assertUtcIsoTimestamp } from "../../application/ports/store.ts";
 import { migrateSqliteStore } from "./schema.ts";
 
-interface AuthCodeRow {
-  code_hash: string;
-  client_id: string;
-  subject: string;
-  redirect_uri: string;
-  resource: string;
-  scopes_json: string;
-  code_challenge: string;
-  code_challenge_method: "S256";
-  expires_at: string;
-}
-
-interface RefreshTokenRow {
-  token_hash: string;
-  family_id: string;
-  previous_token_hash: string | null;
-  client_id: string;
-  subject: string;
-  scopes_json: string;
-  expires_at: string;
-  consumed_at: string | null;
-  revoked_at: string | null;
-}
+interface AuthCodeRow { code_hash: string; client_id: string; subject: string; redirect_uri: string; resource: string; scopes_json: string; code_challenge: string; code_challenge_method: "S256"; expires_at: string; }
+interface RefreshTokenRow { token_hash: string; family_id: string; previous_token_hash: string | null; client_id: string; subject: string; scopes_json: string; expires_at: string; consumed_at: string | null; revoked_at: string | null; }
 
 export class SqliteStore implements StorePort {
   private closed = false;
@@ -123,6 +102,15 @@ export class SqliteStore implements StorePort {
     return this.transaction(() => {
       const row = this.db.prepare(`SELECT t.*, f.revoked_at FROM oauth_refresh_tokens t JOIN oauth_refresh_token_families f ON f.family_id = t.family_id WHERE t.token_hash = ?`).get(tokenHash) as RefreshTokenRow | undefined;
       return row ? refreshTokenFromRow(row) : null;
+    });
+  }
+
+  async sweepExpired(nowIso: string): Promise<void> {
+    this.ensureOpen();
+    this.transaction(() => {
+      this.db.prepare(`DELETE FROM oauth_auth_codes WHERE expires_at < ?`).run(nowIso);
+      this.db.prepare(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND consumed_at IS NULL`).run(nowIso);
+      this.db.prepare(`DELETE FROM oauth_refresh_token_families WHERE revoked_at IS NOT NULL AND family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`).run();
     });
   }
 

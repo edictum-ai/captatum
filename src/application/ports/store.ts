@@ -70,6 +70,8 @@ export interface StorePort {
   revokeRefreshTokenFamily(familyId: string, revokedAtIso: string): Promise<void>;
   /** Find a refresh token by its hash, or null if it does not exist. */
   findRefreshToken(tokenHash: string): Promise<RefreshTokenRecord | null>;
+  /** Delete expired auth codes, expired refresh tokens, and orphaned revoked families. */
+  sweepExpired(nowIso: string): Promise<void>;
   close(): Promise<void>;
 }
 

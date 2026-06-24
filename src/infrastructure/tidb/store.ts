@@ -98,6 +98,16 @@ export class TidbStore implements StorePort {
     });
   }
 
+  async sweepExpired(nowIso: string): Promise<void> {
+    this.ensureOpen();
+    assertUtcIsoTimestamp(nowIso, "nowIso");
+    await this.transaction(async (tx) => {
+      await tx.execute(`DELETE FROM oauth_auth_codes WHERE expires_at < ?`, [nowIso]);
+      await tx.execute(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND consumed_at IS NULL`, [nowIso]);
+      await tx.execute(`DELETE FROM oauth_refresh_token_families WHERE revoked_at IS NOT NULL AND family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`);
+    });
+  }
+
   async close(): Promise<void> {
     if (!this.closed) {
       await this.client.end();

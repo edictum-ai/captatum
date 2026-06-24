@@ -30,6 +30,16 @@ const host = config.http.host();
 const port = config.http.port();
 const security = mcpSecurity(runtime, host, port);
 const store = await storeFor(runtime);
+// SQLSTORE-2: periodic expiry sweep — delete expired auth codes / refresh
+// tokens / orphaned revoked families every 5 minutes. unref so it doesn't
+// keep the process alive; catch so sweep failures never crash the server.
+if (store) {
+  setInterval(() => {
+    store.sweepExpired(new Date().toISOString()).catch((e) =>
+      process.stderr.write(`captatum: store sweep failed: ${e instanceof Error ? e.message : e}\n`),
+    );
+  }, 5 * 60 * 1000).unref();
+}
 const smartFetch = createSmartFetchUseCase({
   fetcher: createWreqGuardedFetcher(),
   extractHtml,
