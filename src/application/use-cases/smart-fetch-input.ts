@@ -28,7 +28,9 @@ export interface SmartFetchDefaults {
   maxBytes: number;
   maxBytesHardCap: number;
   timeoutMs: number;
+  timeoutMsHardCap: number;
   renderTimeoutMs: number;
+  renderTimeoutMsHardCap: number;
   maxHops: number;
   allowRender: boolean;
   prompt: string;
@@ -38,7 +40,9 @@ export const DEFAULT_SMART_FETCH_DEFAULTS: SmartFetchDefaults = {
   maxBytes: 5 * 1024 * 1024,
   maxBytesHardCap: 5 * 1024 * 1024,
   timeoutMs: 15_000,
+  timeoutMsHardCap: 60_000,
   renderTimeoutMs: 20_000,
+  renderTimeoutMsHardCap: 60_000,
   maxHops: 5,
   allowRender: false,
   prompt: DEFAULT_PROMPT,
@@ -101,8 +105,8 @@ export function normalizeSmartFetchInput(
     budget: parsed.budget,
     transform: parsed.transform as TransformOverride | undefined,
     maxBytes: Math.min(parsed.maxBytes ?? defaults.maxBytes, defaults.maxBytesHardCap),
-    timeoutMs: parsed.timeoutMs ?? defaults.timeoutMs,
-    renderTimeoutMs: parsed.timeoutMs ?? defaults.renderTimeoutMs,
+    timeoutMs: Math.min(parsed.timeoutMs ?? defaults.timeoutMs, defaults.timeoutMsHardCap),
+    renderTimeoutMs: Math.min(parsed.timeoutMs ?? defaults.renderTimeoutMs, defaults.renderTimeoutMsHardCap),
     maxHops: defaults.maxHops,
     allowRender: parsed.allowRender ?? defaults.allowRender,
     debug: parsed.debug ?? false,

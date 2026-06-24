@@ -49,7 +49,9 @@ export function assertHostedFlavor(runtime: AuthRuntimeConfig): void {
 
 export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance> {
   assertHostedFlavor(deps.runtime);
-  const app = Fastify({ logger: false, bodyLimit: config.http.bodyLimitBytes });
+  // requestTimeout (90s) bounds the whole request — defense-in-depth beyond the
+  // per-tier timeoutMs cap (60s) so a hijacked/slow stream can't pin a connection.
+  const app = Fastify({ logger: false, bodyLimit: config.http.bodyLimitBytes, requestTimeout: 90_000 });
   app.setErrorHandler((error, _request, reply) => sendHttpError(reply, error));
   app.get("/healthz", async () => ({ status: "ok" }));
 

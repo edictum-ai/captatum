@@ -25,6 +25,34 @@ export async function registerMcpRoute(app: FastifyInstance, deps: McpRouteDeps)
   app.delete(config.mcp.endpointPath, methodNotAllowed);
 }
 
+/**
+ * Process-wide admission limiter bounding concurrent smart_fetch EXECUTIONS
+ * (DOS-2). Sized for the hosted task (2 vCPU / 4 GiB): each in-flight
+ * fetch/render/transform holds a socket + bounded memory, so 8 concurrent keeps
+ * headroom without letting one tenant starve the rest. Over-cap calls throw
+ * "overloaded" (see withAdmission), surfaced to the MCP client as a tool error.
+ */
+const MAX_CONCURRENT_MCP = 8;
+
+export class AdmissionLimiter {
+  private active = 0;
+  private readonly capacity: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+  }
+  tryAcquire(): boolean {
+    if (this.active >= this.capacity) return false;
+    this.active += 1;
+    return true;
+  }
+  release(): void {
+    if (this.active > 0) this.active -= 1;
+  }
+}
+
+const mcpAdmission = new AdmissionLimiter(MAX_CONCURRENT_MCP);
+
 async function handleMcpPost(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -45,7 +73,16 @@ async function handleMcpPost(
     allowedHosts: deps.allowedHosts,
     allowedOrigins: deps.allowedOrigins,
   });
-  const mcp = createSmartFetchMcpServer({ smartFetch: deps.smartFetch, auth, audit: deps.audit, clock: deps.clock });
+  // DOS-2: cap concurrent smart_fetch EXECUTIONS (not POSTs) — a JSON-RPC batch
+  // is one POST but dispatches many tools/call, so the limiter must wrap each
+  // execute. An over-cap call throws "overloaded" (surfaced to the client as a
+  // tool error; it retries) rather than bypassing the cap.
+  const mcp = createSmartFetchMcpServer({
+    smartFetch: withAdmission(deps.smartFetch, mcpAdmission),
+    auth,
+    audit: deps.audit,
+    clock: deps.clock,
+  });
   await mcp.connect(transport);
   reply.hijack();
   try {
@@ -55,6 +92,25 @@ async function handleMcpPost(
   } finally {
     await mcp.close();
   }
+}
+
+/** Wraps a SmartFetchUseCase so each `execute()` acquires/releases an admission slot. */
+function withAdmission(
+  inner: Pick<SmartFetchUseCase, "execute">,
+  limiter: AdmissionLimiter,
+): Pick<SmartFetchUseCase, "execute"> {
+  return {
+    execute: async (...args: Parameters<SmartFetchUseCase["execute"]>) => {
+      if (!limiter.tryAcquire()) {
+        throw new Error("captatum: server overloaded — too many concurrent smart_fetch calls");
+      }
+      try {
+        return await inner.execute(...args);
+      } finally {
+        limiter.release();
+      }
+    },
+  };
 }
 
 function assertMcpSecurity(deps: McpRouteDeps): void {

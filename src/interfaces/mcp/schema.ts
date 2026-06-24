@@ -28,7 +28,7 @@ export const smartFetchInputJsonSchema: Tool["inputSchema"] = {
       },
     },
     maxBytes: { type: "integer", minimum: 1, description: "Decompressed response byte cap." },
-    timeoutMs: { type: "integer", minimum: 1, description: "Per-tier timeout in milliseconds." },
+    timeoutMs: { type: "integer", minimum: 1, maximum: 60000, description: "Per-tier timeout in milliseconds (server-capped at 60s)." },
     allowRender: { type: "boolean", default: false, description: "Allow gated Playwright render tier." },
     debug: {
       type: "boolean",
