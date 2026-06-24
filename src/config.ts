@@ -48,7 +48,21 @@ export const config = {
       // openrouter/auto (unpredictable routing → garbage) and not a stale model.
       "deepseek/deepseek-v4-flash,qwen/qwen3.6-flash",
     ),
-    ollamaBaseUrl: () => envString("OLLAMA_BASE_URL", ""),
+    ollamaBaseUrl: () => {
+      const url = envString("OLLAMA_BASE_URL", "");
+      if (url) {
+        try {
+          const parsed = new URL(url);
+          if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
+            throw new Error(`OLLAMA_BASE_URL must be https (or localhost): ${url}`);
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message.startsWith("OLLAMA_BASE_URL")) throw e;
+          throw new Error(`OLLAMA_BASE_URL is not a valid URL: ${url}`);
+        }
+      }
+      return url;
+    },
     ollamaModel: () => envString("OLLAMA_MODEL", "llama3.1"),
     timeoutMs: () => envPositiveInteger("TRANSFORM_TIMEOUT_MS", 45000),
     freeFirst: true,

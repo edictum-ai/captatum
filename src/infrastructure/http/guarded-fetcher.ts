@@ -8,7 +8,7 @@ import type {
 import { readCappedBody, streamFromBytes } from "./body.ts";
 import { type DnsResolver, NodeDnsResolver, resolvePublicAddress } from "./dns.ts";
 import { reject, throwIfAborted, toRejectResult, withAbort } from "./errors.ts";
-import { type HttpRequester, NodeHttpRequester } from "./request.ts";
+import { type HttpRequester, NodeHttpRequester, BLOCKED_PORTS } from "./request.ts";
 import {
   headerValue,
   isRedirectStatus,
@@ -87,6 +87,10 @@ export class GuardedHttpFetcher implements FetcherPort {
     timeoutMs: number,
     signal: AbortSignal,
   ) {
+    // SSRF-4: enforce the port denylist here (the single chokepoint), before
+    // either requester (wreq-js HTTP or Node HTTPS fallback) is selected.
+    const port = Number(current.url.port || (current.url.protocol === "https:" ? 443 : 80));
+    if (BLOCKED_PORTS.has(port)) reject("blocked_port", `Port ${port} is a well-known non-HTTP service port`);
     const resolved = await resolvePublicAddress(current.hostname, this.resolver, signal);
     return await withAbort(
       this.requester.request({

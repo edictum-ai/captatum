@@ -23,6 +23,10 @@ export interface HttpRequester {
   request(input: HttpRequestInput): Promise<HttpResponse>;
 }
 
+/** Well-known non-HTTP service ports — blocked as SSRF defense-in-depth (SSRF-4).
+ *  Enforced at the GuardedHttpFetcher chokepoint (covers both wreq-js HTTP + Node HTTPS). */
+export const BLOCKED_PORTS = new Set([22, 25, 465, 587, 993, 995, 1433, 1521, 3306, 3389, 5432, 6379, 9200, 11211, 27017]);
+
 export class NodeHttpRequester implements HttpRequester {
   async request(input: HttpRequestInput): Promise<HttpResponse> {
     return await new Promise<HttpResponse>((resolve, rejectPromise) => {
