@@ -4,9 +4,10 @@
 #
 # Pin the tag to match the gateway's `playwright` version (package.json) — a
 # Chromium/CDP major-version mismatch can break the connection. playwright
-# 1.60.0 ships Chromium 133; use the matching -noble tag.
+# 1.60.0 ships Chromium 133; use the matching -noble tag. Pinned by digest
+# (SUPPLY-3) so a repushed/compromised tag cannot change the pulled bytes.
 # (Supply chain: prefer a tag >= 15 days old; verify in docs/dependency-ledger.md.)
-FROM mcr.microsoft.com/playwright:v1.60.0-noble
+FROM mcr.microsoft.com/playwright:v1.60.0-noble@sha256:9bd26ad900bb5e0f4dee75839e957a89ae89c2b7ab1e76050e559790e946b948
 
 ENV CAPTATUM_BROWSER_CDP_PORT=9222
 COPY scripts/browser-sidecar.sh /usr/local/bin/browser-sidecar.sh
