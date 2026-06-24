@@ -1,5 +1,6 @@
 import type { ProvenanceError, Result, TransformInfo } from "../../domain/result.ts";
 import { classifyAccess, classifyContentType, hasContent, type AccessInfo, type ContentType } from "../../application/classify.ts";
+import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
 
 export type Status = "pass" | "partial" | "fail";
 
@@ -22,8 +23,8 @@ export function buildStructuredContent(result: Result, debug: boolean): Record<s
     schemaVersion: result.schemaVersion,
     ok: status !== "fail",
     status,
-    url: result.url,
-    finalUrl: result.finalUrl,
+    url: redactSignedQueryParams(result.url),
+    finalUrl: redactSignedQueryParams(result.finalUrl),
     title: result.title,
     output: result.output,
     contentType,

@@ -39,8 +39,15 @@ const SIGNED_QUERY_KEYS = new Set([
   "token",
   "x-amz-credential",
   "x-amz-signature",
+  "x-amz-security-token",
   "x-goog-signature",
 ]);
+
+const INTERNAL_HOST_SUFFIXES = [
+  ".local", ".internal", ".corp", ".intranet", ".localhost", ".priv",
+  ...(process.env.INTERNAL_HOST_SUFFIXES ?? "")
+    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+];
 
 export interface SensitivitySignal {
   sensitive: boolean;
@@ -51,7 +58,9 @@ export function detectSensitiveTransformInput(input: {
   content: string;
   sourceUrl?: string;
 }): SensitivitySignal {
-  const urlReason = input.sourceUrl ? signedUrlReason(input.sourceUrl) : undefined;
+  const urlReason = input.sourceUrl
+    ? signedUrlReason(input.sourceUrl) ?? internalHostReason(input.sourceUrl)
+    : undefined;
   if (urlReason) return { sensitive: true, reason: urlReason };
 
   const content = input.content ?? "";
@@ -76,4 +85,31 @@ function signedUrlReason(sourceUrl: string): string | undefined {
     if (SIGNED_QUERY_KEYS.has(key.toLowerCase())) return "signed_or_tokenized_url";
   }
   return undefined;
+}
+
+function internalHostReason(sourceUrl: string): string | undefined {
+  try {
+    const host = new URL(sourceUrl).hostname.toLowerCase();
+    if (host === "localhost" || INTERNAL_HOST_SUFFIXES.some((s) => host === s.slice(1) || host.endsWith(s))) {
+      return "internal_host";
+    }
+  } catch { /* ignore unparseable URLs */ }
+  return undefined;
+}
+
+/** Redact signed/tokenized query-param values from a URL before display (INFOLEAK-1). */
+export function redactSignedQueryParams(url: string): string {
+  try {
+    const parsed = new URL(url);
+    let redacted = false;
+    for (const key of parsed.searchParams.keys()) {
+      if (SIGNED_QUERY_KEYS.has(key.toLowerCase())) {
+        parsed.searchParams.set(key, "[REDACTED]");
+        redacted = true;
+      }
+    }
+    return redacted ? parsed.href : url;
+  } catch {
+    return url;
+  }
 }

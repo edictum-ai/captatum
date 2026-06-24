@@ -1,5 +1,6 @@
 import type { Result } from "../../domain/result.ts";
 import { classifyAccess, classifyContentType } from "../../application/classify.ts";
+import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
 
 /**
  * The MCP text returned to the caller: a machine provenance comment (always
@@ -27,7 +28,7 @@ function envelopeHeader(result: Result): string {
   const lines: Array<string | null> = [
     `contentType: ${classifyContentType(result)}`,
     result.title ? `title: ${clip(result.title, 140)}` : null,
-    `finalUrl: ${result.finalUrl}`,
+    `finalUrl: ${redactSignedQueryParams(result.finalUrl)}`,
     `access: ${access.gated ? `gated (${access.gateReason})` : "public"}`,
     `images: ${images.length}${images[0] ? ` (e.g. ${images[0]})` : ""}`,
     result.transform?.model ? `transformModel: ${result.transform.model}` : null,
@@ -41,7 +42,7 @@ function provenanceLine(result: Result): string {
     ["output", result.output],
     ["status", String(result.code)],
     ["bytes", String(result.bytes)],
-    ["finalUrl", result.finalUrl],
+    ["finalUrl", redactSignedQueryParams(result.finalUrl)],
     ["platform", result.platform.adapterId],
     ["jsRequired", String(result.jsRequired)],
     ["resolvedVia", result.resolvedVia],
