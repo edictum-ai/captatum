@@ -84,7 +84,20 @@ function signedUrlReason(sourceUrl: string): string | undefined {
   for (const key of parsed.searchParams.keys()) {
     if (SIGNED_QUERY_KEYS.has(key.toLowerCase())) return "signed_or_tokenized_url";
   }
+  // TRANSFORM-4: also detect high-entropy path segments (CDN/JWT-in-path tokens).
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  for (const seg of segments) {
+    if (seg.length >= 40 && looksLikeToken(seg)) return "signed_or_tokenized_url";
+  }
   return undefined;
+}
+
+/** Heuristic: a path segment looks like a token if it's 40+ chars of base64url/hex
+ *  AND has a high digit ratio (tokens are high-entropy; SEO slugs are mostly letters). */
+function looksLikeToken(seg: string): boolean {
+  if (!/^[A-Za-z0-9_.-]+$/.test(seg)) return false;
+  const digits = (seg.match(/[0-9]/g) ?? []).length;
+  return digits >= seg.length * 0.25;
 }
 
 function internalHostReason(sourceUrl: string): string | undefined {
