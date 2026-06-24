@@ -70,6 +70,7 @@ export const config = {
     database: () => envString("TIDB_DATABASE", "smartfetch"),
     user: () => envString("TIDB_USER", ""),
     password: () => envString("TIDB_PASSWORD", ""),
+    sslCa: () => envString("TIDB_SSL_CA", ""),
   },
 };
 

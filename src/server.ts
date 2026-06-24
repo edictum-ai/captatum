@@ -59,6 +59,12 @@ async function shutdown(): Promise<void> {
 
 async function storeFor(runtimeConfig: AuthRuntimeConfig): Promise<StorePort | undefined> {
   if (runtimeConfig.flavor !== "hosted") return undefined;
+  const sslCa = config.tidb.sslCa();
+  // SQLSTORE-1: TiDB Cloud requires TLS; OAuth token hashes + the DB password
+  // must not cross the wire in plaintext. Fail-boot in production without it.
+  if (process.env.NODE_ENV === "production" && !sslCa) {
+    throw new Error("Hosted production requires TIDB_SSL_CA (TiDB TLS)");
+  }
   return await createTidbStore({
     host: config.tidb.host(),
     port: config.tidb.port(),
@@ -67,6 +73,7 @@ async function storeFor(runtimeConfig: AuthRuntimeConfig): Promise<StorePort | u
     password: config.tidb.password(),
     waitForConnections: true,
     connectionLimit: 5,
+    ...(sslCa ? { ssl: { minVersion: "TLSv1.2", rejectUnauthorized: true, ca: sslCa } } : {}),
   });
 }
 
