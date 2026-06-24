@@ -121,12 +121,20 @@ export class OAuthTokenUseCase {
   }
 
   async revoke(refreshToken: string | undefined): Promise<void> {
-    const familyId = refreshToken ? parseRefreshFamilyId(refreshToken) : null;
-    if (familyId) {
-      await this.store.revokeRefreshTokenFamily(familyId, new Date(this.clock.nowMs()).toISOString());
+    const nowIso = new Date(this.clock.nowMs()).toISOString();
+    let familyId: string | undefined;
+    if (refreshToken) {
+      // Verify the token hash exists before revoking — a token with a valid
+      // format but non-existent hash (or a guessed family id) must not revoke a
+      // real family (PR-9 deferred hash check).
+      const existing = await this.store.findRefreshToken(sha256Hex(refreshToken));
+      if (existing) {
+        familyId = existing.familyId;
+        await this.store.revokeRefreshTokenFamily(familyId, nowIso);
+      }
     }
     await this.audit.writeAuthEvent({
-      occurredAt: new Date(this.clock.nowMs()).toISOString(),
+      occurredAt: nowIso,
       event: "oauth.revoke",
       status: "success",
       reason: familyId ? undefined : "unrecognized_token",

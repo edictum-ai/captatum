@@ -87,6 +87,17 @@ export class TidbStore implements StorePort {
     await this.transaction(async (tx) => revokeFamily(tx, familyId, revokedAtIso));
   }
 
+  async findRefreshToken(tokenHash: string): Promise<RefreshTokenRecord | null> {
+    this.ensureOpen();
+    return await this.transaction(async (tx) => {
+      const row = await one<RefreshTokenRow>(tx,
+        `SELECT t.*, f.revoked_at FROM oauth_refresh_tokens t
+         JOIN oauth_refresh_token_families f ON f.family_id = t.family_id
+         WHERE t.token_hash = ?`, [tokenHash]);
+      return row ? refreshTokenFromRow(row) : null;
+    });
+  }
+
   async close(): Promise<void> {
     if (!this.closed) {
       await this.client.end();

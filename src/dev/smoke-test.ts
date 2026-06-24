@@ -57,6 +57,7 @@ class SmokeStore implements StorePort {
   async saveRefreshToken(): Promise<void> {}
   async rotateRefreshToken(): Promise<null> { return null; }
   async revokeRefreshTokenFamily(): Promise<void> {}
+  async findRefreshToken(): Promise<null> { return null; }
   async close(): Promise<void> {}
 }
 

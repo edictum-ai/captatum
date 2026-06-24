@@ -1,16 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
-import type {
-  AuthCodeRecord,
-  RefreshTokenRecord,
-  SaveAuthCodeInput,
-  SaveRefreshTokenInput,
-  StorePort,
-} from "../../application/ports/store.ts";
-import {
-  StoreInputError,
-  assertSha256Hex,
-  assertUtcIsoTimestamp,
-} from "../../application/ports/store.ts";
+import type { AuthCodeRecord, RefreshTokenRecord, SaveAuthCodeInput, SaveRefreshTokenInput, StorePort } from "../../application/ports/store.ts";
+import { StoreInputError, assertSha256Hex, assertUtcIsoTimestamp } from "../../application/ports/store.ts";
 import { migrateSqliteStore } from "./schema.ts";
 
 interface AuthCodeRow {
@@ -126,6 +116,14 @@ export class SqliteStore implements StorePort {
     this.ensureOpen();
     assertUtcIsoTimestamp(revokedAtIso, "revokedAtIso");
     this.transaction(() => revokeFamily(this.db, familyId, revokedAtIso));
+  }
+
+  async findRefreshToken(tokenHash: string): Promise<RefreshTokenRecord | null> {
+    this.ensureOpen();
+    return this.transaction(() => {
+      const row = this.db.prepare(`SELECT t.*, f.revoked_at FROM oauth_refresh_tokens t JOIN oauth_refresh_token_families f ON f.family_id = t.family_id WHERE t.token_hash = ?`).get(tokenHash) as RefreshTokenRow | undefined;
+      return row ? refreshTokenFromRow(row) : null;
+    });
   }
 
   async close(): Promise<void> {

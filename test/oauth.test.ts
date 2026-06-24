@@ -363,6 +363,7 @@ class MemoryStore implements StorePort {
     return current;
   }
   async revokeRefreshTokenFamily(familyId: string, revokedAtIso: string): Promise<void> { this.families.set(familyId, revokedAtIso); }
+  async findRefreshToken(tokenHash: string): Promise<RefreshTokenRecord | null> { return this.refreshTokens.get(tokenHash) ?? null; }
   async close(): Promise<void> {}
   snapshot(): string {
     return JSON.stringify({ codes: [...this.authCodes], refresh: [...this.refreshTokens], families: [...this.families] });

@@ -68,6 +68,8 @@ export interface StorePort {
   ): Promise<RefreshTokenRecord | null>;
   /** Revoke every token in the family. Replay detection path. */
   revokeRefreshTokenFamily(familyId: string, revokedAtIso: string): Promise<void>;
+  /** Find a refresh token by its hash, or null if it does not exist. */
+  findRefreshToken(tokenHash: string): Promise<RefreshTokenRecord | null>;
   close(): Promise<void>;
 }
 
