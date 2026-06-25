@@ -325,6 +325,16 @@ test("extractVisibleText separates words across tags (no merge regression)", () 
   assert.match(text, /Heading Hello/, "a space where each tag was");
 });
 
+test("extractVisibleText rejoins inline-split prices without merging lists/periods", () => {
+  // `<span>$</span><span>10</span><span>.90</span>` -> "$ 10 .90" (each tag became
+  // a space) -> "$10.90".
+  assert.equal(extractVisibleText("<p><span>$</span><span>10</span><span>.90</span></p>"), "$10.90");
+  const mixed = extractVisibleText("<p>Total 10 .90; list 10, 20, 30. End. Next.</p>");
+  assert.match(mixed, /Total 10\.90;/, "decimal fragment rejoined");
+  assert.match(mixed, /10, 20, 30/, "comma list preserved");
+  assert.match(mixed, /End\. Next\./, "sentence periods preserved");
+});
+
 test("extractVisibleText does not treat </scripture> as a </script> close", () => {
   const html = `<html><body><script>var s = "</scripture>";</script><p>Visible</p></body></html>`;
   const text = extractVisibleText(html);

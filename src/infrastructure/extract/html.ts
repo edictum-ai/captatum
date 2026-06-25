@@ -60,7 +60,18 @@ export function extractVisibleText(html: string): string {
   // `<!--`, bare `<`, or `<script>` made the old regexes quadratic (minutes of
   // event-loop block — REDOS-1/2/3). Each scanner below is O(n).
   const text = stripHtmlTags(stripHtmlComments(withoutCode));
-  return collapseWhitespace(decodeHtmlEntities(text));
+  return normalizeFragmentedNumbers(collapseWhitespace(decodeHtmlEntities(text)));
+}
+
+// Inline-split markup (`<span>$</span><span>10</span><span>.90</span>`) leaves
+// "$ 10 .90" (stripHtmlTags turns each tag into a space). Narrowly collapse only
+// number/price fragments: "$ 10"->"$10", "10 .90"->"10.90" (dot must be followed
+// by a digit, so "3. item"/"Done. Next" untouched; commas left so lists survive).
+function normalizeFragmentedNumbers(text: string): string {
+  return text
+    .replace(/([€£¥₹$])\s+(\d)/g, "$1$2")
+    .replace(/(\d)\s+\.(\d)/g, "$1.$2")
+    .replace(/(\d)\s+([€£¥₹])/g, "$1$2");
 }
 
 /**
