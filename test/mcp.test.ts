@@ -13,6 +13,7 @@ import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts"
 import { config } from "../src/config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { assertHostedFlavor, createHttpApp, HostedFlavorError } from "../src/interfaces/http/app.ts";
+import { CAPTATUM_SERVER_INSTRUCTIONS } from "../src/interfaces/mcp/schema.ts";
 
 const NOW_MS = Date.parse("2026-06-16T12:00:00.000Z");
 const HOST = "captatum.test";
@@ -107,9 +108,21 @@ test("tools/list advertises a strict captatum input schema", async () => {
   const tool = body.result.tools.find((item) => item.name === "captatum");
   assert.ok(tool);
   assert.equal(tool.inputSchema.additionalProperties, false);
-  assert.ok(tool.description.includes("Default output is summary"));
-  assert.ok(tool.description.includes("raw clean content is available"));
+  // Discoverability: the tool description advertises every output mode + provenance
+  // + allowRender so clients learn the full surface from tools/list alone.
+  for (const phrase of ["summary", "'raw'", "'extract'", "allowRender: true", "provenance"]) {
+    assert.ok(tool.description.includes(phrase), `tool description missing "${phrase}"`);
+  }
   await ctx.app.close();
+});
+
+test("server advertises capability instructions for discoverability", () => {
+  // Sent on `initialize` so clients/agents learn captatum's features (output modes,
+  // provenance, when to render) without reading the repo.
+  assert.ok(CAPTATUM_SERVER_INSTRUCTIONS.length > 200, "instructions are substantive");
+  for (const phrase of ["summary", "raw", "extract", "allowRender", "Provenance"]) {
+    assert.ok(CAPTATUM_SERVER_INSTRUCTIONS.includes(phrase), `instructions missing "${phrase}"`);
+  }
 });
 
 

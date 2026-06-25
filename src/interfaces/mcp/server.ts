@@ -19,7 +19,7 @@ import {
 import type { Result } from "../../domain/result.ts";
 import { resultToMcpText } from "./format.ts";
 import { buildStructuredContent } from "./shape.ts";
-import { CAPTATUM_TOOL_NAME, captatumToolDefinition } from "./schema.ts";
+import { CAPTATUM_SERVER_INSTRUCTIONS, CAPTATUM_TOOL_NAME, captatumToolDefinition } from "./schema.ts";
 
 const AUTH_JSONRPC_CODE = -32001;
 
@@ -31,8 +31,9 @@ export interface CaptatumMcpServerDeps {
 }
 
 export function createCaptatumMcpServer(deps: CaptatumMcpServerDeps): Server {
-  const server = new Server({ name: "captatum", version: "0.1.0" }, {
+  const server = new Server({ name: "captatum", version: "0.2.0" }, {
     capabilities: { tools: { listChanged: false } },
+    instructions: CAPTATUM_SERVER_INSTRUCTIONS,
   });
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({
