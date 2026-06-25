@@ -70,29 +70,31 @@ export function toRegExp(pattern: string, path: string): SchemaValidationResult 
 function isLikelyCatastrophicPattern(pattern: string): boolean {
   const isQuantifier = (ch: string | undefined): boolean =>
     ch === "*" || ch === "+" || ch === "?" || ch === "{";
-  const stack: { quantified: boolean; alts: string[]; cur: string }[] = [];
+  // Per open group: q = contains a quantifier (incl. a quantified child); u = contains
+  // overlapping alternation or an unsafe child. Danger propagates to enclosing groups so
+  // wrapper patterns like ((a|a))+ and ((a+))+ are caught at the outer quantifier.
+  const stack: { q: boolean; u: boolean; alts: string[]; cur: string }[] = [];
   let escaped = false;
   for (let index = 0; index < pattern.length; index += 1) {
     const ch = pattern[index];
     if (escaped) { escaped = false; if (stack.length > 0) stack[stack.length - 1].cur += ch; continue; }
     if (ch === "\\") { escaped = true; continue; }
-    if (ch === "(") { stack.push({ quantified: false, alts: [], cur: "" }); continue; }
+    if (ch === "(") { stack.push({ q: false, u: false, alts: [], cur: "" }); continue; }
     if (ch === "|") { if (stack.length > 0) { const g = stack[stack.length - 1]; g.alts.push(g.cur); g.cur = ""; } continue; }
     if (ch === ")" && stack.length > 0) {
       const g = stack.pop()!;
       g.alts.push(g.cur);
       const groupQuantified = isQuantifier(pattern[index + 1]);
-      // Catastrophic only when the group ITSELF is quantified: nested quantifier
-      // (a+)+ (g.quantified = it contained a quantifier) OR overlapping alternation
-      // (a|a)+ / (a|aa)+. A group that merely contains a quantifier but is not
-      // repeated (e.g. ([0-9]+) ) is fine.
-      if (groupQuantified && (g.quantified || hasOverlappingAlternation(g.alts))) return true;
-      // Propagate: a quantified group (or one containing a quantifier) makes the
-      // enclosing group "contain a quantifier" — so ((a+))+ is caught at the outer ).
-      if ((g.quantified || groupQuantified) && stack.length > 0) stack[stack.length - 1].quantified = true;
+      const danger = g.q || g.u || hasOverlappingAlternation(g.alts);
+      if (groupQuantified && danger) return true;
+      if (stack.length > 0) {
+        const parent = stack[stack.length - 1];
+        if (g.q || groupQuantified) parent.q = true;
+        if (g.u || hasOverlappingAlternation(g.alts)) parent.u = true;
+      }
       continue;
     }
-    if (isQuantifier(ch) && stack.length > 0) { stack[stack.length - 1].quantified = true; continue; }
+    if (isQuantifier(ch) && stack.length > 0) { stack[stack.length - 1].q = true; continue; }
     if (stack.length > 0) stack[stack.length - 1].cur += ch;
   }
   return false;

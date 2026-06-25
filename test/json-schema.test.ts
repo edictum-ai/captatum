@@ -53,6 +53,8 @@ test("schema pattern with duplicate- or prefix-overlap alternation is rejected (
   assert.equal(validateJsonSchema("aaa", { pattern: "^(a|a)+$" }).unsupported, true);
   assert.equal(validateJsonSchema("aaa", { pattern: "^(a|aa)+$" }).unsupported, true);
   assert.equal(validateJsonSchema("aab", { pattern: "^(a|ab)+$" }).unsupported, true);
+  // wrapped overlap ((a|a))+ — the inner overlap must propagate to the outer quantifier.
+  assert.equal(validateJsonSchema("aaa", { pattern: "^((a|a))+$" }).unsupported, true);
   // disjoint alternation (a|b)+ is safe and must NOT be rejected.
   assert.equal(validateJsonSchema("ab", { pattern: "^(a|b)+$" }).unsupported, undefined);
 });

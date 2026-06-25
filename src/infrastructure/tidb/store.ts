@@ -113,6 +113,7 @@ export class TidbStore implements StorePort {
     assertUtcIsoTimestamp(nowIso, "nowIso");
     await this.transaction(async (tx) => {
       await tx.execute(`DELETE FROM oauth_auth_codes WHERE expires_at < ?`, [nowIso]);
+      await tx.execute(`DELETE FROM oauth_consent_jtis WHERE expires_at < ?`, [nowIso]);
       await tx.execute(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND consumed_at IS NULL`, [nowIso]);
       await tx.execute(`DELETE FROM oauth_refresh_token_families WHERE revoked_at IS NOT NULL AND family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`);
     });
