@@ -16,7 +16,6 @@ export const config = {
   },
   cloudflareAccess: {
     enabled: () => envString("CF_ACCESS_ENABLED", "false") === "true",
-    allowedEmail: () => envString("CF_ACCESS_ALLOWED_EMAIL", ""),
     audience: () => envString("CF_ACCESS_AUDIENCE", ""),
     certsUrl: () => envString("CF_ACCESS_CERTS_URL", ""),
     issuer: () => envString("CF_ACCESS_ISSUER", ""),

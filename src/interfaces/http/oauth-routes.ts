@@ -26,7 +26,6 @@ const CONSENT_COOKIE = "captatum_consent";
 const cfAccess = config.cloudflareAccess;
 const cfAccessVerifier = cfAccess.enabled() && cfAccess.certsUrl()
   ? createCloudflareAccessJwtVerifier({
-    allowedEmail: cfAccess.allowedEmail(),
     audience: cfAccess.audience(),
     certsUrl: cfAccess.certsUrl(),
     issuer: cfAccess.issuer(),

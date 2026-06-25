@@ -7,7 +7,6 @@ import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload } from "jose";
  * audience + issuer checked, email constrained to the allowed address.
  */
 export interface CloudflareAccessJwtConfig {
-  allowedEmail: string;
   audience: string;
   certsUrl: string;
   issuer: string;
@@ -47,9 +46,12 @@ export function createCloudflareAccessJwtVerifier(config: CloudflareAccessJwtCon
 
 function validateClaims(payload: AccessJwtPayload, config: CloudflareAccessJwtConfig): JwtVerifyResult {
   if (!payload.exp) return { ok: false, reason: "access_jwt_missing_expiry" };
-  if (!payload.email || payload.email.toLowerCase() !== config.allowedEmail.toLowerCase()) {
-    return { ok: false, reason: "access_jwt_email_not_allowed" };
-  }
+  // The Cloudflare Access APPLICATION's identity policy is the single source of
+  // truth for WHO is allowed (the email allowlist lives private in Zero Trust,
+  // never in code/repos). Here we only confirm the JWT is well-formed and carry
+  // the verified email as the subject; signature/audience/issuer/expiry were
+  // already checked by jwtVerify in the caller.
+  if (!payload.email) return { ok: false, reason: "access_jwt_email_not_allowed" };
   return {
     ok: true,
     claims: {
