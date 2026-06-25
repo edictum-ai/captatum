@@ -115,33 +115,7 @@ export class OAuthAuthorizationUseCase {
   }
 
   private allowedRedirect(value: string): string {
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      throw new OAuthError("invalid_redirect_uri", "redirect_uri is invalid");
-    }
-    if (url.username || url.password) {
-      throw new OAuthError("invalid_redirect_uri", "redirect_uri must not contain userinfo");
-    }
-    url.hash = "";
-    const normalized = url.href;
-    const origin = `${url.protocol}//${url.host}`;
-    // OAUTH-1/CONFIG-3: no allow-all ("*") and no unanchored prefix match — both
-    // enabled open-redirect -> auth-code exfiltration. An entry matches only if it
-    // is the exact redirect_uri, or an exact ORIGIN (scheme://host[:port], no path).
-    const ok = this.config.redirectAllowlist.some((entry) => {
-      if (entry === "*") return false;
-      if (entry === normalized) return true;
-      try {
-        const e = new URL(entry);
-        return (!e.pathname || e.pathname === "/") && !e.search && `${e.protocol}//${e.host}` === origin;
-      } catch {
-        return false;
-      }
-    });
-    if (!ok) throw new OAuthError("invalid_redirect_uri", "redirect_uri is not allowed");
-    return normalized;
+    return assertAllowedRedirectUri(value, this.config.redirectAllowlist);
   }
 
   private redirectWithCode(redirectUri: string, code: string, state?: string): string {
@@ -190,6 +164,38 @@ export class OAuthAuthorizationUseCase {
 function required(value: string | undefined, label: string): string {
   if (typeof value === "string" && value) return value;
   throw new OAuthError("invalid_request", `${label} is required`);
+}
+
+/** OAUTH-1/CONFIG-3: validate a redirect_uri against an allowlist. No allow-all
+ * ("*") and no unanchored prefix — an entry matches only if it is the exact
+ * redirect_uri or an exact ORIGIN (scheme://host[:port], no path); userinfo is
+ * rejected. Shared by authorize (here) and register (oauth-routes) so the two
+ * validators cannot drift. Returns the normalized URI. */
+export function assertAllowedRedirectUri(value: string, allowlist: string[]): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new OAuthError("invalid_redirect_uri", "redirect_uri is invalid");
+  }
+  if (url.username || url.password) {
+    throw new OAuthError("invalid_redirect_uri", "redirect_uri must not contain userinfo");
+  }
+  url.hash = "";
+  const normalized = url.href;
+  const origin = `${url.protocol}//${url.host}`;
+  const ok = allowlist.some((entry) => {
+    if (entry === "*") return false;
+    if (entry === normalized) return true;
+    try {
+      const e = new URL(entry);
+      return (!e.pathname || e.pathname === "/") && !e.search && `${e.protocol}//${e.host}` === origin;
+    } catch {
+      return false;
+    }
+  });
+  if (!ok) throw new OAuthError("invalid_redirect_uri", "redirect_uri is not allowed");
+  return normalized;
 }
 
 function hostOf(value: string): string | undefined {

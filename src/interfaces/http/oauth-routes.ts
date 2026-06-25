@@ -4,7 +4,7 @@ import type { AuditLoggerPort } from "../../application/ports/audit.ts";
 import type { StorePort } from "../../application/ports/store.ts";
 import type { HostedOAuthConfig } from "../../application/use-cases/oauth-config.ts";
 import { publicJwk } from "../../application/use-cases/oauth-crypto.ts";
-import { OAuthAuthorizationUseCase, type AuthorizeRequestInput } from "../../application/use-cases/oauth-authorization.ts";
+import { OAuthAuthorizationUseCase, assertAllowedRedirectUri, type AuthorizeRequestInput } from "../../application/use-cases/oauth-authorization.ts";
 import { OAuthTokenUseCase } from "../../application/use-cases/oauth-token.ts";
 import { OAuthError, oauthErrorBody } from "../../application/use-cases/oauth-errors.ts";
 import { OAUTH_SCOPES } from "../../application/use-cases/oauth-scopes.ts";
@@ -230,13 +230,10 @@ function setConsentCookie(reply: FastifyReply, token: string, ttlSeconds: number
 }
 
 function assertAllowedRedirect(value: string, allowlist: string[]): void {
-  if (allowlist.includes("*")) return;
-  const url = new URL(value);
-  url.hash = "";
-  const href = url.href;
-  if (!allowlist.some((e) => (e.endsWith("*") ? href.startsWith(e.slice(0, -1)) : e === href))) {
-    throw new OAuthError("invalid_redirect_uri", "redirect_uri is not allowed");
-  }
+  // OAUTH-1/CONFIG-3: shared validator (no allow-all, no unanchored prefix) — same
+  // rule as /oauth/authorize, so register + authorize cannot drift. Register is
+  // stateless, so this is defense-in-depth, but kept consistent by construction.
+  assertAllowedRedirectUri(value, allowlist);
 }
 
 function hostOf(value: string): string | undefined {

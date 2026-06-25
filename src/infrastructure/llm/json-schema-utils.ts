@@ -82,14 +82,35 @@ function isLikelyCatastrophicPattern(pattern: string): boolean {
       const g = stack.pop()!;
       g.alts.push(g.cur);
       const quantified = g.quantified || isQuantifier(pattern[index + 1]);
-      // nested quantifier (a+)+ OR duplicate-alternation overlap (a|a)+
-      if (quantified && (g.quantified || g.alts.length !== new Set(g.alts).size)) return true;
+      // nested quantifier (a+)+, duplicate-alternation overlap (a|a)+, OR
+      // prefix-overlap alternation (a|aa)+ / (a|ab)+ — distinct branches that can
+      // both match the same input, so a quantifier backtracks catastrophically.
+      if (quantified && (g.quantified || hasOverlappingAlternation(g.alts))) return true;
       // Propagate: a quantified inner group makes the enclosing group "quantified".
       if (quantified && stack.length > 0) stack[stack.length - 1].quantified = true;
       continue;
     }
     if (isQuantifier(ch) && stack.length > 0) { stack[stack.length - 1].quantified = true; continue; }
     if (stack.length > 0) stack[stack.length - 1].cur += ch;
+  }
+  return false;
+}
+
+/** Overlapping alternation in a quantified group: a duplicate alternative
+ * ((a|a)+) OR two alternatives where one is a string-prefix of the other
+ * ((a|aa)+, (a|ab)+, (\d+|\d)+) — distinct branches that can both match the same
+ * input, so the quantifier backtracks catastrophically. Disjoint prefixes like
+ * (a|b)+ are safe. Approximate on alternatives containing nested groups/escapes
+ * (the raw branch text is compared), which is conservative — fail-closed. */
+function hasOverlappingAlternation(alts: string[]): boolean {
+  const compact = alts.filter((a) => a.length > 0);
+  if (compact.length !== new Set(compact).size) return true; // exact duplicate
+  for (let i = 0; i < compact.length; i += 1) {
+    for (let j = i + 1; j < compact.length; j += 1) {
+      const a = compact[i];
+      const b = compact[j];
+      if (a.startsWith(b) || b.startsWith(a)) return true; // prefix overlap
+    }
   }
   return false;
 }
