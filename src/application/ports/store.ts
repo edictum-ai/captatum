@@ -70,6 +70,9 @@ export interface StorePort {
   revokeRefreshTokenFamily(familyId: string, revokedAtIso: string): Promise<void>;
   /** Find a refresh token by its hash, or null if it does not exist. */
   findRefreshToken(tokenHash: string): Promise<RefreshTokenRecord | null>;
+  /** OAUTH-2: bind a consent token to a single use. Atomically records the jti;
+   *  returns true on first use (proceed) or false on replay (reject). */
+  consumeConsentJti(jti: string, expiresAtIso: string): Promise<boolean>;
   /** Delete expired auth codes, expired refresh tokens, and orphaned revoked families. */
   sweepExpired(nowIso: string): Promise<void>;
   close(): Promise<void>;

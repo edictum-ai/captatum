@@ -47,6 +47,16 @@ export class SqliteStore implements StorePort {
     });
   }
 
+  async consumeConsentJti(jti: string, expiresAtIso: string): Promise<boolean> {
+    this.ensureOpen();
+    // OAUTH-2: INSERT ... ON CONFLICT DO NOTHING — a row is inserted only on the
+    // first use; a replay hits the existing PK and inserts 0 rows.
+    const result = this.db.prepare(
+      `INSERT INTO oauth_consent_jtis (jti, expires_at) VALUES (?, ?) ON CONFLICT(jti) DO NOTHING`,
+    ).run(jti, expiresAtIso);
+    return (result.changes ?? 0) > 0;
+  }
+
   async saveRefreshToken(input: SaveRefreshTokenInput): Promise<void> {
     this.ensureOpen();
     validateRefreshToken(input);

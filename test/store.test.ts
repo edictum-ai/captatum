@@ -263,6 +263,7 @@ function assertNoContentTables(file: string): void {
   db.close();
   assert.deepEqual(tables, [
     "oauth_auth_codes",
+    "oauth_consent_jtis",
     "oauth_refresh_token_families",
     "oauth_refresh_tokens",
   ]);

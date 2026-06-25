@@ -330,6 +330,19 @@ test("approve rejects a POST with no Origin header (OAUTH-4 fail-closed)", async
   await ctx.app.close();
 });
 
+test("approve rejects a replayed consent token (OAUTH-2 single-use)", async () => {
+  const ctx = await setup();
+  const authorize = await ctx.app.inject({ method: "GET", url: "/oauth/authorize", headers: { "cf-access-jwt-assertion": STUB_TOKEN }, query: { response_type: "code", client_id: "client-1", redirect_uri: REDIRECT, code_challenge: pkceChallenge("verifier-12345678901234567890"), code_challenge_method: "S256", state: "s" } });
+  const cookie = firstCookie(authorize.headers["set-cookie"]);
+  const headers = { cookie, origin: ctx.config.issuer };
+  const first = await ctx.app.inject({ method: "POST", url: "/oauth/authorize/approve", headers, payload: { approved: true } });
+  assert.equal(first.statusCode, 302, "first approve mints a code");
+  const replay = await ctx.app.inject({ method: "POST", url: "/oauth/authorize/approve", headers, payload: { approved: true } });
+  assert.equal(replay.statusCode, 400, "replay is rejected");
+  assert.equal(replay.json().error.code, "invalid_grant");
+  await ctx.app.close();
+});
+
 test("scope helpers enforce read versus transform", () => {
   assert.equal(requiredScopeForCaptatum({ output: "raw" }), "fetch:read");
   assert.equal(requiredScopeForCaptatum({ output: "summary" }), "fetch:transform");
@@ -453,12 +466,18 @@ class MemoryStore implements StorePort {
   readonly authCodes = new Map<string, AuthCodeRecord>();
   readonly refreshTokens = new Map<string, RefreshTokenRecord & { consumedAt: string | null }>();
   readonly families = new Map<string, string | null>();
+  readonly consentJtis = new Set<string>();
 
   async saveAuthCode(input: SaveAuthCodeInput): Promise<void> { this.authCodes.set(input.codeHash, { ...input }); }
   async consumeAuthCode(codeHash: string, nowIso: string): Promise<AuthCodeRecord | null> {
     const record = this.authCodes.get(codeHash) ?? null;
     this.authCodes.delete(codeHash);
     return record && record.expiresAt > nowIso ? record : null;
+  }
+  async consumeConsentJti(jti: string, _expiresAtIso: string): Promise<boolean> {
+    const first = !this.consentJtis.has(jti);
+    this.consentJtis.add(jti);
+    return first;
   }
   async saveRefreshToken(input: SaveRefreshTokenInput): Promise<void> {
     this.families.set(input.familyId, this.families.get(input.familyId) ?? null);

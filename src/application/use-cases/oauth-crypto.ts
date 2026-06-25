@@ -47,6 +47,11 @@ export function generateRefreshFamilyId(): string {
   return base64url(randomBytes(18));
 }
 
+/** OAUTH-2: single-use id minted into each consent token; consumed on approve. */
+export function generateConsentJti(): string {
+  return base64url(randomBytes(18));
+}
+
 export function generateRefreshToken(familyId: string = generateRefreshFamilyId()): string {
   return `${REFRESH_PREFIX}.${familyId}.${base64url(randomBytes(32))}`;
 }
@@ -82,6 +87,7 @@ export async function signConsentToken(
   const now = nowSeconds(clock);
   return await new SignJWT({
     typ: "captatum-consent",
+    jti: generateConsentJti(),
     client_id: claims.clientId,
     redirect_uri: claims.redirectUri,
     resource: claims.resource,
@@ -102,7 +108,7 @@ export async function verifyConsentToken(
   token: string,
   config: HostedOAuthConfig,
   clock?: ClockPort,
-): Promise<ConsentRequestClaims> {
+): Promise<ConsentRequestClaims & { jti: string }> {
   try {
     const { payload } = await jwtVerify(token, consentSecret(config), {
       algorithms: ["HS256"],
@@ -110,7 +116,7 @@ export async function verifyConsentToken(
       audience: CONSENT_AUDIENCE,
       currentDate: clock ? new Date(clock.nowMs()) : undefined,
     });
-    return consentClaims(payload);
+    return { ...consentClaims(payload), jti: requiredString(payload.jti, "jti") };
   } catch {
     throw new OAuthError("invalid_consent", "Consent token is invalid or expired");
   }

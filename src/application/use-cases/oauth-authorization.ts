@@ -78,6 +78,11 @@ export class OAuthAuthorizationUseCase {
     try {
       if (input.approved === false) throw new OAuthError("access_denied", "Consent was denied");
       const consent = await verifyConsentToken(required(input.consentToken, "consent_token"), this.config, this.clock);
+      // OAUTH-2: bind the consent token to a single use — a replay (same jti) is rejected.
+      const consentExpiresAt = expiresAtIso(this.clock, this.config.consentTokenTtlSeconds);
+      if (!(await this.store.consumeConsentJti(consent.jti, consentExpiresAt))) {
+        throw new OAuthError("invalid_grant", "Consent token has already been used");
+      }
       const code = generateAuthorizationCode();
       await this.store.saveAuthCode({
         codeHash: sha256Hex(code),

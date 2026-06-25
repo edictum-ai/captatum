@@ -29,6 +29,11 @@ export const TIDB_MIGRATIONS = [
     KEY idx_oauth_refresh_tokens_family_id (family_id),
     KEY idx_oauth_refresh_tokens_expires_at (expires_at)
   )`,
+  `CREATE TABLE IF NOT EXISTS oauth_consent_jtis (
+    jti CHAR(48) NOT NULL PRIMARY KEY,
+    expires_at VARCHAR(32) NOT NULL,
+    KEY idx_oauth_consent_jtis_expires_at (expires_at)
+  )`,
 ];
 
 export async function migrateTidbStore(executor: TidbExecutor): Promise<void> {
