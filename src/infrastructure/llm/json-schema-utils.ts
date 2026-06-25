@@ -81,13 +81,15 @@ function isLikelyCatastrophicPattern(pattern: string): boolean {
     if (ch === ")" && stack.length > 0) {
       const g = stack.pop()!;
       g.alts.push(g.cur);
-      const quantified = g.quantified || isQuantifier(pattern[index + 1]);
-      // nested quantifier (a+)+, duplicate-alternation overlap (a|a)+, OR
-      // prefix-overlap alternation (a|aa)+ / (a|ab)+ — distinct branches that can
-      // both match the same input, so a quantifier backtracks catastrophically.
-      if (quantified && (g.quantified || hasOverlappingAlternation(g.alts))) return true;
-      // Propagate: a quantified inner group makes the enclosing group "quantified".
-      if (quantified && stack.length > 0) stack[stack.length - 1].quantified = true;
+      const groupQuantified = isQuantifier(pattern[index + 1]);
+      // Catastrophic only when the group ITSELF is quantified: nested quantifier
+      // (a+)+ (g.quantified = it contained a quantifier) OR overlapping alternation
+      // (a|a)+ / (a|aa)+. A group that merely contains a quantifier but is not
+      // repeated (e.g. ([0-9]+) ) is fine.
+      if (groupQuantified && (g.quantified || hasOverlappingAlternation(g.alts))) return true;
+      // Propagate: a quantified group (or one containing a quantifier) makes the
+      // enclosing group "contain a quantifier" — so ((a+))+ is caught at the outer ).
+      if ((g.quantified || groupQuantified) && stack.length > 0) stack[stack.length - 1].quantified = true;
       continue;
     }
     if (isQuantifier(ch) && stack.length > 0) { stack[stack.length - 1].quantified = true; continue; }

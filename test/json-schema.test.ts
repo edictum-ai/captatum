@@ -57,6 +57,19 @@ test("schema pattern with duplicate- or prefix-overlap alternation is rejected (
   assert.equal(validateJsonSchema("ab", { pattern: "^(a|b)+$" }).unsupported, undefined);
 });
 
+test("schema pattern with a quantified group that is NOT repeated stays valid (TRANSFORM-2 FP guard)", () => {
+  // ([0-9]+) contains a quantifier but is not itself quantified -> safe.
+  const r = validateJsonSchema("123", { pattern: "^([0-9]+)$" });
+  assert.equal(r.valid, true);
+  assert.notEqual(r.unsupported, true);
+});
+
+test("schema pattern on a value over the 8 KiB cap surfaces as unverified, not silently accepted", () => {
+  const r = validateJsonSchema("a".repeat(9000) + "!", { pattern: "^[a]+$" });
+  assert.equal(r.valid, false);
+  assert.match(r.message ?? "", /8 KiB pattern-validation cap/);
+});
+
 test("schema pattern exceeding the length cap is rejected (TRANSFORM-2)", () => {
   assert.equal(validateJsonSchema("x", { pattern: "a".repeat(200) }).valid, false);
 });
