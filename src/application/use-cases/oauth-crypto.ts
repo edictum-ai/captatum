@@ -105,6 +105,7 @@ export async function verifyConsentToken(
 ): Promise<ConsentRequestClaims> {
   try {
     const { payload } = await jwtVerify(token, consentSecret(config), {
+      algorithms: ["HS256"],
       issuer: config.issuer,
       audience: CONSENT_AUDIENCE,
       currentDate: clock ? new Date(clock.nowMs()) : undefined,
@@ -142,6 +143,7 @@ export async function verifyAccessToken(
   try {
     const key = await importJWK(publicJwk(config), "ES256");
     const { payload } = await jwtVerify(token, key, {
+      algorithms: ["ES256"],
       issuer: config.issuer,
       audience: config.resource,
       currentDate: clock ? new Date(clock.nowMs()) : undefined,

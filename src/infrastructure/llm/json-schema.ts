@@ -94,7 +94,11 @@ function validateString(value: unknown, schema: Record<string, unknown>, path: s
   if (typeof schema.pattern === "string") {
     const pattern = toRegExp(schema.pattern, path);
     if (!pattern.valid) return pattern;
-    if (!pattern.value.test(value)) return invalid(`${path} must match pattern ${schema.pattern}`);
+    // TRANSFORM-2: cap the value fed to a user-supplied pattern (8 KiB) so a
+    // pathological pattern cannot scan the full (up to 5 MB) extract value.
+    const MAX_PATTERN_VALUE_LENGTH = 8192;
+    const testValue = value.length > MAX_PATTERN_VALUE_LENGTH ? value.slice(0, MAX_PATTERN_VALUE_LENGTH) : value;
+    if (!pattern.value.test(testValue)) return invalid(`${path} must match pattern ${schema.pattern}`);
   }
   return ok();
 }

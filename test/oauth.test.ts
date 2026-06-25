@@ -21,6 +21,12 @@ import { registerOAuthRoutes } from "../src/interfaces/http/oauth-routes.ts";
 
 const NOW_MS = Date.parse("2026-06-16T12:00:00.000Z");
 const REDIRECT = "https://client.test/callback";
+const STUB_SUBJECT = "agent@captatum.test";
+const STUB_TOKEN = "stub-good";
+const stubCfAccessVerifier = async (token: string) =>
+  token === STUB_TOKEN
+    ? { ok: true as const, claims: { email: STUB_SUBJECT } }
+    : { ok: false as const, reason: "access_jwt_invalid" };
 
 test("PKCE S256 authorize/approve/token flow issues ES256 access token and hashed refresh", async () => {
   const ctx = await setup();
@@ -45,7 +51,7 @@ test("PKCE S256 authorize/approve/token flow issues ES256 access token and hashe
   assert.match(body.refresh_token, /^ctrt\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
 
   const verified = await verifyAccessToken(body.access_token, ctx.config, ctx.clock);
-  assert.equal(verified.subject, "hosted-user");
+  assert.equal(verified.subject, STUB_SUBJECT);
   assert.equal(verified.clientId, "client-1");
   assert.deepEqual(verified.scopes, ["fetch:read", "fetch:transform"]);
   assertNoRawSecrets(ctx.store.snapshot(), [approved.code, body.refresh_token]);
@@ -63,6 +69,7 @@ test("authorize rejects redirects outside the allowlist without a redirect", asy
   const response = await ctx.app.inject({
     method: "GET",
     url: "/oauth/authorize",
+    headers: { "cf-access-jwt-assertion": STUB_TOKEN },
     query: {
       response_type: "code",
       client_id: "client-1",
@@ -86,6 +93,7 @@ test("authorize rejects any redirect when the allowlist is the '*' wildcard (OAU
   const response = await ctx.app.inject({
     method: "GET",
     url: "/oauth/authorize",
+    headers: { "cf-access-jwt-assertion": STUB_TOKEN },
     query: {
       response_type: "code",
       client_id: "client-1",
@@ -104,6 +112,7 @@ test("authorize rejects an origin-prefix bypass (good.test.evil.test vs good.tes
   const response = await ctx.app.inject({
     method: "GET",
     url: "/oauth/authorize",
+    headers: { "cf-access-jwt-assertion": STUB_TOKEN },
     query: {
       response_type: "code",
       client_id: "client-1",
@@ -256,6 +265,71 @@ test("hosted production requires secrets while local binary auth bypass needs no
   assert.deepEqual(auth.scopes, ["fetch:read", "fetch:transform"]);
 });
 
+test("authorize fails closed (401) when no Cloudflare Access verifier is configured (AUTH-1)", async () => {
+  // No cfAccessVerifier in deps => resolveSubject must throw, never fall back to a placeholder subject.
+  const app = Fastify();
+  await registerOAuthRoutes(app, { config: hostedConfig(), store: new MemoryStore(), clock: new FakeClock(NOW_MS), audit: new MemoryAudit(), allowedOrigins: [] });
+  const response = await app.inject({
+    method: "GET",
+    url: "/oauth/authorize",
+    headers: { "cf-access-jwt-assertion": STUB_TOKEN },
+    query: { response_type: "code", client_id: "client-1", redirect_uri: REDIRECT, code_challenge: pkceChallenge("verifier-12345678901234567890"), code_challenge_method: "S256" },
+  });
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.json().error.code, "access_denied");
+  await app.close();
+});
+
+test("authorize fails closed (401) when the Access JWT is rejected (AUTH-1)", async () => {
+  const ctx = await setup();
+  const response = await ctx.app.inject({
+    method: "GET",
+    url: "/oauth/authorize",
+    headers: { "cf-access-jwt-assertion": "not-the-stub-token" },
+    query: { response_type: "code", client_id: "client-1", redirect_uri: REDIRECT, code_challenge: pkceChallenge("verifier-12345678901234567890"), code_challenge_method: "S256" },
+  });
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.json().error.code, "access_denied");
+  await ctx.app.close();
+});
+
+test("hosted boot fails closed without Cloudflare Access config (AUTH-1/CONFIG-2)", () => {
+  const base = {
+    CAPTATUM_FLAVOR: "hosted",
+    NODE_ENV: "production",
+    OAUTH_ISSUER: "https://captatum.test",
+    OAUTH_RESOURCE: "https://captatum.test/mcp",
+    OAUTH_CONSENT_SIGNING_SECRET: "test-consent-secret-with-enough-entropy",
+    OAUTH_SIGNING_PRIVATE_JWK: JSON.stringify(testPrivateJwk()),
+  } as Record<string, string>;
+  // no CF_ACCESS_* at all -> throws (not a silent hosted-user fallback)
+  assert.throws(() => loadAuthRuntimeConfig(base), /Cloudflare Access/);
+  // enabled but missing audience -> throws
+  assert.throws(() => loadAuthRuntimeConfig({ ...base, CF_ACCESS_ENABLED: "true" }), /Cloudflare Access/);
+  // fully configured -> boots hosted
+  const runtime = loadAuthRuntimeConfig({ ...base, CF_ACCESS_ENABLED: "true", CF_ACCESS_AUDIENCE: "aud", CF_ACCESS_CERTS_URL: "https://x/certs", CF_ACCESS_ISSUER: "https://x" });
+  assert.equal(runtime.flavor, "hosted");
+});
+
+test("approve rejects a cross-origin POST (OAUTH-4 CSRF fail-closed)", async () => {
+  const ctx = await setup();
+  const authorize = await ctx.app.inject({ method: "GET", url: "/oauth/authorize", headers: { "cf-access-jwt-assertion": STUB_TOKEN }, query: { response_type: "code", client_id: "client-1", redirect_uri: REDIRECT, code_challenge: pkceChallenge("verifier-12345678901234567890"), code_challenge_method: "S256" } });
+  const cookie = firstCookie(authorize.headers["set-cookie"]);
+  const approve = await ctx.app.inject({ method: "POST", url: "/oauth/authorize/approve", headers: { cookie, origin: "https://evil.test" }, payload: { approved: true, consent_token: "x" } });
+  assert.equal(approve.statusCode, 403);
+  assert.equal(approve.json().error.code, "invalid_origin");
+  await ctx.app.close();
+});
+
+test("approve rejects a POST with no Origin header (OAUTH-4 fail-closed)", async () => {
+  const ctx = await setup();
+  const authorize = await ctx.app.inject({ method: "GET", url: "/oauth/authorize", headers: { "cf-access-jwt-assertion": STUB_TOKEN }, query: { response_type: "code", client_id: "client-1", redirect_uri: REDIRECT, code_challenge: pkceChallenge("verifier-12345678901234567890"), code_challenge_method: "S256" } });
+  const cookie = firstCookie(authorize.headers["set-cookie"]);
+  const approve = await ctx.app.inject({ method: "POST", url: "/oauth/authorize/approve", headers: { cookie }, payload: { approved: true, consent_token: "x" } });
+  assert.equal(approve.statusCode, 403);
+  await ctx.app.close();
+});
+
 test("scope helpers enforce read versus transform", () => {
   assert.equal(requiredScopeForCaptatum({ output: "raw" }), "fetch:read");
   assert.equal(requiredScopeForCaptatum({ output: "summary" }), "fetch:transform");
@@ -272,7 +346,7 @@ async function setup(redirectAllowlist?: string[]): Promise<TestContext> {
   const store = new MemoryStore();
   const audit = new MemoryAudit();
   const config = hostedConfig(redirectAllowlist);
-  await registerOAuthRoutes(app, { config, store, clock, audit });
+  await registerOAuthRoutes(app, { config, store, clock, audit, allowedOrigins: [config.issuer], cfAccessVerifier: stubCfAccessVerifier });
   return { app, clock, store, audit, config };
 }
 
@@ -280,6 +354,7 @@ async function approveCode(ctx: TestContext, verifier: string, scope: string): P
   const authorize = await ctx.app.inject({
     method: "GET",
     url: "/oauth/authorize",
+    headers: { "cf-access-jwt-assertion": STUB_TOKEN },
     query: {
       response_type: "code",
       client_id: "client-1",
@@ -297,7 +372,7 @@ async function approveCode(ctx: TestContext, verifier: string, scope: string): P
   const approve = await ctx.app.inject({
     method: "POST",
     url: "/oauth/authorize/approve",
-    headers: { cookie },
+    headers: { cookie, origin: ctx.config.issuer },
     payload: { approved: true },
   });
   assert.equal(approve.statusCode, 302);

@@ -49,6 +49,10 @@ const INTERNAL_HOST_SUFFIXES = [
     .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
 ];
 
+/** Bounded URL-literal scan for embedded signed/internal URLs in content. */
+const SIGNED_URL_IN_CONTENT = /https?:\/\/[^\s"'<>)\]]{1,512}/gi;
+const MAX_CONTENT_SCAN = 100_000;
+
 export interface SensitivitySignal {
   sensitive: boolean;
   reason?: string;
@@ -69,6 +73,13 @@ export function detectSensitiveTransformInput(input: {
   }
   for (const pattern of SENSITIVE_HEADER_PATTERNS) {
     if (pattern.test(content)) return { sensitive: true, reason: "content_header_dump" };
+  }
+  // A public page that merely LINKS to a presigned CDN/S3 asset or an internal
+  // host must not be egressed to a hosted LLM. Bounded scan (REDOS/DoS hygiene).
+  const head = content.length > MAX_CONTENT_SCAN ? content.slice(0, MAX_CONTENT_SCAN) : content;
+  for (const match of head.matchAll(SIGNED_URL_IN_CONTENT)) {
+    const reason = signedUrlReason(match[0]) ?? internalHostReason(match[0]);
+    if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
   return { sensitive: false };
 }

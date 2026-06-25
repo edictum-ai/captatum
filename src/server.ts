@@ -70,10 +70,12 @@ async function shutdown(): Promise<void> {
 async function storeFor(runtimeConfig: AuthRuntimeConfig): Promise<StorePort | undefined> {
   if (runtimeConfig.flavor !== "hosted") return undefined;
   const sslCa = config.tidb.sslCa();
-  // SQLSTORE-1: TiDB Cloud requires TLS; OAuth token hashes + the DB password
-  // must not cross the wire in plaintext. Fail-boot in production without it.
-  if (process.env.NODE_ENV === "production" && !sslCa) {
-    throw new Error("Hosted production requires TIDB_SSL_CA (TiDB TLS)");
+  // SQLSTORE-1: any HOSTED deploy opens a TiDB connection, so require TLS
+  // (TIDB_SSL_CA) regardless of NODE_ENV — OAuth token hashes + the DB password
+  // must not cross the wire in plaintext. Gated on flavor (not NODE_ENV) so a
+  // hosted boot missing NODE_ENV=production still fails closed.
+  if (!sslCa) {
+    throw new Error("Hosted flavor requires TIDB_SSL_CA (TiDB TLS)");
   }
   return await createTidbStore({
     host: config.tidb.host(),

@@ -61,34 +61,35 @@ export function toRegExp(pattern: string, path: string): SchemaValidationResult 
 }
 
 /**
- * Reject the classic ReDoS shape: a quantified group that itself contains a
- * quantifier — e.g. (a+)+, (a*)*, (a?)+ — which backtracks exponentially
- * (TRANSFORM-2/REDOS-5). This is a heuristic (overlapping alternations like
- * (a|a)+ can also be catastrophic); RE2 is the bulletproof follow-up. Returns
- * true (unsafe) on a nested-quantifier construct.
+ * Reject the classic ReDoS shapes (TRANSFORM-2/REDOS-5): a quantified group that
+ * itself contains a quantifier — (a+)+, (a*)*, (a?)+ — AND a quantified group
+ * with a duplicate alternative — (a|a)+ — where both branches match the same
+ * input so the quantifier backtracks exponentially. Heuristic; RE2/timeout is
+ * the bulletproof follow-up. Returns true (unsafe) on either construct.
  */
 function isLikelyCatastrophicPattern(pattern: string): boolean {
   const isQuantifier = (ch: string | undefined): boolean =>
     ch === "*" || ch === "+" || ch === "?" || ch === "{";
-  const groupHadQuantifier: boolean[] = [];
+  const stack: { quantified: boolean; alts: string[]; cur: string }[] = [];
   let escaped = false;
   for (let index = 0; index < pattern.length; index += 1) {
     const ch = pattern[index];
-    if (escaped) { escaped = false; continue; }
+    if (escaped) { escaped = false; if (stack.length > 0) stack[stack.length - 1].cur += ch; continue; }
     if (ch === "\\") { escaped = true; continue; }
-    if (ch === "(") {
-      groupHadQuantifier.push(false);
-    } else if (ch === ")" && groupHadQuantifier.length > 0) {
-      const had = groupHadQuantifier.pop() ?? false;
-      if (had && isQuantifier(pattern[index + 1])) return true;
-      // Propagate: a quantified inner group makes the enclosing group "quantified"
-      // too, so wrapped patterns like ((a+))+ are caught.
-      if (had && groupHadQuantifier.length > 0) {
-        groupHadQuantifier[groupHadQuantifier.length - 1] = true;
-      }
-    } else if (isQuantifier(ch) && groupHadQuantifier.length > 0) {
-      groupHadQuantifier[groupHadQuantifier.length - 1] = true;
+    if (ch === "(") { stack.push({ quantified: false, alts: [], cur: "" }); continue; }
+    if (ch === "|") { if (stack.length > 0) { const g = stack[stack.length - 1]; g.alts.push(g.cur); g.cur = ""; } continue; }
+    if (ch === ")" && stack.length > 0) {
+      const g = stack.pop()!;
+      g.alts.push(g.cur);
+      const quantified = g.quantified || isQuantifier(pattern[index + 1]);
+      // nested quantifier (a+)+ OR duplicate-alternation overlap (a|a)+
+      if (quantified && (g.quantified || g.alts.length !== new Set(g.alts).size)) return true;
+      // Propagate: a quantified inner group makes the enclosing group "quantified".
+      if (quantified && stack.length > 0) stack[stack.length - 1].quantified = true;
+      continue;
     }
+    if (isQuantifier(ch) && stack.length > 0) { stack[stack.length - 1].quantified = true; continue; }
+    if (stack.length > 0) stack[stack.length - 1].cur += ch;
   }
   return false;
 }

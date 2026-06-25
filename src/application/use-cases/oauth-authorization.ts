@@ -30,7 +30,7 @@ export interface AuthorizeRequestInput {
   resource?: string;
   scope?: string;
   state?: string;
-  /** Authenticated subject (verified Cloudflare Access email); falls back to SUBJECT. */
+  /** Authenticated subject — the verified Cloudflare Access email. REQUIRED (AUTH-1: no placeholder fallback). */
   subject?: string;
 }
 
@@ -48,8 +48,6 @@ export interface ApprovedAuthorizationCode {
   code: string;
   state?: string;
 }
-
-const SUBJECT = "hosted-user";
 
 export class OAuthAuthorizationUseCase {
   private readonly config: HostedOAuthConfig;
@@ -113,7 +111,7 @@ export class OAuthAuthorizationUseCase {
     }
     const codeChallenge = required(input.codeChallenge, "code_challenge");
     const scopes = normalizeScopes(input.scope);
-    return { clientId, redirectUri, resource, scopes, codeChallenge, codeChallengeMethod: "S256", state: input.state, subject: input.subject ?? SUBJECT };
+    return { clientId, redirectUri, resource, scopes, codeChallenge, codeChallengeMethod: "S256", state: input.state, subject: required(input.subject, "subject") };
   }
 
   private allowedRedirect(value: string): string {
