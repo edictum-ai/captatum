@@ -30,7 +30,7 @@ export interface AuthorizeRequestInput {
   resource?: string;
   scope?: string;
   state?: string;
-  /** Authenticated subject (verified Cloudflare Access email); falls back to SUBJECT. */
+  /** Authenticated subject — the verified Cloudflare Access email. REQUIRED (AUTH-1: no placeholder fallback). */
   subject?: string;
 }
 
@@ -48,8 +48,6 @@ export interface ApprovedAuthorizationCode {
   code: string;
   state?: string;
 }
-
-const SUBJECT = "hosted-user";
 
 export class OAuthAuthorizationUseCase {
   private readonly config: HostedOAuthConfig;
@@ -80,6 +78,11 @@ export class OAuthAuthorizationUseCase {
     try {
       if (input.approved === false) throw new OAuthError("access_denied", "Consent was denied");
       const consent = await verifyConsentToken(required(input.consentToken, "consent_token"), this.config, this.clock);
+      // OAUTH-2: bind the consent token to a single use — a replay (same jti) is rejected.
+      const consentExpiresAt = expiresAtIso(this.clock, this.config.consentTokenTtlSeconds);
+      if (!(await this.store.consumeConsentJti(consent.jti, consentExpiresAt))) {
+        throw new OAuthError("invalid_grant", "Consent token has already been used");
+      }
       const code = generateAuthorizationCode();
       await this.store.saveAuthCode({
         codeHash: sha256Hex(code),
@@ -113,24 +116,11 @@ export class OAuthAuthorizationUseCase {
     }
     const codeChallenge = required(input.codeChallenge, "code_challenge");
     const scopes = normalizeScopes(input.scope);
-    return { clientId, redirectUri, resource, scopes, codeChallenge, codeChallengeMethod: "S256", state: input.state, subject: input.subject ?? SUBJECT };
+    return { clientId, redirectUri, resource, scopes, codeChallenge, codeChallengeMethod: "S256", state: input.state, subject: required(input.subject, "subject") };
   }
 
   private allowedRedirect(value: string): string {
-    let normalized: string;
-    try {
-      const url = new URL(value);
-      url.hash = "";
-      normalized = url.href;
-    } catch {
-      throw new OAuthError("invalid_redirect_uri", "redirect_uri is invalid");
-    }
-    if (this.config.redirectAllowlist.includes("*")) {
-      // global wildcard: allow all
-    } else if (!this.config.redirectAllowlist.some((e) => (e.endsWith("*") ? normalized.startsWith(e.slice(0, -1)) : e === normalized))) {
-      throw new OAuthError("invalid_redirect_uri", "redirect_uri is not allowed");
-    }
-    return normalized;
+    return assertAllowedRedirectUri(value, this.config.redirectAllowlist);
   }
 
   private redirectWithCode(redirectUri: string, code: string, state?: string): string {
@@ -179,6 +169,38 @@ export class OAuthAuthorizationUseCase {
 function required(value: string | undefined, label: string): string {
   if (typeof value === "string" && value) return value;
   throw new OAuthError("invalid_request", `${label} is required`);
+}
+
+/** OAUTH-1/CONFIG-3: validate a redirect_uri against an allowlist. No allow-all
+ * ("*") and no unanchored prefix — an entry matches only if it is the exact
+ * redirect_uri or an exact ORIGIN (scheme://host[:port], no path); userinfo is
+ * rejected. Shared by authorize (here) and register (oauth-routes) so the two
+ * validators cannot drift. Returns the normalized URI. */
+export function assertAllowedRedirectUri(value: string, allowlist: string[]): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new OAuthError("invalid_redirect_uri", "redirect_uri is invalid");
+  }
+  if (url.username || url.password) {
+    throw new OAuthError("invalid_redirect_uri", "redirect_uri must not contain userinfo");
+  }
+  url.hash = "";
+  const normalized = url.href;
+  const origin = `${url.protocol}//${url.host}`;
+  const ok = allowlist.some((entry) => {
+    if (entry === "*") return false;
+    if (entry === normalized) return true;
+    try {
+      const e = new URL(entry);
+      return (!e.pathname || e.pathname === "/") && !e.search && `${e.protocol}//${e.host}` === origin;
+    } catch {
+      return false;
+    }
+  });
+  if (!ok) throw new OAuthError("invalid_redirect_uri", "redirect_uri is not allowed");
+  return normalized;
 }
 
 function hostOf(value: string): string | undefined {

@@ -10,6 +10,8 @@
  * (token prefixes, PEM headers, signed URLs) without flagging discussion text.
  * Security-relevant change — reflect in docs/threat-model.md.
  */
+import { isPrivate } from "../../domain/policy.ts";
+
 const SENSITIVE_CREDENTIAL_PATTERNS = [
   /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/i,
   /\bgh[opsu]_[A-Za-z0-9]{20,}\b/,
@@ -49,6 +51,10 @@ const INTERNAL_HOST_SUFFIXES = [
     .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
 ];
 
+/** Bounded URL-literal scan for embedded signed/internal URLs in content. */
+const SIGNED_URL_IN_CONTENT = /https?:\/\/[^\s"'<>)\]]{1,512}/gi;
+const MAX_CONTENT_SCAN = 100_000;
+
 export interface SensitivitySignal {
   sensitive: boolean;
   reason?: string;
@@ -70,6 +76,17 @@ export function detectSensitiveTransformInput(input: {
   for (const pattern of SENSITIVE_HEADER_PATTERNS) {
     if (pattern.test(content)) return { sensitive: true, reason: "content_header_dump" };
   }
+  // A public page that merely LINKS to a presigned CDN/S3 asset or an internal
+  // host must not be egressed to a hosted LLM. Bounded scan (REDOS/DoS hygiene).
+  const truncated = content.length > MAX_CONTENT_SCAN;
+  const head = truncated ? content.slice(0, MAX_CONTENT_SCAN) : content;
+  for (const match of head.matchAll(SIGNED_URL_IN_CONTENT)) {
+    const reason = signedUrlReason(match[0]) ?? internalHostReason(match[0]);
+    if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
+  }
+  // Fail closed: if the content was too large to scan fully, a signed/internal URL
+  // past the cap could still egress to a hosted LLM — route local rather than risk it.
+  if (truncated) return { sensitive: true, reason: "content_exceeds_scan_cap" };
   return { sensitive: false };
 }
 
@@ -106,6 +123,9 @@ function internalHostReason(sourceUrl: string): string | undefined {
     if (host === "localhost" || INTERNAL_HOST_SUFFIXES.some((s) => host === s.slice(1) || host.endsWith(s))) {
       return "internal_host";
     }
+    // Private/reserved IP literals (169.254.169.254 metadata, RFC1918, etc.) — reuse
+    // the same classification as the fetch/browser SSRF guards.
+    if (isPrivate(host)) return "internal_host";
   } catch { /* ignore unparseable URLs */ }
   return undefined;
 }

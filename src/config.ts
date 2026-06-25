@@ -73,6 +73,9 @@ export const config = {
     cdpEndpoint: () => envString("CAPTATUM_BROWSER_CDP_ENDPOINT", ""),
     /** Chromium sandbox for in-process launch (default true — threat model: never --no-sandbox). Only relevant when no sidecar is configured. */
     chromiumSandbox: () => envString("CAPTATUM_BROWSER_INPROCESS_SANDBOX", "true") === "true",
+    /** DOS-2: max concurrent Tier-3 renders. Chromium is the expensive resource, so
+     * bound it independently of the global admission cap (default 2). */
+    maxConcurrentRenders: () => envPositiveInteger("CAPTATUM_MAX_CONCURRENT_RENDERS", 2),
   },
   tidb: {
     host: () => envString("TIDB_HOST", ""),

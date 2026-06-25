@@ -6,6 +6,7 @@ import type { AuthRuntimeConfig } from "../../application/use-cases/oauth-config
 import { createRequestAuthorizer } from "../../application/use-cases/request-auth.ts";
 import type { CaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import { config } from "../../config.ts";
+import { createCloudflareAccessJwtVerifier } from "../../infrastructure/auth/cloudflare-access-jwt.ts";
 import { registerOAuthRoutes } from "./oauth-routes.ts";
 import { registerMcpRoute } from "./mcp-route.ts";
 import { sendHttpError } from "./errors.ts";
@@ -57,12 +58,19 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
 
   if (deps.runtime.flavor === "hosted") {
     if (!deps.store) throw new Error("Hosted HTTP app requires a StorePort");
+    // Build the Cloudflare Access verifier in the composition root and inject it
+    // (the boot gate in oauth-config guarantees CF_ACCESS_* are set for hosted).
+    const cf = config.cloudflareAccess;
+    const cfAccessVerifier = cf.enabled() && cf.certsUrl()
+      ? createCloudflareAccessJwtVerifier({ audience: cf.audience(), certsUrl: cf.certsUrl(), issuer: cf.issuer() })
+      : undefined;
     await registerOAuthRoutes(app, {
       config: deps.runtime.oauth,
       store: deps.store,
       clock: deps.clock,
       audit: deps.audit,
       allowedOrigins: deps.allowedOrigins,
+      cfAccessVerifier,
     });
   }
 

@@ -94,6 +94,12 @@ function validateString(value: unknown, schema: Record<string, unknown>, path: s
   if (typeof schema.pattern === "string") {
     const pattern = toRegExp(schema.pattern, path);
     if (!pattern.valid) return pattern;
+    // TRANSFORM-2: a user-supplied pattern must not scan an unbounded value. Rather
+    // than silently matching only a prefix (a long value could violate the pattern
+    // in its unchecked tail), values past the cap surface as unverified so the
+    // caller knows the pattern could not be fully checked (non-fatal advisory).
+    const MAX_PATTERN_VALUE_LENGTH = 8192;
+    if (value.length > MAX_PATTERN_VALUE_LENGTH) return invalid(`${path} exceeds the 8 KiB pattern-validation cap; pattern not verified`);
     if (!pattern.value.test(value)) return invalid(`${path} must match pattern ${schema.pattern}`);
   }
   return ok();

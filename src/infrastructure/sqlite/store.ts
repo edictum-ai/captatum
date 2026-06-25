@@ -47,6 +47,16 @@ export class SqliteStore implements StorePort {
     });
   }
 
+  async consumeConsentJti(jti: string, expiresAtIso: string): Promise<boolean> {
+    this.ensureOpen();
+    // OAUTH-2: INSERT ... ON CONFLICT DO NOTHING — a row is inserted only on the
+    // first use; a replay hits the existing PK and inserts 0 rows.
+    const result = this.db.prepare(
+      `INSERT INTO oauth_consent_jtis (jti, expires_at) VALUES (?, ?) ON CONFLICT(jti) DO NOTHING`,
+    ).run(jti, expiresAtIso);
+    return (result.changes ?? 0) > 0;
+  }
+
   async saveRefreshToken(input: SaveRefreshTokenInput): Promise<void> {
     this.ensureOpen();
     validateRefreshToken(input);
@@ -109,6 +119,7 @@ export class SqliteStore implements StorePort {
     this.ensureOpen();
     this.transaction(() => {
       this.db.prepare(`DELETE FROM oauth_auth_codes WHERE expires_at < ?`).run(nowIso);
+      this.db.prepare(`DELETE FROM oauth_consent_jtis WHERE expires_at < ?`).run(nowIso);
       this.db.prepare(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND consumed_at IS NULL`).run(nowIso);
       this.db.prepare(`DELETE FROM oauth_refresh_token_families WHERE revoked_at IS NOT NULL AND family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`).run();
     });

@@ -4,12 +4,17 @@ import type { AuditLoggerPort } from "../../application/ports/audit.ts";
 import type { StorePort } from "../../application/ports/store.ts";
 import type { HostedOAuthConfig } from "../../application/use-cases/oauth-config.ts";
 import { publicJwk } from "../../application/use-cases/oauth-crypto.ts";
-import { OAuthAuthorizationUseCase, type AuthorizeRequestInput } from "../../application/use-cases/oauth-authorization.ts";
+import { OAuthAuthorizationUseCase, assertAllowedRedirectUri, type AuthorizeRequestInput } from "../../application/use-cases/oauth-authorization.ts";
 import { OAuthTokenUseCase } from "../../application/use-cases/oauth-token.ts";
 import { OAuthError, oauthErrorBody } from "../../application/use-cases/oauth-errors.ts";
 import { OAUTH_SCOPES } from "../../application/use-cases/oauth-scopes.ts";
-import { config } from "../../config.ts";
-import { createCloudflareAccessJwtVerifier } from "../../infrastructure/auth/cloudflare-access-jwt.ts";
+
+/** Cloudflare Access JWT verifier port. The concrete verifier is built once in the
+ * composition root and injected via deps (testable; not a module-import side effect). */
+export type CfAccessVerifier = (token: string) => Promise<
+  | { ok: true; claims: { email: string } }
+  | { ok: false; reason: string }
+>;
 
 export interface OAuthRoutesDeps {
   config: HostedOAuthConfig;
@@ -17,26 +22,19 @@ export interface OAuthRoutesDeps {
   clock: ClockPort;
   audit: AuditLoggerPort;
   allowedOrigins: string[];
+  /** Required for the hosted flavor: verifies Cf-Access-Jwt-Assertion so the OAuth
+   * subject is a real verified identity. Absent => /oauth/authorize fails closed (AUTH-1). */
+  cfAccessVerifier?: CfAccessVerifier;
 }
 
 const CONSENT_COOKIE = "captatum_consent";
 
-// Cloudflare Access JWT verifier (created once when configured). When enabled,
-// the /oauth/authorize subject is the verified Access email, not a placeholder.
-const cfAccess = config.cloudflareAccess;
-const cfAccessVerifier = cfAccess.enabled() && cfAccess.certsUrl()
-  ? createCloudflareAccessJwtVerifier({
-    audience: cfAccess.audience(),
-    certsUrl: cfAccess.certsUrl(),
-    issuer: cfAccess.issuer(),
-  })
-  : undefined;
-
-async function resolveSubject(headers: FastifyRequest["headers"]): Promise<string> {
-  if (!cfAccessVerifier) return "hosted-user"; // CF Access not configured (local/dev/single-user)
+async function resolveSubject(verifier: CfAccessVerifier | undefined, headers: FastifyRequest["headers"]): Promise<string> {
+  // AUTH-1: NEVER fall back to a placeholder subject. No verifier => fail closed.
+  if (!verifier) throw new OAuthError("access_denied", "Cloudflare Access identity is required but not configured", 401);
   const token = headerString(headers, "cf-access-jwt-assertion");
   if (!token) throw new OAuthError("access_denied", "Cloudflare Access JWT is required", 401);
-  const verified = await cfAccessVerifier(token);
+  const verified = await verifier(token);
   if (!verified.ok) throw new OAuthError("access_denied", `Cloudflare Access JWT rejected: ${verified.reason}`, 401);
   return verified.claims.email;
 }
@@ -56,7 +54,7 @@ export async function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoute
   app.post("/oauth/register", async (request, reply) => registerClient(request, reply, deps));
   app.get("/oauth/authorize", async (request, reply) => {
     try {
-      const prepared = await authorization.prepare({ ...queryParams(request), subject: await resolveSubject(request.headers) });
+      const prepared = await authorization.prepare({ ...queryParams(request), subject: await resolveSubject(deps.cfAccessVerifier, request.headers) });
       setConsentCookie(reply, prepared.consentToken, deps.config.consentTokenTtlSeconds);
       const esc = (v: string) => v.replace(/[<>&"']/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" })[c]!);
       const scopeList = prepared.scopes.map((s) => `<div class="scope">${esc(s)}</div>`).join("");
@@ -70,11 +68,12 @@ export async function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoute
 
   app.post("/oauth/authorize/approve", async (request, reply) => {
     try {
-      // OAUTH-4: CSRF defense — reject cross-origin POSTs. The consent form is
-      // same-origin (served by this gateway), so allow the issuer origin too.
+      // OAUTH-4: CSRF defense — fail CLOSED. A state-changing approve POST MUST
+      // carry a same-origin (issuer) or explicitly-allowed Origin; a missing or
+      // foreign Origin is rejected, never ignored.
       const origin = headerString(request.headers, "origin");
       const issuerOrigin = deps.config.issuer.replace(/\/$/, "");
-      if (origin && !deps.allowedOrigins.includes(origin) && origin !== issuerOrigin) {
+      if (!origin || (!deps.allowedOrigins.includes(origin) && origin !== issuerOrigin)) {
         return sendError(reply, new OAuthError("invalid_origin", "Origin not allowed", 403));
       }
       const body = objectBody(request.body);
@@ -231,13 +230,10 @@ function setConsentCookie(reply: FastifyReply, token: string, ttlSeconds: number
 }
 
 function assertAllowedRedirect(value: string, allowlist: string[]): void {
-  if (allowlist.includes("*")) return;
-  const url = new URL(value);
-  url.hash = "";
-  const href = url.href;
-  if (!allowlist.some((e) => (e.endsWith("*") ? href.startsWith(e.slice(0, -1)) : e === href))) {
-    throw new OAuthError("invalid_redirect_uri", "redirect_uri is not allowed");
-  }
+  // OAUTH-1/CONFIG-3: shared validator (no allow-all, no unanchored prefix) — same
+  // rule as /oauth/authorize, so register + authorize cannot drift. Register is
+  // stateless, so this is defense-in-depth, but kept consistent by construction.
+  assertAllowedRedirectUri(value, allowlist);
 }
 
 function hostOf(value: string): string | undefined {

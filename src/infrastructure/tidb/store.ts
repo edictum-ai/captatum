@@ -40,6 +40,16 @@ export class TidbStore implements StorePort {
     });
   }
 
+  async consumeConsentJti(jti: string, expiresAtIso: string): Promise<boolean> {
+    this.ensureOpen();
+    // OAUTH-2: INSERT IGNORE inserts only on the first use; a replay affects 0 rows.
+    const [result] = await this.client.execute(
+      `INSERT IGNORE INTO oauth_consent_jtis (jti, expires_at) VALUES (?, ?)`,
+      [jti, expiresAtIso],
+    );
+    return affectedRows(result) > 0;
+  }
+
   async saveRefreshToken(input: SaveRefreshTokenInput): Promise<void> {
     this.ensureOpen();
     validateRefreshToken(input);
@@ -103,6 +113,7 @@ export class TidbStore implements StorePort {
     assertUtcIsoTimestamp(nowIso, "nowIso");
     await this.transaction(async (tx) => {
       await tx.execute(`DELETE FROM oauth_auth_codes WHERE expires_at < ?`, [nowIso]);
+      await tx.execute(`DELETE FROM oauth_consent_jtis WHERE expires_at < ?`, [nowIso]);
       await tx.execute(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND consumed_at IS NULL`, [nowIso]);
       await tx.execute(`DELETE FROM oauth_refresh_token_families WHERE revoked_at IS NOT NULL AND family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`);
     });

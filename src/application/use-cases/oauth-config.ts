@@ -28,6 +28,7 @@ export function loadAuthRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Aut
   const flavor = readFlavor(env);
   if (flavor === "local-binary") return { flavor };
   assertHostedProductionSecrets(env);
+  assertHostedCloudflareAccess(env);
   return { flavor, oauth: readHostedOAuthConfig(env) };
 }
 
@@ -50,6 +51,21 @@ export function assertHostedProductionSecrets(env: NodeJS.ProcessEnv = process.e
   const jwk = parsePrivateJwk(env.OAUTH_SIGNING_PRIVATE_JWK ?? "");
   if (jwk.kty !== "EC" || jwk.crv !== "P-256" || !jwk.d || !jwk.x || !jwk.y) {
     throw new AuthConfigError("OAUTH_SIGNING_PRIVATE_JWK must be an EC P-256 key with d, x, y");
+  }
+}
+
+/** AUTH-1/CONFIG-2: the hosted flavor MUST sit behind Cloudflare Access. A hosted
+ * boot missing CF_ACCESS_ENABLED=true + audience/certs/issuer fails closed here,
+ * rather than silently degrading the OAuth subject to a placeholder identity. */
+function assertHostedCloudflareAccess(env: NodeJS.ProcessEnv): void {
+  const enabled = (env.CF_ACCESS_ENABLED ?? "false") === "true";
+  const audience = env.CF_ACCESS_AUDIENCE?.trim();
+  const certsUrl = env.CF_ACCESS_CERTS_URL?.trim();
+  const issuer = env.CF_ACCESS_ISSUER?.trim();
+  if (!enabled || !audience || !certsUrl || !issuer) {
+    throw new AuthConfigError(
+      "Hosted flavor requires Cloudflare Access: CF_ACCESS_ENABLED=true plus CF_ACCESS_AUDIENCE, CF_ACCESS_CERTS_URL, CF_ACCESS_ISSUER",
+    );
   }
 }
 

@@ -6,6 +6,7 @@ import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts"
 import type { HtmlExtraction, HtmlExtractionInput } from "../src/application/use-cases/tier1-extract.ts";
 import { validateJsonSchema } from "../src/infrastructure/llm/json-schema.ts";
 import { LlmTransformer, ModelRouter } from "../src/infrastructure/llm/model-router.ts";
+import { detectSensitiveTransformInput } from "../src/infrastructure/llm/safety.ts";
 import type { LlmGenerateInput, LlmGenerateResult, LlmModelCandidate, LlmProvider } from "../src/infrastructure/llm/types.ts";
 
 test("default summary with configured provider returns transformed provenance", async () => {
@@ -392,6 +393,17 @@ test("sensitive content prefers local Ollama and skips hosted provider", async (
   assert.equal(result.result, "local summary");
   assert.equal(hosted.calls.length, 0);
   assert.equal(local.calls.length, 1);
+});
+
+test("detectSensitiveTransformInput flags an embedded private-IP URL (SSRF metadata)", () => {
+  const r = detectSensitiveTransformInput({ content: "creds at http://169.254.169.254/latest/meta-data/iam" });
+  assert.equal(r.sensitive, true);
+});
+
+test("detectSensitiveTransformInput fails closed when content exceeds the scan cap", () => {
+  const r = detectSensitiveTransformInput({ content: "x".repeat(100_001) });
+  assert.equal(r.sensitive, true);
+  assert.match(r.reason ?? "", /scan_cap/);
 });
 
 class FakeClock implements ClockPort {

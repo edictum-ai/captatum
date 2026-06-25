@@ -47,6 +47,31 @@ test("schema pattern with wrapped nested quantifiers is rejected (TRANSFORM-2)",
   assert.equal(validateJsonSchema("aaa", { pattern: "^((a+))+$" }).unsupported, true);
 });
 
+test("schema pattern with duplicate- or prefix-overlap alternation is rejected (TRANSFORM-2)", () => {
+  // (a|a)+ exact-duplicate overlap and (a|aa)+ / (a|ab)+ prefix-overlap: distinct
+  // branches that can both match the same input, so a quantifier backtracks hard.
+  assert.equal(validateJsonSchema("aaa", { pattern: "^(a|a)+$" }).unsupported, true);
+  assert.equal(validateJsonSchema("aaa", { pattern: "^(a|aa)+$" }).unsupported, true);
+  assert.equal(validateJsonSchema("aab", { pattern: "^(a|ab)+$" }).unsupported, true);
+  // wrapped overlap ((a|a))+ — the inner overlap must propagate to the outer quantifier.
+  assert.equal(validateJsonSchema("aaa", { pattern: "^((a|a))+$" }).unsupported, true);
+  // disjoint alternation (a|b)+ is safe and must NOT be rejected.
+  assert.equal(validateJsonSchema("ab", { pattern: "^(a|b)+$" }).unsupported, undefined);
+});
+
+test("schema pattern with a quantified group that is NOT repeated stays valid (TRANSFORM-2 FP guard)", () => {
+  // ([0-9]+) contains a quantifier but is not itself quantified -> safe.
+  const r = validateJsonSchema("123", { pattern: "^([0-9]+)$" });
+  assert.equal(r.valid, true);
+  assert.notEqual(r.unsupported, true);
+});
+
+test("schema pattern on a value over the 8 KiB cap surfaces as unverified, not silently accepted", () => {
+  const r = validateJsonSchema("a".repeat(9000) + "!", { pattern: "^[a]+$" });
+  assert.equal(r.valid, false);
+  assert.match(r.message ?? "", /8 KiB pattern-validation cap/);
+});
+
 test("schema pattern exceeding the length cap is rejected (TRANSFORM-2)", () => {
   assert.equal(validateJsonSchema("x", { pattern: "a".repeat(200) }).valid, false);
 });
