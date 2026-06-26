@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
 import type { BrowserUrlGuard } from "../src/infrastructure/render/index.ts";
-import { PlaywrightRenderer } from "../src/infrastructure/render/index.ts";
+import { PlaywrightRenderer, createRenderer } from "../src/infrastructure/render/index.ts";
 
 test("renderer lazy-loads Playwright only when render is invoked", async () => {
   const harness = new BrowserHarness();
@@ -558,3 +558,24 @@ function fetchResult(html: string, finalUrl: string): FetcherResult {
     bytes: bytes.byteLength,
   };
 }
+
+test("createRenderer degrades to render-unavailable for hosted flavor with no sidecar", async () => {
+  // Hosted never launches an in-process browser (threat model): no CDP sidecar =>
+  // render-unavailable, NOT an in-process launch (which would be render_error when
+  // no browser binary is present, e.g. the published gateway image).
+  const prevFlavor = process.env.CAPTATUM_FLAVOR;
+  const prevCdp = process.env.CAPTATUM_BROWSER_CDP_ENDPOINT;
+  process.env.CAPTATUM_FLAVOR = "hosted";
+  delete process.env.CAPTATUM_BROWSER_CDP_ENDPOINT;
+  try {
+    const renderer = createRenderer();
+    const out = await renderer.render(renderInput(new FakeFetcher()));
+    assert.equal(out.rendered, false);
+    assert.equal((out as { code?: string }).code, "render_unavailable");
+  } finally {
+    if (prevFlavor === undefined) delete process.env.CAPTATUM_FLAVOR;
+    else process.env.CAPTATUM_FLAVOR = prevFlavor;
+    if (prevCdp === undefined) delete process.env.CAPTATUM_BROWSER_CDP_ENDPOINT;
+    else process.env.CAPTATUM_BROWSER_CDP_ENDPOINT = prevCdp;
+  }
+});

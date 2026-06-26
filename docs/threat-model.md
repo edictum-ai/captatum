@@ -69,7 +69,10 @@ the contract reference; this file is the security reasoning.
   Chromium in a separate sidecar container connected over CDP
   (`CAPTATUM_BROWSER_CDP_ENDPOINT`, `Dockerfile.browser`, `scripts/browser-sidecar.sh`);
   there `--no-sandbox` is acceptable because the container is the isolation
-  boundary. Blast-radius caveat: the fetcher-fulfillment control above closes the
+  boundary. The published gateway image (`Dockerfile`) ships **no browser binary**,
+  so in-process Tier-3 is structurally impossible there — a misconfigured hosted
+  gateway degrades to `render-unavailable` rather than launching Chromium inside the
+  OAuth-key blast radius. Blast-radius caveat: the fetcher-fulfillment control above closes the
   page-content SSRF path, but on the current hosted deploy it does not by itself
   fully bound a browser-process compromise — that needs separate network/role
   isolation for the sidecar, tracked as its own infra control. Either way the

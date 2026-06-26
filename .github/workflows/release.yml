@@ -1,0 +1,81 @@
+name: release
+
+# Builds and publishes the gateway + browser Docker images to GHCR on a `v*` tag.
+# A gate job (check + unit tests) runs first; images publish only if it passes.
+# On a dry-run (workflow_dispatch) the images are built but not pushed, so the
+# release plumbing can be validated without cutting a tag.
+#
+# Supply-chain note: TODO pin the docker/* actions by commit SHA (see
+# edictum-ai/qratum release.yml). Version tags are used initially; before relying on
+# the published images in production, SHA-pin every action and recheck in
+# docs/dependency-ledger.md against the 15-day rule.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+      - run: pnpm test
+
+  images:
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta-gateway
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/edictum-ai/captatum
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+            type=sha,format=short
+      - id: meta-browser
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/edictum-ai/captatum-browser
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+            type=sha,format=short
+      # Gateway image — no browser binary (Tier-3 uses the sidecar over CDP), so it
+      # stays small and keeps Chromium out of the gateway's blast radius.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta-gateway.outputs.tags }}
+          labels: ${{ steps.meta-gateway.outputs.labels }}
+      # Browser sidecar image — the long-lived Chromium the gateway connects to.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.browser
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta-browser.outputs.tags }}
+          labels: ${{ steps.meta-browser.outputs.labels }}

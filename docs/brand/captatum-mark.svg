@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="96" height="96" role="img" aria-label="Captatum">
+  <g fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M 16 50 C 36 24 64 24 84 50"></path>
+    <path d="M 16 50 C 36 76 64 76 84 50"></path>
+  </g>
+  <circle cx="50" cy="50" r="9" fill="currentColor"></circle>
+</svg>

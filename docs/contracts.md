@@ -355,8 +355,14 @@ One per tool call: `{ occurredAt, subject?, clientId?, tool:"captatum", url_host
 The repo ships two deployment-flavor runtimes off one core engine:
 - **Hosted remote server runtime**: Streamable HTTP `/mcp` + gateway OAuth,
   implemented by `src/server.ts` / `src/interfaces/http/*` and exercised locally
-  by tests and `pnpm run smoke:hosted`. This repo does **not** ship a public
-  hosted deployment, container image, ECS service, or cloudflared route.
+  by tests and `pnpm run smoke:hosted`. The `.github/workflows/release.yml`
+  workflow builds and publishes the gateway and browser-sidecar images to GHCR on
+  a `v*` tag (`ghcr.io/edictum-ai/captatum`, `ghcr.io/edictum-ai/captatum-browser`).
+  The **gateway image ships no browser binary** — Tier-3 connects to the sidecar
+  over CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`), keeping Chromium out of the gateway's
+  blast radius; without a sidecar, Tier-3 is `render-unavailable`. The default
+  OAuth-state store is a local SQLite file (no database); self-host templates
+  (Railway / EC2 / Mac Mini) live in `deploy/`.
 - **Self-contained local binary runtime**: the same engine can be compiled (Bun
   `--compile`) into one executable an agent runs locally — no deployment, no
   auth, single-user/single-agent use. (wreq-js native prebuilts bundle
