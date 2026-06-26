@@ -41,6 +41,7 @@ Why it beats `WebFetch`: `WebFetch` is a static GET + Turndown (which drops `<sc
   server.
 - Auth is conditional on deployment flavor (see OAuth / Deployment): the hosted flavor requires gateway OAuth bearer tokens; a self-contained local-binary flavor runs without auth.
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted boot requires explicit `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`; local defaults are loopback-only.
+- **Discoverability:** the `captatum` tool `description` advertises every output mode (summary/raw/extract), provenance, `allowRender`, and `debug`, and the MCP server sends `instructions` on `initialize` (a capability guide for clients/agents). Both shapes share `createCaptatumMcpServer`, so both expose the same description + instructions. The two-shapes decision (hosted primary, local binary retained) is recorded in `docs/two-shapes.md`.
 
 ## Tool: `captatum`
 
