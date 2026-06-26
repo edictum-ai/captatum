@@ -233,17 +233,21 @@ test("stripHiddenSubtrees drops display:none / hidden subtrees (single pass, O(n
 
 test("stripHiddenSubtrees stays linear on a flood of hidden elements (per-subtree toLowerCase DoS)", () => {
   // Regression: an earlier version called html.toLowerCase() once per hidden subtree,
-  // making `<span hidden>x</span>` floods O(n²) (~3.3s at 672k chars). CI-independent
-  // ratio guard like the REDOS tests: 4x input must cost ~4x, not ~16x.
+  // making `<span hidden>x</span>` floods O(n²) (~3.3s at 672k chars; ~7s at 1.5M).
+  // Two guards: an absolute time budget (robust to CI load — the O(n²) blow-up is
+  // ~30x over it) AND a sub-quadratic ratio (CI-machine-independent, like the REDOS
+  // tests). Either failing means super-linear.
   const unit = "<span hidden>x</span>";
   const timed = (n: number): number => {
     const t = performance.now();
     stripHiddenSubtrees(unit.repeat(n));
     return performance.now() - t;
   };
-  timed(40_000); // JIT warmup
-  const ratio = timed(160_000) / Math.max(timed(40_000), 1);
-  assert.ok(ratio < 8, `stripHiddenSubtrees 160k/40k ratio ${ratio.toFixed(1)} — likely super-linear`);
+  timed(20_000); // JIT warmup
+  const small = timed(20_000);
+  const large = timed(80_000); // 4x input (linear ≈ 4x time; quadratic ≈ 16x)
+  assert.ok(large < 2000, `stripHiddenSubtrees 80k units took ${large.toFixed(1)}ms — likely super-linear`);
+  assert.ok(large / Math.max(small, 1) < 12, `80k/20k ratio ${(large / small).toFixed(1)} — likely super-linear`);
 });
 
 test("a generic WebSite JSON-LD description does not outrank real body text (output:raw)", async () => {
