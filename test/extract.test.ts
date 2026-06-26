@@ -6,6 +6,7 @@ import type { FetcherResult } from "../src/application/ports/fetcher.ts";
 import { extractTier1FromFetchResult, preferredTitle } from "../src/application/use-cases/tier1-extract.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { extractVisibleText, stripHtmlComments, stripHtmlTags } from "../src/infrastructure/extract/html.ts";
+import { stripHiddenSubtrees } from "../src/infrastructure/extract/hidden.ts";
 
 const FIXTURE_DIR = join(process.cwd(), "test", "fixtures", "extract");
 
@@ -131,6 +132,143 @@ test("shell gate escalates an OG-tagged SPA with an empty body (regression: vue-
   assert.equal(extraction.shellGate.reason, "empty-spa-shell");
   assert.equal(extraction.shellGate.appRootFound, true);
   assert.ok(extraction.structured.og, "OG still extracted");
+});
+
+test("vscdn/Netflix: hidden display:none config blobs do not leak into visible text", () => {
+  // Real failure (explore.jobs.netflix.net): themeOptions/branding config lives in
+  // <code style="display:none"> elements. A browser never renders them, so neither
+  // should captatum's visible-text extractor. The job description lives only in the
+  // JobPosting JSON-LD; the raw <body> is JS-rendered.
+  const extraction = extractHtml({
+    html: fixture("vscdn-config.html"),
+    url: "https://explore.jobs.netflix.net/careers/job/790315212924",
+  });
+
+  assert.equal(extraction.shellGate.reason, "structured-data-found");
+  assert.equal(extraction.shellGate.jsRequired, false);
+  // The hidden config blobs must NOT appear as visible text.
+  assert.equal(extraction.text.length, 0);
+  assert.doesNotMatch(extraction.text, /themeOptions|primary-color|NetflixSans|domain : netflix|applySuccessMessage/);
+  // The JobPosting JSON-LD is still extracted and is the content-bearing node.
+  const items = Array.isArray(extraction.structured.jsonLd)
+    ? extraction.structured.jsonLd
+    : [extraction.structured.jsonLd];
+  const jobPosting = items.find(
+    (node) => node !== null && typeof node === "object"
+      && (node as Record<string, unknown>)["@type"] === "JobPosting",
+  );
+  assert.ok(jobPosting, "JobPosting JSON-LD extracted");
+});
+
+test("vscdn/Netflix: Tier-1 raw output is the JobPosting description, not the config blob", async () => {
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://explore.jobs.netflix.net/careers/job/790315212924",
+    fetchResult: fetchResult(
+      "https://explore.jobs.netflix.net/careers/job/790315212924",
+      fixture("vscdn-config.html"),
+    ),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+
+  assert.equal(result.tier, 1);
+  assert.equal(result.resolvedVia, "tier1-jsonld");
+  assert.equal(result.jsRequired, false);
+  // The result leads with the job description (the page's primary content), not the
+  // hidden themeOptions/branding config that used to dominate output:raw.
+  assert.ok(result.result.startsWith("Netflix is one of the world's leading entertainment services"));
+  assert.doesNotMatch(result.result, /themeOptions|primary-color|domain : netflix|applySuccessMessage/);
+});
+
+test("a config-only SPA shell (hidden config, no JSON-LD) escalates to Tier-3", () => {
+  // Same vscdn shape but WITHOUT the JobPosting JSON-LD: once the hidden config is
+  // correctly ignored there is no extractable content, so it must render.
+  const extraction = extractHtml({
+    html: [
+      "<html><head><title>Widget Board</title></head><body>",
+      "<div id=\"root\"></div>",
+      "<code style=\"display:none\">{&quot;themeOptions&quot;: {&quot;primary-color&quot;: &quot;#E50914&quot;}}</code>",
+      "<script>window.__BRAND__ = { domain: \"widget.io\", branding: { applySuccessMessage: \"Thanks!\" } };</script>",
+      "</body></html>",
+    ].join(""),
+    url: "https://boards.widget.io/job/123",
+  });
+
+  assert.equal(extraction.text.length, 0);
+  assert.equal(extraction.shellGate.jsRequired, true);
+  assert.equal(extraction.shellGate.reason, "empty-spa-shell");
+});
+
+test("stripHiddenSubtrees drops display:none / hidden subtrees (single pass, O(n))", () => {
+  // display:none subtree (nested same-name) removed entirely, siblings kept.
+  const a = stripHiddenSubtrees("<p>keep</p><code style=\"display: none\"><code>x</code>SECRET</code><p>also</p>");
+  assert.doesNotMatch(a, /SECRET/);
+  assert.match(a, /keep/);
+  assert.match(a, /also/);
+  // boolean `hidden` attribute.
+  assert.doesNotMatch(stripHiddenSubtrees("<section hidden>NOPE</section>"), /NOPE/);
+  // `!important` is stripped before the value compare.
+  assert.doesNotMatch(stripHiddenSubtrees('<div style="display:none !important">SECRET</div><p>after</p>'), /SECRET/);
+  // A void hidden element (no subtree) does not swallow following content.
+  assert.match(stripHiddenSubtrees('<input hidden type="text"><p>after</p>'), /after/);
+  // In HTML, non-void `<div/>` is NOT self-closing (the slash is ignored), so the
+  // subtree is hidden. Only VOID_ELEMENTS self-close.
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden/>SECRET</div><p>after</p>'), /SECRET/);
+  assert.match(stripHiddenSubtrees('<div hidden/>SECRET</div><p>after</p>'), /after/);
+  // visibility:hidden is intentionally NOT hidden — unlike display:none it is
+  // cancellable by a `visibility:visible` descendant, so dropping its subtree would
+  // lose genuinely visible content.
+  assert.match(stripHiddenSubtrees('<div><span style="visibility:hidden">HID</span></div>'), /HID/);
+  // A `</div>` inside a comment must NOT close the subtree (hidden content must not leak).
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden><!-- </div> -->SECRET</div><p>after</p>'), /SECRET/);
+  // A `<div` inside a quoted attribute must NOT be counted as an open tag.
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden><span data-x="<div class=x">SECRET</span></div><p>after</p>'), /SECRET/);
+  // A CSS custom property whose VALUE is "display:none" is NOT hidden (element is visible).
+  assert.match(stripHiddenSubtrees('<div style="--brand: display:none; color:red">VISIBLE</div><p>after</p>'), /VISIBLE/);
+  // Non-hidden content is untouched.
+  assert.equal(stripHiddenSubtrees("<p>visible</p>"), "<p>visible</p>");
+});
+
+test("stripHiddenSubtrees stays linear on a flood of hidden elements (per-subtree toLowerCase DoS)", () => {
+  // Regression: an earlier version called html.toLowerCase() once per hidden subtree,
+  // making `<span hidden>x</span>` floods O(n²) (~3.3s at 672k chars). CI-independent
+  // ratio guard like the REDOS tests: 4x input must cost ~4x, not ~16x.
+  const unit = "<span hidden>x</span>";
+  const timed = (n: number): number => {
+    const t = performance.now();
+    stripHiddenSubtrees(unit.repeat(n));
+    return performance.now() - t;
+  };
+  timed(40_000); // JIT warmup
+  const ratio = timed(160_000) / Math.max(timed(40_000), 1);
+  assert.ok(ratio < 8, `stripHiddenSubtrees 160k/40k ratio ${ratio.toFixed(1)} — likely super-linear`);
+});
+
+test("a generic WebSite JSON-LD description does not outrank real body text (output:raw)", async () => {
+  // A page ships a WebSite node WITH a long description plus real article body text.
+  // Only a content-bearing @type's description may lead output:raw; the WebSite
+  // description must not crowd out the genuine article body.
+  const description = "This is the website description that is long enough to exceed the fifty char threshold.";
+  const html = [
+    "<html><head><title>Site</title>",
+    '<script type="application/ld+json">',
+    `{"@context":"https://schema.org","@type":"WebSite","name":"Site","description":${JSON.stringify(description)}}`,
+    "</script></head><body>",
+    "<main><h1>Real Article Headline</h1>",
+    "<p>This is the genuine article body text that agents should see first.</p>",
+    "</main></body></html>",
+  ].join("");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://example.test/article",
+    fetchResult: fetchResult("https://example.test/article", html),
+    extractHtml,
+    durationMs: 10,
+    output: "raw",
+  });
+  assert.doesNotMatch(result.result, /website description/);
+  assert.match(result.result, /genuine article body text/);
 });
 
 test("prototype-pollution.html drops unsafe app-state keys without mutating prototypes", () => {

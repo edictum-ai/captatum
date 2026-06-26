@@ -1,4 +1,5 @@
 import { collapseWhitespace, decodeHtmlEntities } from "./entities.ts";
+import { stripHiddenSubtrees } from "./hidden.ts";
 
 export interface HtmlTag {
   name: string;
@@ -56,10 +57,9 @@ export function extractVisibleText(html: string): string {
   const body = extractBodyHtml(html) ?? stripElement(html, "head");
   const withoutCode = ["script", "style", "noscript", "template", "svg"]
     .reduce((value, tag) => stripElement(value, tag), body);
-  // Linear scanners (not backtracking regex): a near-5MB page of unterminated
-  // `<!--`, bare `<`, or `<script>` made the old regexes quadratic (minutes of
-  // event-loop block — REDOS-1/2/3). Each scanner below is O(n).
-  const text = stripHtmlTags(stripHtmlComments(withoutCode));
+  // Linear O(n) scanners (REDOS-1/2/3): old backtracking regexes were quadratic on
+  // `<!--`/bare-`<`/`<script>` floods; stripHiddenSubtrees (next) drops non-rendered DOM.
+  const text = stripHtmlTags(stripHtmlComments(stripHiddenSubtrees(withoutCode)));
   return normalizeFragmentedNumbers(collapseWhitespace(decodeHtmlEntities(text)));
 }
 
@@ -126,7 +126,7 @@ export function firstAttr(
   return undefined;
 }
 
-function readStartTag(html: string, start: number): HtmlTag | null {
+export function readStartTag(html: string, start: number): HtmlTag | null {
   const next = html[start + 1];
   if (!next || next === "/" || next === "!" || next === "?") return null;
 
@@ -142,7 +142,7 @@ function readStartTag(html: string, start: number): HtmlTag | null {
   return { name, attrs: parseAttributes(raw), start, end: close, raw };
 }
 
-function findTagEnd(html: string, from: number): number {
+export function findTagEnd(html: string, from: number): number {
   let quote: string | null = null;
   for (let index = from; index < html.length; index += 1) {
     const char = html[index];

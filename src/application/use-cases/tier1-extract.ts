@@ -7,10 +7,8 @@ import { stripHtmlTags } from "../../infrastructure/extract/html.ts";
 import type { StructuredData } from "../../domain/platform.ts";
 import type { ShellGateEvidence } from "../../domain/shell-gate.ts";
 
-/** REDOS-4: character budget for the synchronous HTML extraction input. The
- *  linear scanners are O(n) but a future parser change or undiscovered CPU sink
- *  could still block the event loop on a 5MB page. 1M chars is far beyond any
- *  real page's structured-data region. */
+/** REDOS-4: char budget for synchronous HTML extraction input. The scanners are
+ *  O(n); 1M chars is far beyond any real page's structured-data region. */
 const EXTRACT_CHAR_BUDGET = 1_000_000;
 
 export interface HtmlExtractionInput {
@@ -41,12 +39,9 @@ export interface Tier1ExtractInput {
 
 export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Promise<Result> {
   const fullHtml = await decodeBody(input.fetchResult.bodyStream, input.fetchResult.contentType);
-  // REDOS-4: cap the HTML passed to the synchronous extractor. The linear scanners
-  // are O(n), but a future parser change or undiscovered CPU sink could still
-  // block the event loop on a 5MB page. 1MB is far beyond any real page's
-  // structured-data region; content beyond it is body text the extractor already
-  // truncates internally. A worker_thread is the fuller isolation but adds
-  // significant complexity for a defense-in-depth measure.
+  // REDOS-4: cap the HTML passed to the synchronous extractor. The scanners are
+  // O(n); 1MB is far beyond any real page's structured-data region, and content
+  // beyond it is body text the extractor already truncates internally.
   const extractionHtml = fullHtml.length > EXTRACT_CHAR_BUDGET
     ? capAtSafeBoundary(fullHtml, EXTRACT_CHAR_BUDGET)
     : fullHtml;
@@ -104,9 +99,8 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
   };
 }
 
-/** Slice HTML at a safe boundary — if the cut lands inside a <script>/<style>/
- *  <template>/<noscript>/<svg> tag, walk back past the opener so the extractor's
- *  linear stripElement sees a well-formed (closed or absent) element. */
+/** Slice HTML at a safe boundary: walk back past a <script>/<style>/<template>/
+ *  <noscript>/<svg> opener so stripElement sees a well-formed element. */
 function capAtSafeBoundary(html: string, budget: number): string {
   let cut = budget;
   const lastOpen = html.lastIndexOf("<", cut);
@@ -187,12 +181,16 @@ function graphNodes(graph: unknown): Record<string, unknown>[] {
   return [];
 }
 
-function contentTitleOfNode(node: Record<string, unknown> | null): string | undefined {
-  if (!node || typeof node !== "object") return undefined;
+function isContentNode(node: Record<string, unknown> | null): boolean {
+  if (!node || typeof node !== "object") return false;
   const type = node["@type"];
   const types = Array.isArray(type) ? type.map(String) : type === undefined ? [] : [String(type)];
   // Accept short ("JobPosting") and full-IRI ("https://schema.org/JobPosting") forms.
-  if (!types.some((t) => CONTENT_TITLE_TYPES.has(shortSchemaType(t)))) return undefined;
+  return types.some((t) => CONTENT_TITLE_TYPES.has(shortSchemaType(t)));
+}
+
+function contentTitleOfNode(node: Record<string, unknown> | null): string | undefined {
+  if (!node || !isContentNode(node)) return undefined;
   for (const key of ["title", "name", "headline"]) {
     const value = node[key];
     if (typeof value === "string" && value.trim()) return value.trim();
@@ -214,11 +212,11 @@ function resultPayload(output: Output, extraction: HtmlExtraction): string {
   if (output === "extract") {
     return JSON.stringify(extraction.structured, null, 2);
   }
-
-  const parts: string[] = [];
-  if (extraction.text) parts.push(extraction.text);
+  // Content-bearing JSON-LD description leads; body text supplements (vscdn/netflix).
   const desc = jsonLdDescription(extraction.structured);
+  const parts: string[] = [];
   if (desc) parts.push(desc);
+  if (extraction.text) parts.push(extraction.text);
   return parts.join("\n\n");
 }
 
@@ -226,10 +224,12 @@ function jsonLdDescription(structured: StructuredData): string | undefined {
   if (!structured.jsonLd) return undefined;
   const items = Array.isArray(structured.jsonLd) ? structured.jsonLd : [structured.jsonLd];
   for (const item of items) {
-    if (item && typeof item === "object" && "description" in item) {
-      const desc = (item as Record<string, unknown>).description;
-      if (typeof desc === "string" && desc.length > 50) return stripHtml(desc);
-    }
+    const node = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
+    // Content-bearing @type only — a WebSite/Organization description can't outrank
+    // the real body text now that the description leads output:raw.
+    if (!isContentNode(node)) continue;
+    const desc = node?.description;
+    if (typeof desc === "string" && desc.length > 50) return stripHtml(desc);
   }
   return undefined;
 }
