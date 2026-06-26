@@ -10,3 +10,7 @@ data/
 *.sqlite-journal
 .DS_Store
 coverage/
+
+# Local security-audit / fix-verification scratch — never publish (private, pre-release).
+docs/fix-verification-*.md
+docs/*-audit-*.md

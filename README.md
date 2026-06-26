@@ -13,32 +13,99 @@
   <a href="https://modelcontextprotocol.io"><img alt="MCP" src="https://img.shields.io/badge/MCP-captatum-9B7CF6.svg" /></a>
   <a href="https://nodejs.org"><img alt="Node 24" src="https://img.shields.io/badge/Node-24-339933.svg" /></a>
   <a href="https://github.com/edictum-ai/captatum/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/edictum-ai/captatum/ci.yml?branch=main&label=CI" /></a>
+  <a href="SECURITY.md"><img alt="security" src="https://img.shields.io/badge/security-policy-7C5CFC.svg" /></a>
 </p>
 
-One tool, any URL: fetch → render JS only when needed → return **token-efficient** content plus first-class **provenance**. The default output is a concise **summary** via free models; **raw** content and schema-driven **extract** are available on request. It works on JS-rendered pages, gets past anti-bot interstitials, and tells the agent exactly how each result was produced.
+Captatum is one MCP tool that fetches **any** URL, renders JS only when needed, and returns **token-efficient** content plus first-class **provenance** — a receipt describing exactly how each result was produced (tier used, final URL, whether JS rendering was required, transform model/tokens). It's an [MCP server](https://modelcontextprotocol.io) and the governed fetch step of the [Edictum](https://github.com/edictum-ai) ecosystem; it also works standalone.
 
-Captatum is an [MCP server](https://modelcontextprotocol.io) that gives AI agents a **secure, provenance-aware** web-fetch tool — the governed fetch step of the [Edictum](https://github.com/edictum-ai) ecosystem, and a standalone general-purpose tool.
+> **Heads-up before the first call.** The default output is `summary`, which needs a transform provider (`OPENROUTER_API_KEY` or `OLLAMA_BASE_URL`). **Without one, `summary` honestly falls back to `raw`** (`transform.provider: "none"`) — it never silently dumps a huge page. For a **zero-config** first call, use `output: "raw"`. See [Quick start](#quick-start-local-stdio).
 
 ---
 
+## Why this matters
+
+Agents increasingly **act on** what they read from the web — a job requirement, a price, a cited fact, a doc snippet. A bare LLM summary of a page is **unverifiable**: you can't tell whether the agent read the real page, hit a paywall, got an anti-bot interstitial, or whether the summary came from stale cached text. Captatum returns not just an answer but a **provenance receipt** — the tier used, the final URL after redirects, whether JS rendering was required (or blocked), the platform detected, and the model + tokens + cost of any summary.
+
+That receipt is what makes a fetch tool **governable**:
+
+- **Trust, not faith.** An agent's claim about a URL is only as good as the evidence behind it. With provenance, a downstream check (human or automated) can verify *how* a result was produced before acting on it — evidence-gated progression, not "the model said so."
+- **Failure is visible, not silent.** `tier: render-blocked`, `access.gated`, a `max_bytes` warning, or a `transform_model_fallback` tell the agent a result is partial or degraded — so it can retry, render, or escalate instead of confidently reporting garbage.
+- **Cost + egress accounting.** Per-call transform model/tokens/cost and the fetch tier make spend and data-direction (e.g. content egressed to OpenRouter) observable — essential when agents fetch at scale or touch non-public URLs.
+
+This is why Captatum is one adaptive tool that always returns content **and** a receipt: the receipt is the point, not a debug extra. It's also the governed-fetch step of the [Edictum](https://github.com/edictum-ai) ecosystem, where an agent may assert a claim about a URL only if a governed Captatum call produced evidence for it.
+
+---
+
+## Why Captatum
+
+Agents need to read the web — docs, job postings, product pages, articles. The usual options each force a tradeoff. Captatum's wedge is **provenance + SSRF-safe self-host + a free-model default**, not raw scale:
+
+| | JS render | Anti-bot TLS fingerprint | Structured extract | Default output | Provenance receipt | Self-host |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Captatum** | gated `allowRender` | plain-HTTP only¹ | JSON-LD/OG/meta/app-state | token-efficient summary | ✅ every call | ✅ (SQLite, no DB) |
+| `WebFetch` (Claude) | ❌ | ❌ | ❌ (Turndown) | Haiku summary | ❌ | — |
+| Firecrawl | ✅ | partial | ✅ | markdown/html | partial | commercial |
+| Jina Reader | ✅ | partial | light | markdown | ❌ | commercial |
+
+¹ **Honest caveat:** the `wreq-js` browser TLS/JA3+JA4 fingerprint impersonation is active for **plain HTTP only**. HTTPS uses a checked-IP Node path (no fingerprint) to preserve rebinding-proof SSRF — so the fingerprint does **not** bypass Cloudflare/anti-bot over HTTPS today. See [Security: scope and limits](#security-scope-and-limits).
+
+**Not for:** bulk crawling, search, or PDF/office-document parsing. Captatum is a single-URL, provenance-first fetch — not a crawl/search engine.
+
 ## Features
 
-- **Adaptive 3-tier pipeline** — only does the work each page needs.
-  - **Tier 1 (default)** — `wreq-js` anti-bot TLS-fingerprint fetch + raw-HTML structured extraction (JSON-LD, Open Graph, Twitter, meta, canonical, app-state, images). Resolves ~95% of pages with no browser.
-  - **Tier 2 (optional)** — platform-adapter short-circuit (e.g. Ashby job boards) for clean JSON.
-  - **Tier 3 (gated)** — Playwright Chromium render, loaded lazily, only for empty SPA shells (`jsRequired`). Gated behind `allowRender` (default `false`) so a bare call never spawns a browser.
+- **Adaptive 3-tier pipeline** — only the work each page needs.
+  - **Tier 1 (default)** — `wreq-js` anti-bot fetch + raw-HTML structured extraction (JSON-LD, Open Graph, Twitter, meta, canonical, app-state, images). Resolves most pages with no browser.
+  - **Tier 2 (optional)** — platform-adapter short-circuit (e.g. Ashby job boards) → clean JSON.
+  - **Tier 3 (gated)** — Playwright Chromium render, lazy, only for empty SPA shells. Gated behind `allowRender` (**default `false`**) so a bare call never spawns a browser.
 - **Token-efficient by default** — `output: summary` routes through a free-model router (OpenRouter) or local Ollama; `output: raw` returns clean content with no LLM; `output: extract` returns schema-validated JSON.
-- **Provenance first-class** — every response carries `tier`, `finalUrl`, `redirects[]`, `jsRequired`, `platform`, `transform` (model + tokens + cost), and `attempts[]` (what was tried / blocked / succeeded).
-- **SSRF-safe egress** — every outbound request (Tier-1, Tier-2, every redirect hop, every Tier-3 browser subresource) routes through one hardened `FetcherPort`: DNS-rebinding-proof (resolve-once → pin-to-IP → revalidate per hop), exhaustive IANA private-IP blocking.
-- **Hosted OAuth gateway** — PKCE S256, hash-only token storage, single-use codes, replay-revoking refresh rotation, per-request scope enforcement, audit trail.
-- **Prompt-injection control** — fetched content is untrusted data, never instructions (per-call nonce fence + system-prompt boundary).
-- **Hidden-config-aware extraction** — DOM a browser wouldn't render (`display:none`/`hidden`) is dropped, so config blobs hidden in the markup never masquerade as page content.
+- **Provenance first-class** — every response carries `tier`, `finalUrl`, `redirects[]`, `jsRequired`, `platform`, a lean `transform` (provider/model/free/in/out tokens), and `attempts[]`.
+- **SSRF-safe egress** — every outbound request (Tier-1, Tier-2, every redirect hop, every Tier-3 browser subresource) routes through one hardened `FetcherPort`: DNS-rebinding-proof, exhaustive IANA private-IP blocking.
+- **Prompt-injection control** — fetched content is untrusted data, never instructions (per-call nonce fence; applies to `summary`/`extract`).
+- **Hidden-config-aware extraction** — DOM a browser wouldn't render (`display:none`, `hidden`) is dropped, so config blobs hidden in markup never masquerade as page content.
 
-## Why Captatum (vs `WebFetch`)
+## Prerequisites
 
-AI agents need to read the web — job postings, docs, product pages, articles. The built-in `WebFetch` does a static GET + Turndown + LLM summary: no JS execution, no anti-bot, no structured data, and no record of how a result was produced. It fails on SPAs, drops JSON-LD, and can't get past Cloudflare.
+- **Node.js 24+** (uses `node:sqlite` and native `wreq-js` prebuilts).
+- **pnpm 10.32.0+** via corepack (`corepack enable`).
 
-Captatum uses anti-bot TLS-fingerprinted fetch, renders JS only when a page needs it, extracts structured data from **raw** HTML, defaults to a token-efficient summary, and reports provenance on every response — so an agent's claim about a URL is backed by a receipt.
+## Quick start (local stdio)
+
+Captatum runs the **same engine** in two shapes. For local development or a single agent, use the **local stdio bridge** — no auth, no network listener:
+
+```sh
+corepack enable
+corepack pnpm install
+node --no-warnings src/interfaces/mcp/stdio-bridge.ts   # stdio MCP server on stdout
+```
+
+**First call — pick one:**
+- **Zero-config:** call with `output: "raw"` to get clean content + structured data, no LLM, no key.
+- **Default summary:** set `OPENROUTER_API_KEY` (free models available) **or** run [Ollama](https://ollama.com) and set `OLLAMA_BASE_URL`. Without one, `summary` falls back to `raw`.
+
+Build integrity check (not a tool-call test):
+
+```sh
+corepack pnpm run check          # syntax + 250-line limit + typecheck
+node --test test/*.test.ts       # unit suite (no browser/network needed)
+```
+
+## Connect your client
+
+**Hosted (recommended for most)** — self-host (see [Deploy](#deploy-hosted)) and point your client at `https://<your-host>/mcp` as a remote Streamable-HTTP MCP server. No local install; reachable from claude.ai / ChatGPT / Cursor. **Scopes:** `fetch:read` (the OAuth default) only allows `output: raw`; the default `summary`/`extract`/`transform` require the **`fetch:transform`** scope — request it in your connector config or the headline feature 403s on the first call. Cloudflare Access guards only `/oauth/authorize`; `/mcp` and `/oauth/token` use the gateway's OAuth bearer tokens (no interactive SSO for MCP clients).
+
+**Local single-user** — build the self-contained binary once, then the client config is just the binary (no Node, no repo, no source path):
+
+```sh
+corepack pnpm run build:binary      # Bun --compile → ./captatum (one executable)
+```
+
+```jsonc
+{ "mcpServers": { "captatum": { "command": "/absolute/path/to/captatum" } } }
+```
+
+> The local binary has **no auth** — single-user, loopback only; never expose it on a network.
+>
+> _Dev only (no binary):_ `{"command":"node","args":["--no-warnings","src/interfaces/mcp/stdio-bridge.ts"]}` — and never wrap it in `pnpm run bridge` (pnpm's lifecycle banner corrupts the JSON-RPC stream; use `corepack pnpm --silent run bridge` if you need a script).
 
 ## The `captatum` tool
 
@@ -48,18 +115,19 @@ Captatum uses anti-bot TLS-fingerprinted fetch, renders JS only when a page need
 | `prompt` | no | What the agent wants (drives `summary`). Defaults to a general summary. |
 | `output` | no | `summary` (default) \| `raw` \| `extract`. |
 | `schema` | no | JSON Schema for `output: extract`. |
-| `budget` | no | Max tokens for the summary. |
+| `budget` | no | Max tokens for `summary`. |
+| `transform` | no | Override the router: `{ provider?, model? }` (e.g. force local Ollama). |
 | `maxBytes` | no | Response byte cap (default 5 MB). |
 | `timeoutMs` | no | Per-tier timeout (default 15s Tier-1/2, 20s Tier-3; server-capped 60s). |
-| `allowRender` | no | Default `false`. Enable Tier-3 Playwright render. |
-| `debug` | no | Default `false`. Heavy diagnostic fields in `structuredContent`. |
+| `allowRender` | no | Default `false`. Enable Tier-3 Playwright render (needs a browser available). |
+| `debug` | no | Default `false`. Adds heavy diagnostics to `structuredContent` (incl. per-call cost). |
 
 ```jsonc
-// Summary (default) — token-efficient answer to your prompt
-{ "url": "https://example.com/article", "prompt": "Summarize in two sentences" }
-
-// Raw — clean content + structured data, no LLM
+// Zero-config raw — clean content + structured data, no LLM, no key
 { "url": "https://example.com/docs", "output": "raw" }
+
+// Summary (needs OPENROUTER_API_KEY or OLLAMA_BASE_URL)
+{ "url": "https://example.com/article", "prompt": "Summarize in two sentences" }
 
 // Extract — schema-validated JSON
 { "url": "https://jobs.example.com/123", "output": "extract",
@@ -67,95 +135,58 @@ Captatum uses anti-bot TLS-fingerprinted fetch, renders JS only when a page need
     "title": { "type": "string" }, "company": { "type": "string" } } } }
 ```
 
-## Quick start (local, zero setup)
-
-Captatum runs the **same engine** in two flavors. For local development or a single
-agent, use the **local stdio bridge** — no auth, no network listener, no external
-services:
-
-```sh
-corepack pnpm install                       # pnpm 10.32.0 via corepack
-node --no-warnings src/interfaces/mcp/stdio-bridge.ts   # stdio MCP server
-```
-
-Connect any stdio MCP client (Claude Code, local ChatGPT desktop, custom agents).
-The agent connects locally; no cloud, no OAuth, no exposed ports. Local mode still
-routes every fetch through the same SSRF-guarded primitive — "local" is not
-permission to skip it.
-
-Verify:
-
-```sh
-corepack pnpm run check          # syntax + 250-line limit + typecheck
-node --test test/*.test.ts       # unit suite (no browser/network needed)
-corepack pnpm run smoke          # lifecycle smoke (hosted + stdio)
-```
+Every response's first text line is a provenance marker (`<!-- captatum tier=1 resolvedVia=… -->`), followed for `summary`/`extract` by a deterministic envelope (`contentType`, `title`, `finalUrl`, `access`, `images`, `transformModel`). The companion `structuredContent` is a **lean** payload (`schemaVersion`, `ok`, `status`, `tier`, `access`, `warnings`, `errors`, lean `transform`); per-call `costUsd`/`latencyMs` and full `attempts`/`timings` are gated behind `debug: true`.
 
 ## Deploy (hosted)
 
-The **hosted flavor** is a Streamable-HTTP MCP server (`POST /mcp`) with gateway
-OAuth, reachable from web agents (claude.ai, chatgpt.com).
+The **hosted** shape is a Streamable-HTTP MCP server (`POST /mcp`) with gateway OAuth, reachable from web agents (claude.ai, chatgpt.com). It boots with a **local SQLite file** by default — **no database** — behind **Cloudflare Access** (required at boot), with the browser in a **separate sidecar** container.
 
-| | **Local (stdio bridge)** | **Hosted (remote server)** |
+| | **Local (stdio)** | **Hosted (remote)** |
 | --- | --- | --- |
-| **What** | Same engine, in-process over stdio | Network listener (Streamable HTTP `/mcp`) |
-| **Auth** | None (single-user, loopback only) | OAuth gateway (PKCE, scopes, audit) |
-| **Reachable from** | The local agent only | Web agents (claude.ai, chatgpt.com) |
-| **Entry point** | `src/interfaces/mcp/stdio-bridge.ts` | `src/server.ts` |
-| **State** | None | SQLite file (default, no DB) or TiDB (scale) |
-| **Use case** | Local dev, private/single-user agents | Production, web-connected agents |
+| **Auth** | None (single-user, loopback) | OAuth gateway (PKCE, scopes, audit) |
+| **Reachable from** | One local agent | Web agents (claude.ai, chatgpt.com) |
+| **State** | None | SQLite file (default) or TiDB (scale) |
 
-The hosted flavor boots with a **local SQLite file** for OAuth state by default —
-so self-hosting needs **no database**. Front it with **Cloudflare Access** (required
-at boot) and run the browser in a **separate sidecar** container (blast-radius
-separation). One-click templates for **Railway, EC2, and Mac Mini** live in
-[`deploy/`](./deploy/README.md), all sharing one `docker-compose.yml` and `.env`:
+Self-host templates (Railway / EC2 / Mac Mini) share one `docker-compose.yml` + `.env`:
 
 ```sh
-node --no-warnings scripts/gen-oauth-keys.ts   # print OAuth signing keys → .env
-CAPTATUM_TAG=<tag> docker compose -f deploy/docker-compose.yml up -d
+node --no-warnings scripts/gen-oauth-keys.ts          # print OAuth signing keys → .env
+CAPTATUM_TAG=v0.2.0 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Docker images (`ghcr.io/edictum-ai/captatum`, `…-browser`) are published by the
-release workflow on every tag. See [`deploy/README.md`](./deploy/README.md) for the
-full guide (Cloudflare setup, secrets, per-target notes).
+Required env (see `.env.example`): `CAPTATUM_FLAVOR=hosted`, OAuth signing keys (`gen-oauth-keys.ts`), Cloudflare Access (`CF_ACCESS_*`), `MCP_ALLOWED_HOSTS`/`ORIGINS`, `OAUTH_ISSUER`/`RESOURCE`/`REDIRECT_ALLOWLIST`. Docker images are published to GHCR (`ghcr.io/edictum-ai/captatum`, `…-browser`) by the release workflow on each tag — pin a tag (e.g. `v0.2.0`); `:latest` tracks the newest release. Full guide + troubleshooting: [`deploy/README.md`](./deploy/README.md).
 
-## Security model
+**Supply chain:** dependencies are pinned, held to a 15-day minimum-release-age gate, and `pnpm audit --prod` is required clean before deploy (see [`docs/dependency-ledger.md`](./docs/dependency-ledger.md)); the browser-sidecar base image is pinned by sha256 digest, and CI/release GitHub Actions are pinned by commit SHA.
 
-- **SSRF** — one hardened `FetcherPort` for all egress: DNS-rebinding-proof, per-hop
-  redirect revalidation, exhaustive IANA special-use IP blocking.
-- **Browser sandbox** — Tier-3 Chromium runs in a separate sidecar container
-  (hosted); every browser request is fulfilled through the guarded fetcher, so the
-  browser never makes its own egress.
-- **Prompt injection** — fetched content is wrapped in a per-call nonce fence and
-  treated as untrusted data.
-- **OAuth** — PKCE S256, hash-only storage, single-use codes, replay-revoking
-  refresh rotation, ES256 access tokens, per-request scope enforcement.
+## Security: scope and limits
 
-Full reasoning: [`docs/threat-model.md`](./docs/threat-model.md).
+Captatum is a URL-fetcher that may run a headless browser — a textbook SSRF + sandbox surface. Honest posture:
+
+- **Holds in both shapes:** rebinding-proof SSRF egress (every request, every redirect hop, every browser subresource routes through `guardedFetch`); fetched content treated as untrusted data.
+- **Hosted only:** the OAuth gateway, audit trail, and Cloudflare Access consent gate. The **local binary has no auth** — single-user, loopback, never network-expose it.
+- **Known limits (not gaps hidden as features):**
+  - Tier-1 HTTPS does **not** use the TLS fingerprint (checked-IP Node path preserves SSRF; see caveat above).
+  - The browser sidecar shares the gateway's network namespace; blast-radius separation is process/secret-level, and full browser containment is an open infrastructure control ([`docs/threat-model.md`](./docs/threat-model.md)).
+  - Prompt-injection fencing applies to `summary`/`extract`, **not** `output: raw`.
+  - Per-host throttle / URL dedupe / render-concurrency caps are implemented; some broader abuse controls remain open.
+  - One disclosed residual: a char-class/metachar ReDoS in extract-schema validation (authenticated callers only, low risk) — close with RE2 or a worker timeout.
+
+Full reasoning + the SSRF fixture suite: [`docs/threat-model.md`](./docs/threat-model.md). Report vulnerabilities via [SECURITY.md](./SECURITY.md).
 
 ## Documentation
 
 - [`docs/contracts.md`](./docs/contracts.md) — the spec (tool I/O, ports, provenance, OAuth, errors)
-- [`docs/threat-model.md`](./docs/threat-model.md) — security model
-- [`docs/dependency-ledger.md`](./docs/dependency-ledger.md) — dependency pins + supply-chain rationale
+- [`docs/threat-model.md`](./docs/threat-model.md) — security model + SSRF fixture suite
+- [`docs/dependency-ledger.md`](./docs/dependency-ledger.md) — pins + supply-chain rationale
 - [`docs/architecture.md`](./docs/architecture.md) — adaptive-tier architecture
+- [`docs/two-shapes.md`](./docs/two-shapes.md) — local vs hosted decision
+- [`docs/extraction.md`](./docs/extraction.md) — raw-HTML structured extraction
 - [`deploy/`](./deploy/README.md) — self-hosting guide + templates
 
 ## Contributing
 
-Contributions are welcome and held to a security-critical bar. See
-[`CONTRIBUTING.md`](./CONTRIBUTING.md). By participating you agree to abide by the
-[Code of Conduct](./CODE_OF_CONDUCT.md).
+Contributions are welcome and held to a security-critical bar. See [`CONTRIBUTING.md`](./CONTRIBUTING.md). By participating you agree to abide by the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
 ## License
 
-[MIT](./LICENSE) © Arnold Cartagena. Captatum is part of the
-[Edictum](https://github.com/edictum-ai) ecosystem — a runtime trust layer for AI
-agents — and works standalone as a general-purpose MCP fetch tool.
-
----
-
-> **Tool-name note (2026-06-24):** the MCP tool identifier is **`captatum`**
-> (renamed from `smart_fetch`). Existing connector configs referencing the old name
-> must be re-registered — the rename intentionally breaks them.
+[MIT](./LICENSE) © Arnold Cartagena. Captatum is part of the [Edictum](https://github.com/edictum-ai) ecosystem — a runtime trust layer for AI agents — and works standalone as a general-purpose MCP fetch tool.

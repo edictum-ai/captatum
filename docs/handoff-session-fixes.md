@@ -71,7 +71,7 @@ The extractor then runs on this combined HTML. But the title/metadata from the i
 **Problem:** For SPA-rendered pages (TodoMVC, Vue RealWorld, Angular RealWorld), the rendered DOM has the app content but the extractor produces weak/thin text. The Readability-style extraction doesn't handle React/Vue rendered DOMs well.
 
 **Fix:** Improve the main-content extraction for rendered pages. Options:
-- Add a `defuddle` dependency (MIT, the same one agent-smart-fetch uses) for better Readability-grade extraction from rendered DOMs.
+- Add a `defuddle` dependency (MIT) for better Readability-grade extraction from rendered DOMs.
 - OR improve the hand-rolled extractor to handle common SPA patterns (app roots, virtual lists, dynamic content blocks).
 - This is in `src/infrastructure/extract/html.ts` (the extractor).
 

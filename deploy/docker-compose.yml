@@ -29,6 +29,10 @@ services:
       dockerfile: Dockerfile
     env_file: ../.env
     environment:
+      # Hosted flavor is required (config.ts defaults to local-binary, which the
+      # HTTP listener refuses — HostedFlavorError). Set it here so a .env that
+      # omits it can't crash the container.
+      CAPTATUM_FLAVOR: "hosted"
       # The container must bind 0.0.0.0 so the published host port can reach it
       # (the HOST port publish below stays 127.0.0.1 — loopback on the host).
       HOST: "0.0.0.0"

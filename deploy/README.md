@@ -83,3 +83,24 @@ public origin and complete the OAuth consent flow (fronted by Cloudflare Access)
 SQLite is single-node. For HA / multi-replica, opt into TiDB by setting `TIDB_HOST`
 (+ port/database/user/password and `TIDB_SSL_CA`; TLS required). See
 `docs/contracts.md` "Storage".
+
+## Troubleshooting
+
+The gateway boot **fails closed** on any missing required secret — by design. Logs
+go to stdout as JSON: `docker compose -f deploy/docker-compose.yml logs -f gateway`.
+
+| Symptom | Cause / fix |
+| --- | --- |
+| `HostedFlavorError` / container exits at boot | Set `CAPTATUM_FLAVOR=hosted` (the compose file sets it; if you bypass `.env`, ensure it's present). |
+| Boot aborts "Hosted requires …" | A required secret is missing: `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` (`gen-oauth-keys.ts`), all four `CF_ACCESS_*`, and `MCP_ALLOWED_HOSTS` + `MCP_ALLOWED_ORIGINS`. |
+| `summary` returns raw (`transform.provider: "none"`) | No transform provider: set `OPENROUTER_API_KEY` (or `OLLAMA_BASE_URL`). **Or** the caller's token lacks the `fetch:transform` scope (default `fetch:read` only allows `raw`). |
+| Tier-3 `render-unavailable` | The gateway can't reach the browser sidecar. `CAPTATUM_BROWSER_CDP_ENDPOINT` must be `http://127.0.0.1:9222` and the sidecar must share the gateway's network namespace (`network_mode: service:gateway` in compose). |
+| `~/.env` not picked up | compose `env_file` is `../.env` (repo root), and `environment:` overrides it — set secrets in `.env`, flavor/host/CDP via compose. |
+
+## Upgrading
+
+Pull a newer `CAPTATUM_TAG` and recreate: `docker compose -f deploy/docker-compose.yml up -d`.
+OAuth state persists in the `captatum-data` SQLite volume. Re-running
+`gen-oauth-keys.ts` rotates the signing key and **invalidates all previously issued
+tokens** (every client must re-authorize).
+

@@ -2,18 +2,9 @@
 
 Captatum is an adaptive MCP web-fetch tool for AI agents. One tool, any URL: fetch → render JS only when needed → return **token-efficient** content + **provenance** (tier / finalUrl / platform / jsRequired). Default output is a concise **summary** (like WebFetch, but cheaper via the free-model router and actually working on JS pages); **raw** content is available on request. Beats WebFetch (static GET + Turndown + Haiku, no JS) via anti-bot `wreq-js` fetch (**HTTP TLS/JA3 fingerprint; HTTPS uses a checked-IP fallback with no fingerprint** — see contracts.md "security-required limitation"), JS rendering, raw-HTML structured extraction, and per-response provenance.
 
-> **Brand note (2026-06-24):** the product, package, MCP tool name, and all internal identifiers were renamed **smart-fetch → Captatum**. The MCP tool identifier is now `captatum` (was `smart_fetch`) — **this rename breaks existing ChatGPT/Claude.ai connector configs**, which must be re-registered with the new tool name. File/identifier names are renamed too (`captatum.ts`, `CaptatumUseCase`, `CAPTATUM_*` env vars, etc.). User-Agent and the `<!-- captatum ... -->` provenance marker already used the new brand.
-
-## Source of truth for house rules
-
-This repo follows two sibling reference repos — read them when a pattern is unclear:
-
-- **`~/sandbox`** — canonical house *coding* style: minimal deps, DDD-lite + ports, Node 24 native TS (no build), 250-line file limit, contract-first, 15-day `minimumReleaseAge`.
-- **`~/project/personal-memory/personal-memory-gateway`** — canonical *remote authed MCP* shape: Streamable HTTP `/mcp` + gateway-owned OAuth (jose/oauth4webapi, hashed codes/refresh, scopes, per-call audit), Fastify, DDD-lite layout, `docs/{contracts,architecture,threat-model,dependency-ledger}.md`, MCP `2026-07-28` RC stateless design.
-
 ## House rules (non-negotiable)
 
-- **pnpm 10.32.0 via corepack** (`packageManager` pin). pnpm 10.16.0 has an `ERR_PNPM_MISSING_TIME` bug under `minimumReleaseAge`; run `corepack pnpm …` (see `docs/dependency-ledger.md`). `minimumReleaseAge: 21600` (15 days) is enforced in `pnpm-workspace.yaml`; recheck every pin before install/build.
+- **pnpm 10.32.0 via corepack** (`packageManager` pin). `minimumReleaseAge: 21600` (15 days) is enforced in `pnpm-workspace.yaml`; recheck every pin before install/build (see `docs/dependency-ledger.md`).
 - **Open-source deps only**, minimal, each justified by "actually needed OR too complex/risky to reimplement for security." No proprietary packages.
 - **DDD-lite layering:** `src/domain` (records, pure policy — no infra imports) ← `src/application` (`ports/` + `use-cases/` + `queries/`, depends on ports not concretes) ← `src/infrastructure` (concrete adapters behind ports) ← `src/interfaces` (http + mcp entrypoints). Root `src/*.ts` are CLI/compat entrypoints. Config centralized in `src/config.ts`.
 - **Node 24 native TS, no build step.** Run via `node --no-warnings src/foo.ts`. Imports carry `.ts` extensions.
@@ -31,17 +22,17 @@ captatum(url, { prompt?, output?, schema?, budget?, transform?, maxBytes?, timeo
   1. TIER-1  wreq-js fetch (TLS fingerprint, anti-bot) + raw-HTML structured extraction
                (JSON-LD / OG / meta / app-state) + shell-gate → done if content present
   2. TIER-2  [optional] platform adapter short-circuit (general; not contract-defined)
-  3. TIER-3  Playwright render (lazy dynamic import) → inject Readability.js → extract
+  3. TIER-3  Playwright render (lazy dynamic import) → extract
   4. TRANSFORM (DEFAULT)  OpenRouter/Ollama summarize|extract (policy+feedback model router)
   → summary (default) | raw | extract + provenance
 ```
 
-- **Tier-1 fetch = `wreq-js`** (Rust-powered browser TLS/JA3+JA4 fingerprint impersonation → anti-bot/Cloudflare bypass; `fetch()`-compatible; native prebuilts; MIT). The one hard ingredient we import; we did NOT fork `Thinkscape/agent-smart-fetch` (their edge is entirely wreq-js).
+- **Tier-1 fetch = `wreq-js`** (Rust-powered browser TLS/JA3+JA4 fingerprint impersonation → anti-bot/Cloudflare bypass; `fetch()`-compatible; native prebuilts; MIT). The one hard ingredient we import.
 - **Tier-2 adapters** register behind a `PlatformAdapter` port (one folder + one registry line per platform). Optional and general — not part of the contract; verified endpoints live in adapter code/fixtures.
 - **Tier-3 render** is core (it's what makes "any page" true), lazy-loaded so the core stays light.
 - **Transform is the default output** (`output: summary`): token-efficient answer to `prompt` via the free-model router (OpenRouter/Ollama + deterministic feedback). `output: raw` returns clean content with no LLM; `output: extract` returns schema-validated JSON. Configure `OPENROUTER_API_KEY`/`OPENROUTER_MODELS` or `OLLAMA_BASE_URL`/`OLLAMA_MODEL`; with no provider, summary/extract honestly fall back to raw with `provider: "none"`.
 - **Provenance** is first-class output on every response.
-- **Two deployment flavors, one core:** hosted remote server (Streamable HTTP `/mcp` + gateway OAuth; reachable from web agents like claude.ai/chatgpt.com) and a self-contained local binary (no auth, single-user). Auth is conditional on flavor.
+- **Two deployment flavors, one core:** hosted remote server (Streamable HTTP `/mcp` + gateway OAuth; reachable from web agents like claude.ai/chatgpt.com) and a self-contained local binary (no auth, single-user). Auth is conditional on flavor. See `docs/two-shapes.md`.
 
 ## When you start work
 

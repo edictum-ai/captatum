@@ -57,14 +57,14 @@ change needs an npm package for packaging, it must be added here and clear the
 
 | Name | Proposed pin | Release/publish date | Date checked | Source URL | Reason |
 | --- | --- | --- | --- | --- | --- |
-| Node.js | `24.16.0` | `2026-05-21` | `2026-06-15` | https://nodejs.org/dist/index.json | Runtime target (`engines.node: ">=24"`); matches personal-memory-gateway. Node 24 native TS, no build step. |
+| Node.js | `24.17.0` | `2026-06-17` | `2026-06-25` | https://nodejs.org/dist/index.json | Runtime target (`engines.node: ">=24"`); Node 24 native TS, no build step. Bumped 24.16.0 → 24.17.0 in the CVE rebuild (#27); 8 days old as of 2026-06-25 — under the 15-day gate (clears 2026-07-02), CVE-driven. The Docker image is digest-pinned. |
 | pnpm | `10.32.0` | `2026-03-09T21:50:06.437Z` | `2026-06-15` | https://www.npmjs.com/package/pnpm/v/10.32.0 | Package manager; enforces 15-day `minimumReleaseAge`. 10.32.0 required (10.16.0 has the MISSING_TIME bug — see above). Run via corepack. |
 | `@modelcontextprotocol/sdk` | `1.29.0` | `2026-03-30T16:50:42.718Z` | `2026-06-15` | https://www.npmjs.com/package/@modelcontextprotocol/sdk/v/1.29.0 | MCP protocol server + Streamable HTTP transport for the hosted `/mcp` endpoint. |
 | `fastify` | `5.8.5` | `2026-04-14T12:07:12.232Z` | `2026-06-15` | https://www.npmjs.com/package/fastify/v/5.8.5 | HTTP server + OAuth callback routing for the hosted flavor. |
 | `jose` | `6.2.3` | `2026-04-27T15:23:35.019Z` | `2026-06-15` | https://www.npmjs.com/package/jose/v/6.2.3 | OAuth ES256 JWT sign/verify + JWKS for gateway-owned auth (hosted flavor only). |
 | `mysql2` | `3.22.3` | `2026-04-27T02:16:51.908Z` | `2026-06-15` | https://www.npmjs.com/package/mysql2/v/3.22.3 | TiDB-compatible driver for the OAuth-state store in the hosted flavor (reuses personal-memory-infra TiDB). |
 | `wreq-js` | `2.3.1` | `2026-05-20T09:13:40.492Z` | `2026-06-15` | https://www.npmjs.com/package/wreq-js/v/2.3.1 | Tier-1 fetch: Rust-powered browser TLS/JA3+JA4 fingerprint impersonation for anti-bot bypass. The one hard ingredient; `fetch()`-compatible with native prebuilts, MIT. |
-| `playwright` | `1.60.0` | `2026-05-11T19:09:33.114Z` | `2026-06-16` | https://www.npmjs.com/package/playwright/v/1.60.0 | Tier-3 render adapter, loaded only by lazy `import("playwright")` when `allowRender: true` and shell-gate requires it. Latest `1.61.0` was checked and rejected as too new (`2026-06-15T10:06:22.269Z`). Audit result: failed because of pre-existing `hono` via `@modelcontextprotocol/sdk`; see P9 audit result below. |
+| `playwright` | `1.61.0` | `2026-06-15T10:06:22.269Z` | `2026-06-25` | https://www.npmjs.com/package/playwright/v/1.61.0 | Tier-3 render adapter, lazy `import("playwright")` only when `allowRender: true` and the shell-gate requires it. Bumped 1.60.0 → 1.61.0 in the CVE rebuild (#27) to patch a Chromium CVE; 10 days old as of 2026-06-25 — under the 15-day gate (clears 2026-06-30), CVE-driven exception. Browser sidecar bumped in lockstep. (Earlier `hono` audit noise was via `@modelcontextprotocol/sdk`; see P9 below.) |
 | `zod` | `4.4.3` | `2026-05-04T07:06:40.819Z` | `2026-06-15` | https://www.npmjs.com/package/zod/v/4.4.3 | Tool I/O schemas (captatum params, extract schema, provenance). |
 | `typescript` | `6.0.3` (exact pin) | `2026-04-16T23:38:27.905Z` | `2026-06-15` | https://www.npmjs.com/package/typescript/v/6.0.3 | Dev typecheck (`tsc --noEmit`). 6.0.3 required for `target: ES2023` + `allowImportingTsExtensions` (matches personal-memory-gateway / spec-reviewer). |
 | `@types/node` | `24.12.4` (exact pin) | `2026-05-11T22:25:29.000Z` | `2026-06-15` | https://www.npmjs.com/package/@types/node/v/24.12.4 | Dev Node 24 typings. Pinned exact to avoid floating to `24.13.x` (published 2026-06-04/05/10, past the 15-day cutoff). |
@@ -89,8 +89,12 @@ Pass (eligible on `2026-06-16`, all published `<= 2026-06-01`):
 - `typescript@6.0.3` (`2026-04-16`) — PASS
 - `@types/node@24.12.4` (`2026-05-11`) — PASS
 
-Must wait: `playwright@1.61.0` (`2026-06-15`, latest dist-tag during the P9
-recheck) and newer pre-releases. Every selected pin clears the 15-day gate.
+CVE-driven exceptions (adopted in the #27 rebuild, rechecked `2026-06-25`):
+`node@24.17.0` (`2026-06-17`, 8 days — clears the gate `2026-07-02`) and
+`playwright@1.61.0` (`2026-06-15`, 10 days — clears `2026-06-30`) were bumped to
+patch a Chromium/Node CVE ahead of the 15-day buffer; the Docker images are
+digest-pinned and the npm tarball hash is frozen in the lockfile. Every other
+selected pin clears the 15-day gate.
 
 `typescript` and `@types/node` are **pinned exact** (not ranges) in
 `package.json` to keep resolution deterministic under the 15-day gate.
