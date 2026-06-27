@@ -73,7 +73,7 @@ Agents need to read the web — docs, job postings, product pages, articles. The
 The fastest local path is the published package — one line, no clone, no build (Node 24+):
 
 ```sh
-npx -y @edictum-ai/captatum        # runs the local stdio MCP server
+npx -y @edictum/captatum        # runs the local stdio MCP server
 ```
 
 Add it to your MCP client config and you're set (see [Connect your client](#connect-your-client)). No auth, no network listener — the client owns the process; `stdin`/`stdout` are the JSON-RPC channel.
@@ -95,14 +95,14 @@ _From source (development):_ `corepack pnpm install && node --no-warnings src/in
   "mcpServers": {
     "captatum": {
       "command": "npx",
-      "args": ["-y", "@edictum-ai/captatum"],
+      "args": ["-y", "@edictum/captatum"],
       "env": { "OPENROUTER_API_KEY": "sk-or-v1-…" }   // optional; omit for raw-only
     }
   }
 }
 ```
 
-(For Claude Code: `claude mcp add captatum -- npx -y @edictum-ai/captatum`. For a no-cloud-egress setup, swap the env for `OLLAMA_BASE_URL=http://localhost:11434`.)
+(For Claude Code: `claude mcp add captatum -- npx -y @edictum/captatum`. For a no-cloud-egress setup, swap the env for `OLLAMA_BASE_URL=http://localhost:11434`.)
 
 > The local server has **no auth** — single-user, loopback only; never expose it on a network. It opens **no listener** (stdio only), so it's strictly safer than even a loopback HTTP server.
 >

@@ -1,13 +1,15 @@
 name: release
 
 # Builds and publishes the gateway + browser Docker images to GHCR on a `v*` tag,
-# and (opt-in) publishes the npm package (`npx captatum`). A gate job (check + unit
-# tests) runs first; everything publishes only if it passes. On a dry-run
-# (workflow_dispatch) the images are built but not pushed.
+# and publishes the npm package @edictum/captatum via Trusted Publishing (OIDC,
+# passwordless — no NPM_TOKEN). A gate job (check + unit tests) runs first;
+# everything publishes only if it passes. On a dry-run (workflow_dispatch) the
+# images are built but not pushed.
 #
 # All actions are pinned by commit SHA (supply-chain hardening); versions + dates
-# are recorded in docs/dependency-ledger.md. npm publish is opt-in: set a repo
-# variable NPM_PUBLISH=true AND a repo secret NPM_TOKEN to enable it.
+# are recorded in docs/dependency-ledger.md. The npm job requires a Trusted
+# Publisher configured on npmjs.com (org: edictum-ai, repo: captatum, workflow:
+# release.yml); the npm CLI auto-exchanges the GitHub OIDC token.
 
 on:
   push:
@@ -79,12 +81,14 @@ jobs:
           tags: ${{ steps.meta-browser.outputs.tags }}
           labels: ${{ steps.meta-browser.outputs.labels }}
 
-  # Publish the npm package (the local `npx captatum` path). Skipped unless a repo
-  # variable NPM_PUBLISH=true is set (and NPM_TOKEN secret), so Docker releases work
-  # without npm configured.
+  # Publish @edictum/captatum to npm via Trusted Publishing (OIDC, passwordless).
+  # Requires the trusted publisher configured on npmjs.com for this package:
+  # GitHub Actions — org: edictum-ai, repo: captatum, workflow: release.yml.
+  # The npm CLI (>=11.5.1) auto-exchanges the GitHub OIDC token when
+  # id-token: write is granted — no NPM_TOKEN secret needed. Provenance is
+  # automatic for OIDC from public repos.
   npm:
     needs: gate
-    if: ${{ vars.NPM_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -98,5 +102,3 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
