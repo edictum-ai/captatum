@@ -7,11 +7,13 @@
 #   Dashboard: Settings → Volumes → add a volume at /data.
 #   Env: CAPTATUM_SQLITE_PATH=/data/captatum.sqlite
 #
-# Tier-3: this file describes ONE gateway service. For JS rendering at scale, add a
-# SECOND Railway service from ghcr.io/edictum-ai/captatum-browser and set the
-# gateway's CAPTATUM_BROWSER_CDP_ENDPOINT=http://<browser-service>:9222 over the
-# private network. Without it, leave allowRender off (default) — the gateway will
-# not spawn a browser.
+# Tier-3 (JS rendering): the browser sidecar must share the gateway's network
+# namespace (loopback CDP — the renderer HARD-REJECTS non-loopback CDP hosts).
+# Railway services do NOT share a namespace, so a separate browser service CANNOT
+# be reached on 127.0.0.1. Options: (a) leave allowRender off (default — no
+# browser); (b) a combined single image bundling gateway + Chromium; or (c) deploy
+# on EC2 / Mac Mini where the network_mode: service:gateway sidecar pattern works.
+# See deploy/railway.md for the full Tier-3 tradeoff.
 
 [deploy]
 startCommand = "node --no-warnings src/server.ts"

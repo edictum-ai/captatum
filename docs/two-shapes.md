@@ -1,8 +1,8 @@
 # Decision: two deployment shapes
 
-**Status: recommendation (awaiting owner sign-off).** Captatum ships two runtime
-shapes off one core engine. This records the recommendation on whether to keep
-both or consolidate.
+**Decision: keep both shapes — shipped.** (Previously a recommendation awaiting
+sign-off; confirmed 2026-06-26.) Hosted is primary; the local binary is retained.
+Captatum ships two runtime shapes off one core engine; both are live.
 
 ## TL;DR
 
