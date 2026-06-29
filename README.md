@@ -151,8 +151,8 @@ The **hosted** shape is a Streamable-HTTP MCP server (`POST /mcp`) with gateway 
 Self-host templates (Railway / EC2 / Mac Mini) share one `docker-compose.yml` + `.env`:
 
 ```sh
-node --no-warnings scripts/gen-oauth-keys.ts          # print OAuth signing keys → .env
-CAPTATUM_TAG=v0.2.0 docker compose -f deploy/docker-compose.yml up -d
+node --no-warnings scripts/gen-oauth-keys.ts          # print OAuth signing keys → .env (clone the repo — this helper isn't in the npm package)
+CAPTATUM_TAG=v0.2.2 docker compose -f deploy/docker-compose.yml up -d
 ```
 
 Required env (see `.env.example`): `CAPTATUM_FLAVOR=hosted`, OAuth signing keys (`gen-oauth-keys.ts`), Cloudflare Access (`CF_ACCESS_*`), `MCP_ALLOWED_HOSTS`/`ORIGINS`, `OAUTH_ISSUER`/`RESOURCE`/`REDIRECT_ALLOWLIST`. Docker images are published to GHCR (`ghcr.io/edictum-ai/captatum`, `…-browser`) by the release workflow on each tag — pin a tag (e.g. `v0.2.0`); `:latest` tracks the newest release. Full guide + troubleshooting: [`deploy/README.md`](./deploy/README.md).
