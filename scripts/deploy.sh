@@ -33,8 +33,13 @@ SVC="personal-memory-prod-captatum"
 INFRA="$HOME/project/personal-memory/personal-memory-infra/opentofu/envs/prod"
 HOSTNAME="captatum.arnoldcartagena.com"
 # The browser sidecar only needs a new tag when Dockerfile.browser / scripts/browser-sidecar.sh
-# change (Chromium must still match the gateway's playwright pin). Default to the last shipped tag.
-BROWSER_TAG="${BROWSER_TAG:-6f3b58c}"
+# change (Chromium must still match the gateway's playwright pin). Default = the CURRENTLY
+# DEPLOYED sidecar tag (read from the running task after login) so a bare deploy never regresses
+# the browser to a stale hardcoded SHA. Override with BROWSER_TAG=<tag> ONLY when you have
+# pushed a new browser image to ECR.
+BROWSER_REPO="personal-memory-prod-captatum-browser"
+BROWSER_URI="$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$BROWSER_REPO"
+BROWSER_TAG="${BROWSER_TAG:-}"
 TAG="${1:-$(git rev-parse --short HEAD)}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -55,6 +60,18 @@ step "gate 2: fresh ECR login (token is short-lived)"
 aws ecr get-login-password --region "$REGION" --profile "$AWS_PROFILE" \
   | docker login --username AWS --password-stdin "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com" \
   || die "ECR login failed (AWS SSO expired? run: aws sso login --profile $AWS_PROFILE)"
+
+# Resolve the browser sidecar tag: explicit override, else the CURRENTLY RUNNING sidecar's tag.
+# This prevents a bare `scripts/deploy.sh` from regressing the browser to a stale hardcoded tag.
+if [ -z "$BROWSER_TAG" ]; then
+  CURRENT_TD=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SVC" --profile "$AWS_PROFILE" --query 'services[0].taskDefinition' --output text 2>/dev/null || true)
+  CURRENT_BROWSER_IMG=$(aws ecs describe-task-definition --task-definition "$CURRENT_TD" --profile "$AWS_PROFILE" --query "taskDefinition.containerDefinitions[?name==\`browser\`].image" --output text 2>/dev/null || true)
+  BROWSER_TAG="${CURRENT_BROWSER_IMG#$BROWSER_URI:}"
+  case "$BROWSER_TAG" in "" | */* | *@*)
+    die "could not read the current browser tag from ECS (got '${CURRENT_BROWSER_IMG}') — pass BROWSER_TAG=<tag>" ;;
+  esac
+fi
+echo "browser sidecar tag: $BROWSER_TAG (kept from the running task; override with BROWSER_TAG=<tag>)"
 
 step "gate 3: build + push gateway:$TAG, then VERIFY in ECR"
 docker buildx build --platform linux/arm64 -t "$GW_URI:$TAG" --push .
