@@ -4,7 +4,7 @@
 
 <h1 align="center">Captatum</h1>
 
-<p align="center"><strong>Adaptive MCP web-fetch for AI agents — every response is a provenance receipt.</strong></p>
+<p align="center"><strong>Fetch any site — the JS-rendered, structured, and dynamic pages other tools return empty.</strong></p>
 
 <p align="center"><em>Fetch the web. Keep the receipt.</em></p>
 
@@ -16,29 +16,17 @@
   <a href="SECURITY.md"><img alt="security" src="https://img.shields.io/badge/security-policy-7C5CFC.svg" /></a>
 </p>
 
-Captatum is one MCP tool that fetches **any** URL, renders JS only when needed, and returns **token-efficient** content plus first-class **provenance** — a receipt describing exactly how each result was produced (tier used, final URL, whether JS rendering was required, transform model/tokens). It's an [MCP server](https://modelcontextprotocol.io) and the governed fetch step of the [Edictum](https://github.com/edictum-ai) ecosystem; it also works standalone.
+Captatum is one MCP tool that fetches **any** URL and returns the **actual content** — including the JS-rendered SPAs, structured data (JSON-LD / Open Graph), and dynamic pages that `WebFetch`, Firecrawl, and Jina return empty or blocked. It renders JS only when a page needs it, extracts structured data from raw HTML, and defaults to a token-efficient summary. Every response also carries a **provenance receipt** (tier, final URL, whether JS was required, transform model/tokens) so the agent knows how a result was produced. It's an [MCP server](https://modelcontextprotocol.io); it works standalone and is part of the [Edictum](https://github.com/edictum-ai) ecosystem.
 
 > **Heads-up before the first call.** The default output is `summary`, which needs a transform provider (`OPENROUTER_API_KEY` or `OLLAMA_BASE_URL`). **Without one, `summary` honestly falls back to `raw`** (`transform.provider: "none"`) — it never silently dumps a huge page. For a **zero-config** first call, use `output: "raw"`. See [Quick start](#quick-start-local-stdio).
 
 ---
 
-## Why this matters
-
-Agents increasingly **act on** what they read from the web — a job requirement, a price, a cited fact, a doc snippet. A bare LLM summary of a page is **unverifiable**: you can't tell whether the agent read the real page, hit a paywall, got an anti-bot interstitial, or whether the summary came from stale cached text. Captatum returns not just an answer but a **provenance receipt** — the tier used, the final URL after redirects, whether JS rendering was required (or blocked), the platform detected, and the model + tokens + cost of any summary.
-
-That receipt is what makes a fetch tool **governable**:
-
-- **Trust, not faith.** An agent's claim about a URL is only as good as the evidence behind it. With provenance, a downstream check (human or automated) can verify *how* a result was produced before acting on it — evidence-gated progression, not "the model said so."
-- **Failure is visible, not silent.** `tier: render-blocked`, `access.gated`, a `max_bytes` warning, or a `transform_model_fallback` tell the agent a result is partial or degraded — so it can retry, render, or escalate instead of confidently reporting garbage.
-- **Cost + egress accounting.** Per-call transform model/tokens/cost and the fetch tier make spend and data-direction (e.g. content egressed to OpenRouter) observable — essential when agents fetch at scale or touch non-public URLs.
-
-This is why Captatum is one adaptive tool that always returns content **and** a receipt: the receipt is the point, not a debug extra. It's also the governed-fetch step of the [Edictum](https://github.com/edictum-ai) ecosystem, where an agent may assert a claim about a URL only if a governed Captatum call produced evidence for it.
-
----
-
 ## Why Captatum
 
-Agents need to read the web — docs, job postings, product pages, articles. The usual options each force a tradeoff. Captatum's wedge is **provenance + SSRF-safe self-host + a free-model default**, not raw scale:
+The wedge is **coverage**: captatum fetches pages other tools can't. `WebFetch` does a static GET + Turndown (it drops `<script>` JSON-LD/app-state and runs no JS); Firecrawl and Jina render but strip structured data and charge at scale. Captatum combines an anti-bot fetch, raw-HTML structured extraction, and a gated real-browser render — so it returns content where the others return an empty shell or a blocked page.
+
+> **Proof — a real client-rendered SPA (`excalidraw.com`):** a plain fetch gets only the shell — `Excalidraw Whiteboard try { function setTheme…` — no app content. Captatum with `allowRender: true` returns the **actual rendered UI**: *"Pick a tool & Start drawing!… Canvas actions 100%… Exit zen mode."* And for a posting on `explore.jobs.netflix.net`, Captatum extracts the full job description from the page's `JobPosting` JSON-LD — the structured data `WebFetch`'s Turndown throws away.
 
 | | JS render | Anti-bot TLS fingerprint | Structured extract | Default output | Provenance receipt | Self-host |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -47,9 +35,9 @@ Agents need to read the web — docs, job postings, product pages, articles. The
 | Firecrawl | ✅ | partial | ✅ | markdown/html | partial | commercial |
 | Jina Reader | ✅ | partial | light | markdown | ❌ | commercial |
 
-¹ **Honest caveat:** the `wreq-js` browser TLS/JA3+JA4 fingerprint impersonation is active for **plain HTTP only**. HTTPS uses a checked-IP Node path (no fingerprint) to preserve rebinding-proof SSRF — so the fingerprint does **not** bypass Cloudflare/anti-bot over HTTPS today. See [Security: scope and limits](#security-scope-and-limits).
+¹ **Honest caveat:** the `wreq-js` TLS/JA3+JA4 fingerprint is active for **plain HTTP only**; HTTPS uses a checked-IP Node path (no fingerprint) to preserve rebinding-proof SSRF — so Captatum does **not** bypass Cloudflare/anti-bot over HTTPS today. Closing that gap (a browser-fetch fallback that uses the Tier-3 Chromium's real TLS fingerprint) is tracked in [#41](https://github.com/edictum-ai/captatum/issues/41). See [Security: scope and limits](#security-scope-and-limits).
 
-**Not for:** bulk crawling, search, or PDF/office-document parsing. Captatum is a single-URL, provenance-first fetch — not a crawl/search engine.
+**Not for:** Captatum is the best tool for the **hard single-URL fetch + structured extract** (a job description, a dynamic doc, a product page). It is *not* a batch crawler at scale, a search engine, or a PDF/office parser — though bounded site fetches (e.g. every job on a career site via the ATS API, [#42](https://github.com/edictum-ai/captatum/issues/42)) are on the roadmap.
 
 ## Features
 
