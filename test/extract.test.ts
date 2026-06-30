@@ -182,6 +182,602 @@ test("vscdn/Netflix: Tier-1 raw output is the JobPosting description, not the co
   assert.doesNotMatch(result.result, /themeOptions|primary-color|domain : netflix|applySuccessMessage/);
 });
 
+test("Pinterest pin: SocialMediaPosting articleBody leads output:raw (not SPA chrome)", async () => {
+  // Real failure (pinterest.com/pin/<id>): a pin's caption lives in the
+  // SocialMediaPosting JSON-LD articleBody (author, follower stats, source text);
+  // the node has no top-level description and the visible body is SPA chrome.
+  // Before the fix, output:raw was only the page title — the caption was never
+  // surfaced because SocialMediaPosting was not a content-bearing node.
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/1618549864698060/",
+    fetchResult: fetchResult(
+      "https://www.pinterest.com/pin/1618549864698060/",
+      fixture("pinterest-pin.html"),
+    ),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+
+  assert.equal(result.tier, 1);
+  assert.equal(result.resolvedVia, "tier1-jsonld");
+  // The pin's source caption (articleBody) leads the result.
+  assert.ok(
+    result.result.startsWith("5,972 Followers, 719 Following"),
+    "articleBody caption must lead output:raw",
+  );
+  assert.ok(result.result.includes("Sfera kids"), "pin source caption surfaced");
+  // The nested interactionStatistic.description ("Saves") must NOT be picked as
+  // the description fallback — only the node's own articleBody.
+  assert.ok(!result.result.startsWith("Saves"));
+  // The page <title> already contains the headline, so it is kept as-is.
+  assert.equal(result.title, "Decoração Festa Infantil fundo do mar | Sereia tema de festa");
+});
+
+test("Pinterest pin: short/absent description falls back to articleBody, not the weak description", async () => {
+  // A node that has BOTH a weak (<50 char) description and a real articleBody:
+  // the articleBody must win so the caption, not a truncated one-liner, leads.
+  const html = [
+    "<!doctype html><html><head><title>Pinterest</title></head><body>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({
+      "@context": "http://schema.org/",
+      "@type": "SocialMediaPosting",
+      headline: "A pin",
+      description: "too short",
+      articleBody: "Sfera kids I Buffet infantil: Festas completas para a primeira infância com experiencias ludicas.",
+    }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/123/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/123/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("Sfera kids"), "articleBody leads over the weak description");
+  assert.ok(!result.result.startsWith("too short"));
+});
+
+test("Article articleBody is NOT duplicated as a leading description (gate is SocialMediaPosting-only)", async () => {
+  // Regression guard (codex P2): the articleBody fallback must stay gated to
+  // SocialMediaPosting. An Article's articleBody equals its visible body, so
+  // leading with it would duplicate the whole article and re-inflate the transform
+  // input that transformContent works to keep small.
+  const body = "This is the real article body that already appears as visible text.";
+  const html = [
+    "<!doctype html><html><head><title>Some News Article</title></head><body>",
+    `<article><p>${body}</p></article>`,
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "NewsArticle", headline: "Some News Article", articleBody: body }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://news.test/article",
+    fetchResult: fetchResult("https://news.test/article", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  // The articleBody must NOT be prepended as a leading description (which would
+  // make the body appear twice). It appears exactly once, from the visible body.
+  const phrase = "real article body that already appears as visible text";
+  assert.ok(result.result.includes(phrase), "visible body present");
+  assert.equal(
+    result.result.indexOf(phrase),
+    result.result.lastIndexOf(phrase),
+    "articleBody must not be duplicated as a leading description",
+  );
+});
+
+test("Pinterest pin wrapped in a @graph node still surfaces its articleBody caption", async () => {
+  // Some pages wrap content JSON-LD in a @graph node. leadDescription must descend
+  // @graph (as preferredTitle already does) or a graph-wrapped pin's caption is
+  // missed and output:raw falls back to SPA chrome/empty body.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({
+      "@context": "https://schema.org",
+      "@graph": [{
+        "@type": "SocialMediaPosting",
+        headline: "A Graph-Wrapped Pin",
+        articleBody: "Sfera kids I Buffet infantil: Festas completas para a primeira infancia com experiencias ludicas.",
+      }],
+    }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/9/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/9/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("Sfera kids"), "graph-wrapped pin articleBody surfaced");
+});
+
+test("Pinterest pin: a SHORT articleBody caption (<=50 chars) still leads", async () => {
+  // A pin's caption can be short ("Cute outfit!"). It IS the post's content, so it
+  // must lead even though it is under the >50-char threshold the description path
+  // uses — otherwise output:raw falls back to SPA chrome.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<header><nav>Skip to content Explore</nav></header>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "http://schema.org/", "@type": "SocialMediaPosting", headline: "Pin", articleBody: "Cute outfit! Love it." }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/8/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/8/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("Cute outfit!"), "short SocialMediaPosting caption leads");
+});
+
+test("an embedded SocialMediaPosting on an article page does NOT dominate the article body", async () => {
+  // Regression guard (codex P2): a normal article page that also embeds a social
+  // post (a SocialMediaPosting JSON-LD node) must not lead with the post's
+  // articleBody. The post is embedded/related, not the page subject; the article
+  // body leads. Only a pin/thin page (no other content node) uses the post body.
+  const articleBody = "This is the genuine article body with enough text to be primary content for the fetched page.";
+  const html = [
+    "<!doctype html><html><head><title>Real Article</title></head><body>",
+    `<article><p>Real Article ${articleBody}</p></article>`,
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "NewsArticle", headline: "Real Article", articleBody }),
+    "</script>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "This is an embedded social post, not the page body." }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://news.test/article-with-embed",
+    fetchResult: fetchResult("https://news.test/article-with-embed", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(!result.result.startsWith("This is an embedded social post"), "embedded social post must not lead");
+  assert.ok(result.result.includes("genuine article body"), "article body present");
+});
+
+test("a non-pin page with real body + an embedded social post does NOT let the post lead", async () => {
+  // Regression guard (codex P2): a page with real visible body but no
+  // Article/JobPosting JSON-LD that embeds a social post must not prepend the
+  // post's articleBody. Only a pin page (pinterest/pin.it) or an empty SPA shell
+  // treats a SocialMediaPosting as the subject; visible-text length alone is too
+  // fragile to be the signal.
+  const rich = "Welcome to our site. ".repeat(40); // ~880 chars of real body text
+  const html = [
+    "<!doctype html><html><head><title>Acme Home</title></head><body>",
+    `<main><p>${rich}</p></main>`,
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "Embedded social post caption that should not dominate the homepage." }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://acme.test/",
+    fetchResult: fetchResult("https://acme.test/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(!result.result.startsWith("Embedded social post"), "embedded post must not lead on a non-pin page");
+  assert.ok(result.result.startsWith("Welcome to our site"), "real page body leads");
+});
+
+test("a Pinterest board/profile page (not a /pin/ URL) does NOT treat an embedded post as the subject", async () => {
+  // Regression guard (codex P2): the host-only pin check let any pinterest.*
+  // page fire the caption fallback. A board/profile/search page with real body
+  // text + an embedded social post must not lead with the post — only an actual
+  // pin detail page (pinterest.*/pin/<id>/ or pin.it) does.
+  const rich = "Pin idea after pin idea. ".repeat(40);
+  const html = [
+    "<!doctype html><html><head><title>Party Ideas Board</title></head><body>",
+    `<main><p>${rich}</p></main>`,
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "An embedded pin caption that must not dominate this board page." }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/thaynavitoriano/festa-fundo-do-mar/",
+    fetchResult: fetchResult("https://www.pinterest.com/thaynavitoriano/festa-fundo-do-mar/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(!result.result.startsWith("An embedded pin caption"), "board page must not lead with an embedded post");
+  assert.ok(result.result.startsWith("Pin idea"), "board body leads");
+});
+
+test("an empty Pinterest board/profile shell does NOT surface an embedded social post", async () => {
+  // Regression guard (codex P2): on a Pinterest host, only an actual /pin/ detail
+  // page qualifies — not an empty board/profile shell whose only content is an
+  // embedded SocialMediaPosting.
+  const html = [
+    "<!doctype html><html><head><title>My Board</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "Embedded post caption that must not surface on a board shell." }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/thaynavitoriano/my-board/",
+    fetchResult: fetchResult("https://www.pinterest.com/thaynavitoriano/my-board/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(!result.result.includes("Embedded post caption"), "board shell must not surface the embedded post");
+});
+
+test("a spoofed Pinterest host (pinterest.com.evil) does NOT trigger the pin fallback", async () => {
+  // Regression guard (codex P3): the host match must be spoof-safe. A lookalike
+  // domain whose hostname merely contains "pinterest." must not surface a
+  // SocialMediaPosting articleBody as if it were a real pin page.
+  const html = [
+    "<!doctype html><html><head><title>Evil</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "Spoofed caption that must not surface." }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://pinterest.com.evil/pin/foo/",
+    fetchResult: fetchResult("https://pinterest.com.evil/pin/foo/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(!result.result.includes("Spoofed caption"), "spoofed pinterest host must not trigger pin fallback");
+});
+
+test("a 3-letter lookalike host (pinterest.com.foo) does NOT trigger the pin fallback", async () => {
+  // Regression guard (codex P2): the host regex must reject 3+ letter tails, so a
+  // lookalike like pinterest.com.foo (which slid past the com.[a-z]{2,3} form) is
+  // not treated as a genuine Pinterest host.
+  const html = [
+    "<!doctype html><html><head><title>Evil</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "Lookalike host caption that must not surface." }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com.foo/pin/123/",
+    fetchResult: fetchResult("https://www.pinterest.com.foo/pin/123/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(!result.result.includes("Lookalike host"), "3-letter lookalike host must not trigger pin fallback");
+});
+
+test("a Pinterest country-domain pin (pinterest.co.uk) still surfaces its caption", async () => {
+  // The host gate must accept genuine Pinterest country domains, not just .com,
+  // or country-domain pins lose the caption fallback (isPinHost and isPinDetailPage
+  // must agree). Spoof-safety is preserved by anchoring the match to the host end.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", headline: "Pin", articleBody: "Sfera kids I Buffet infantil: caption on a country-domain pin page." }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.co.uk/pin/123/",
+    fetchResult: fetchResult("https://www.pinterest.co.uk/pin/123/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("Sfera kids"), "country-domain pin caption surfaces");
+});
+
+test("a pin in an array-valued JSON-LD script (multi-script page) still surfaces", async () => {
+  // Regression guard (codex P2): extractJsonLd nests multi-script pages as
+  // [[nodes...], node]; candidateNodes must flatten array-valued script values,
+  // not treat the inner array as a single (non-content) record.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify([{ "@type": "SocialMediaPosting", headline: "Pin", articleBody: "Sfera kids caption nested inside an array-valued JSON-LD script." }]),
+    "</script>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@type": "BreadcrumbList", itemListElement: [{ name: "Home" }] }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/555/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/555/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("Sfera kids"), "array-nested SocialMediaPosting caption surfaces");
+});
+
+test("non-detail Pinterest routes (/pin/create/, board slug /alice/pin/) do NOT trigger the fallback", async () => {
+  // Regression guard (codex P2): isPinDetailPage must require the actual pin route
+  // /pin/<numeric-id>, not any "/pin/" substring. An empty shell is used so the only
+  // thing that could surface is the embedded post — isolating the route check.
+  const shell = (caption) => [
+    "<!doctype html><html><head><title>Pinterest</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: caption }),
+    "</script></body></html>",
+  ].join("\n");
+  for (const url of [
+    "https://www.pinterest.com/alice/pin/",
+    "https://www.pinterest.com/pin/create/",
+    "https://www.pinterest.com/alice/pin/123/", // /pin/<digits> not at the path root
+    "https://www.pinterest.com/pin/123abc/", // id segment has trailing junk
+  ]) {
+    const result = await extractTier1FromFetchResult({
+      requestedUrl: url,
+      fetchResult: fetchResult(url, shell("EMBED " + url)),
+      extractHtml,
+      durationMs: 100,
+      fetchMs: 90,
+      output: "raw",
+    });
+    assert.ok(!result.result.includes("EMBED"), `${url} must not trigger the pin fallback`);
+  }
+});
+
+test("among multiple SocialMediaPosting nodes, the one matching the fetched pin leads", async () => {
+  // Regression guard (codex P2): a pin page may carry several SocialMediaPosting
+  // nodes (the current pin + a quoted/related one). Prefer the node whose
+  // url/mainEntityOfPage references the fetched pin id; don't just take the first.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "RELATED pin caption that must NOT lead.", mainEntityOfPage: { "@id": "https://www.pinterest.com/pin/999/" } }),
+    "</script>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "CURRENT pin caption that SHOULD lead.", mainEntityOfPage: { "@id": "https://www.pinterest.com/pin/123/" } }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/123/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/123/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("CURRENT pin caption"), "the fetched pin's caption leads, not a related pin's");
+  assert.ok(!result.result.startsWith("RELATED pin caption"), "a related/quoted pin must not lead");
+});
+
+test("prefix-colliding pin ids (123 vs 1234) select the exact match, not the prefix", async () => {
+  // Regression guard (codex P2): matching the pin id by substring would let
+  // /pin/123 match /pin/1234 (a prefix collision) and surface the wrong caption.
+  // Require an exact id boundary.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "PREFIX pin 1234 must NOT lead.", mainEntityOfPage: { "@id": "https://www.pinterest.com/pin/1234/" } }),
+    "</script>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "EXACT pin 123 SHOULD lead.", mainEntityOfPage: { "@id": "https://www.pinterest.com/pin/123/" } }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/123/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/123/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("EXACT pin 123"), "exact pin-id match leads, not a prefix-colliding one");
+});
+
+test("a co-typed pin (@type SocialMediaPosting + Article) still surfaces its caption", async () => {
+  // Regression guard (codex P2): a node typed as BOTH SocialMediaPosting and Article
+  // is still the pin — its articleBody must surface, not be suppressed as a higher-
+  // priority content node via the Article type.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": ["SocialMediaPosting", "Article"], headline: "Pin", articleBody: "Sfera kids co-typed pin caption that must surface.", mainEntityOfPage: { "@id": "https://www.pinterest.com/pin/777/" } }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/777/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/777/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("Sfera kids co-typed"), "co-typed pin caption surfaces");
+});
+
+test("a related posting referenced as /pin/123abc/ does not shadow the exact /pin/123/", async () => {
+  // Regression guard (codex P3): the pin-id boundary must be a real path boundary,
+  // not just a non-digit — /pin/123abc/ must not match pin id 123.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "TRAILING JUNK ref must NOT lead.", mainEntityOfPage: { "@id": "https://www.pinterest.com/pin/123abc/" } }),
+    "</script>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "EXACT pin SHOULD lead.", mainEntityOfPage: { "@id": "https://www.pinterest.com/pin/123/" } }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/123/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/123/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("EXACT pin"), "exact pin leads, not a trailing-junk reference");
+});
+
+test("a posting referenced via a non-detail path (/alice/pin/123/) does not shadow the real pin", async () => {
+  // Regression guard (codex P2): a reference URL that merely contains the pin id in
+  // a non-detail path (or a query) must not be selected. Only a genuine Pinterest
+  // pin-detail URL with the same id counts as the current pin.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "BOARD PATH ref must NOT lead.", mainEntityOfPage: { "@id": "https://www.pinterest.com/alice/pin/123/" } }),
+    "</script>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "REAL pin SHOULD lead.", mainEntityOfPage: { "@id": "https://www.pinterest.com/pin/123/" } }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/123/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/123/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("REAL pin"), "the real pin detail ref leads, not a non-detail path ref");
+});
+
+test("a pin identified via mainEntityOfPage.url (not @id) is still matched", async () => {
+  // Regression guard (codex P2): mainEntityOfPage may be { url } instead of { @id }.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "RELATED must NOT lead.", mainEntityOfPage: { "@id": "https://www.pinterest.com/pin/999/" } }),
+    "</script>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "URL FORM pin SHOULD lead.", mainEntityOfPage: { url: "https://www.pinterest.com/pin/123/" } }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/123/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/123/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("URL FORM pin"), "mainEntityOfPage.url form is matched");
+});
+
+test("a pin that identifies itself via a top-level @id is matched", async () => {
+  // Regression guard (codex P2): a posting may carry its canonical URL as a
+  // top-level @id rather than url/mainEntityOfPage.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", articleBody: "RELATED must NOT lead.", mainEntityOfPage: { "@id": "https://www.pinterest.com/pin/999/" } }),
+    "</script>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@id": "https://www.pinterest.com/pin/123/", "@type": "SocialMediaPosting", articleBody: "TOPLEVEL ID pin SHOULD lead." }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/pin/123/",
+    fetchResult: fetchResult("https://www.pinterest.com/pin/123/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("TOPLEVEL ID pin"), "a pin identified by a top-level @id is matched");
+});
+
+test("a trailing-dot FQDN pin URL (www.pinterest.com.) is still recognized", async () => {
+  // Regression guard (codex P3): the FQDN form "pinterest.com." is the same host;
+  // the allowlist must match it after stripping the trailing dot.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", headline: "Pin", articleBody: "Trailing-dot host pin caption.", mainEntityOfPage: { "@id": "https://www.pinterest.com./pin/123/" } }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com./pin/123/",
+    fetchResult: fetchResult("https://www.pinterest.com./pin/123/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("Trailing-dot host"), "trailing-dot FQDN pin is recognized");
+});
+
+test("any real Pinterest country domain (e.g. pinterest.com.uy) is recognized", async () => {
+  // Regression guard (codex P2): the host matcher must cover EVERY real Pinterest
+  // country domain, not a hard-coded subset — a 2-letter-cc suffix strategy is used
+  // deliberately (an attacker-registered pinterest.<cc> is attacker-controlled end
+  // to end, so no cross-domain injection) so legitimate country pins never regress.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", headline: "Pin", articleBody: " Uruguay pin caption on a .com.uy domain.", mainEntityOfPage: { "@id": "https://www.pinterest.com.uy/pin/4242/" } }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com.uy/pin/4242/",
+    fetchResult: fetchResult("https://www.pinterest.com.uy/pin/4242/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("Uruguay pin caption"), "pinterest.com.uy pin caption surfaces");
+});
+
+test("a Pinterest AMP pin route (/amp/pin/<id>/) is a pin detail page", async () => {
+  // Regression guard (codex P2): Pinterest also exposes pins under /amp/pin/<id>/.
+  const html = [
+    "<!doctype html><html><head><title>Pin</title></head><body>",
+    "<div id=\"app\"></div>",
+    "<script type=\"application/ld+json\">",
+    JSON.stringify({ "@context": "https://schema.org", "@type": "SocialMediaPosting", headline: "Pin", articleBody: "AMP route pin caption that must surface.", mainEntityOfPage: { "@id": "https://www.pinterest.com/amp/pin/5555/" } }),
+    "</script></body></html>",
+  ].join("\n");
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://www.pinterest.com/amp/pin/5555/",
+    fetchResult: fetchResult("https://www.pinterest.com/amp/pin/5555/", html),
+    extractHtml,
+    durationMs: 100,
+    fetchMs: 90,
+    output: "raw",
+  });
+  assert.ok(result.result.startsWith("AMP route pin caption"), "AMP pin route surfaces the caption");
+});
+
 test("a config-only SPA shell (hidden config, no JSON-LD) escalates to Tier-3", () => {
   // Same vscdn shape but WITHOUT the JobPosting JSON-LD: once the hidden config is
   // correctly ignored there is no extractable content, so it must render.
@@ -400,6 +996,15 @@ test("preferredTitle uses a content-bearing JSON-LD title when <title> is generi
     ],
   });
   assert.equal(multi, "First Story Wins");
+
+  // A SocialMediaPosting is NOT a reliable page subject (often an embed), so it
+  // must not override the page <title> the way a JobPosting/Article does. (A pin's
+  // caption is still surfaced via leadDescription pass 2; the title comes from the
+  // page <title>, which on real pin pages is descriptive.)
+  const embed = preferredTitle("Real Article", {
+    jsonLd: { "@type": "SocialMediaPosting", headline: "Embedded Post Headline" },
+  });
+  assert.equal(embed, "Real Article");
 
   // No structured data: <title> passes through.
   assert.equal(preferredTitle("Just a title", {}), "Just a title");
