@@ -15,6 +15,11 @@ export interface LlmModelCandidate {
   supportsJson: boolean;
   contextTokens: number;
   costWeight: number;
+  /** Position in the configured model list — the PRIMARY ranking key (#48 C: pin
+   *  the configured order, e.g. deepseek before qwen, so the intended model is
+   *  always tried first; the bandit only breaks ties). Local/Ollama uses a high
+   *  default so configured hosted models rank first. */
+  order: number;
 }
 
 export interface LlmGenerateInput {

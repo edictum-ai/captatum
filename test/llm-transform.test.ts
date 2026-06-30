@@ -339,6 +339,42 @@ test("router fallback surfaces fallbackFrom on the transform info", async () => 
   assert.equal(result.result, "Real summary produced by the fallback model.");
 });
 
+test("#48 C: configured model order pins the primary pick — feedback demotion does not reorder", () => {
+  const router = new ModelRouter([
+    candidate("openrouter", "deepseek/deepseek-v4-flash", { order: 0 }),
+    candidate("openrouter", "qwen/qwen3.6-flash", { order: 1 }),
+  ]);
+  assert.equal(router.pick("summarize", 10).model, "deepseek/deepseek-v4-flash");
+  // Heavy demotion of deepseek — order still wins (configured primary).
+  for (let i = 0; i < 5; i++) router.feedback({ model: "deepseek/deepseek-v4-flash", score: 0, valid: false });
+  assert.equal(router.pick("summarize", 10).model, "deepseek/deepseek-v4-flash", "order pins deepseek primary despite demotion");
+  // qwen is picked only when deepseek is excluded (tried) — the real fallback path.
+  assert.equal(router.pick("summarize", 10, { exclude: ["deepseek/deepseek-v4-flash"] }).model, "qwen/qwen3.6-flash");
+});
+
+test("#48 B: an empty completion from the primary falls back to the next model with fallbackFrom", async () => {
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [
+      candidate("openrouter", "deepseek/deepseek-v4-flash", { order: 0 }),
+      candidate("openrouter", "qwen/qwen3.6-flash", { order: 1 }),
+    ],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      // DeepSeek capacity-pressure empty completion (not a throw — an empty body).
+      if (input.model === "deepseek/deepseek-v4-flash") return { text: "" };
+      return { text: "qwen summary" };
+    },
+  };
+  const transformer = new LlmTransformer({
+    router: new ModelRouter(provider.candidates()),
+    providers: { openrouter: provider },
+  });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page body", prompt: "Summarize" });
+  assert.equal(result.info.model, "qwen/qwen3.6-flash");
+  assert.equal(result.info.fallbackFrom, "deepseek/deepseek-v4-flash");
+  assert.equal(result.result, "qwen summary");
+});
+
 test("router feedback demotes flaky free model before local fallback", () => {
   const router = new ModelRouter([
     candidate("openrouter", "free/model", { free: true }),
@@ -568,6 +604,7 @@ function candidate(
     supportsJson: overrides.supportsJson ?? true,
     contextTokens: overrides.contextTokens ?? 128_000,
     costWeight: overrides.costWeight ?? 0,
+    order: overrides.order ?? 0,
   };
 }
 

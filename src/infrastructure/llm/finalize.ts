@@ -17,11 +17,10 @@ export function finalize(
   latencyMs: number,
   reportedOutTokens?: number,
 ): { result: string; outTokens: number; schemaIssue?: string } {
+  // Empty-completion handling moved to the model-router retry loop (#48 B): an
+  // empty result now retries the next candidate (qwen) with `fallbackFrom`
+  // instead of failing here. By this point text is guaranteed non-empty.
   const trimmed = text.trim();
-  if (!trimmed) {
-    router.feedback({ model, score: 0, valid: false });
-    throw new TransformError("transform_empty", "Provider returned an empty transform");
-  }
   const extracted = input.mode === "extract"
     ? finalizeExtract(trimmed, input.schema, model, router)
     : undefined;

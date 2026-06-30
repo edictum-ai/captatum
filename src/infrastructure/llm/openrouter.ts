@@ -71,7 +71,7 @@ export class OpenRouterProvider implements LlmProvider {
   candidates(): LlmModelCandidate[] {
     if (!this.apiKey) return [];
     const models = this.discovered ?? this.models;
-    return models.map((model) => ({
+    return models.map((model, order) => ({
       provider: this.id,
       model,
       free: model.endsWith(":free"),
@@ -79,6 +79,7 @@ export class OpenRouterProvider implements LlmProvider {
       supportsJson: true,
       contextTokens: DEFAULT_CONTEXT_TOKENS,
       costWeight: model.endsWith(":free") ? 0 : 0.12,
+      order,
     }));
   }
 

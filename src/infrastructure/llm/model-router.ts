@@ -26,7 +26,8 @@ export class ModelRouter implements ModelRouterPort {
   pick(task: RouterTask, inputTokens: number, options: ModelPickOptions = {}): ModelPick {
     const candidates = [...this.candidatesByKey.values()].filter((candidate) => fits(candidate, task, inputTokens, options));
     if (candidates.length === 0) return { provider: "none", reason: noneReason(options, this.candidatesByKey.size) };
-    const [best] = candidates.sort((left, right) => this.rank(left) - this.rank(right) || left.model.localeCompare(right.model));
+    const [best] = candidates.sort((left, right) =>
+      left.order - right.order || this.rank(left) - this.rank(right) || left.model.localeCompare(right.model));
     return { provider: best.provider, model: best.model, free: best.free };
   }
 
@@ -114,6 +115,12 @@ export class LlmTransformer implements TransformPort {
           messages,
           maxOutputTokens: normalizeBudget(input.budget),
         });
+        // #48 B: an empty completion (DeepSeek capacity pressure) is a failure —
+        // retry the next candidate (qwen) with `fallbackFrom`, instead of failing
+        // the whole transform (which previously yielded a raw dump + demotion).
+        if (!generated.text.trim()) {
+          throw new TransformError("transform_empty", `${pick.model} returned an empty completion`);
+        }
       } catch (error) {
         this.router.feedback({ model: pick.model, score: 0, valid: false });
         tried.push(pick.model);

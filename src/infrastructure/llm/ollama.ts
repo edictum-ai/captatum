@@ -31,6 +31,7 @@ export class OllamaProvider implements LlmProvider {
       supportsJson: true,
       contextTokens: DEFAULT_CONTEXT_TOKENS,
       costWeight: 0,
+      order: 1000,
     }];
   }
 
