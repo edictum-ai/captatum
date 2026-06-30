@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detectAntibotBlock } from "../src/application/antibot.ts";
+import { detectAntibotBlock, stampAntibotChallenge } from "../src/application/antibot.ts";
+import { classifyAccess } from "../src/application/classify.ts";
+import type { Result } from "../src/domain/result.ts";
 import type { AntiBotEvidence, FetcherResult } from "../src/application/ports/fetcher.ts";
+
+function bareResult(over: Partial<Result> = {}): Result {
+  return {
+    url: "", bytes: 0, code: 200, codeText: "", durationMs: 0, result: "",
+    schemaVersion: 1, finalUrl: "", redirects: [], tier: 1, output: "raw",
+    platform: { adapterId: "generic", label: "g", detectedFrom: "tier1" },
+    jsRequired: false, resolvedVia: "tier1", attempts: [], contentType: "text/html",
+    timings: { totalMs: 0, fetchMs: 0 }, errors: [],
+    ...over,
+  };
+}
 
 function result(status: number, e: Partial<AntiBotEvidence> = {}): FetcherResult {
   return {
@@ -57,4 +70,24 @@ test("detectAntibotBlock: vendor cookie WITHOUT vendor attribution → does NOT 
 test("detectAntibotBlock: no antibot evidence at all → does NOT fire", () => {
   const r: FetcherResult = { status: 403, finalUrl: "https://x.test/", redirects: [], bodyStream: new ReadableStream({ start(c) { c.close(); } }), contentType: "text/html", bytes: 0 };
   assert.equal(detectAntibotBlock(r), null);
+});
+
+test("Half A: a Cloudflare-challenge fetch stamps the result gated (captcha, cloudflare)", () => {
+  const fetched = result(403, { hasCfMitigated: true, serverVendor: "cloudflare" });
+  const base = bareResult();
+  assert.equal(stampAntibotChallenge(base, fetched), true);
+  assert.equal(base.challengeProvider, "cloudflare");
+  assert.ok(base.errors.some((e) => e.code === "antibot_challenge"));
+  const access = classifyAccess(base);
+  assert.equal(access.gated, true);
+  assert.equal(access.gateReason, "captcha");
+  assert.equal(access.challengeProvider, "cloudflare");
+});
+
+test("Half A: a non-challenge fetch is not stamped", () => {
+  const fetched = result(403, { serverVendor: "none" }); // ordinary 403, no vendor signal
+  const base = bareResult();
+  assert.equal(stampAntibotChallenge(base, fetched), false);
+  assert.equal(base.challengeProvider, undefined);
+  assert.equal(classifyAccess(base).gated, false);
 });
