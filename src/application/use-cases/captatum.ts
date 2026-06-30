@@ -10,8 +10,9 @@ import {
   type HtmlExtractor,
 } from "./tier1-extract.ts";
 import { maybeRender } from "./render.ts";
+import { stampAntibotChallenge } from "../antibot.ts";
 import { resolveAshbyEmbedUrl } from "../../infrastructure/ashby/embed-resolver.ts";
-import { fallbackExcerpt } from "./result-excerpt.ts";
+import { errorMessage, fallbackExcerpt, transformErrorCode } from "./result-excerpt.ts";
 import { stripAdTrackerUrlsForLlm, transformContent } from "./transform-content.ts";
 import {
   DEFAULT_CAPTATUM_DEFAULTS,
@@ -96,15 +97,20 @@ export class CaptatumUseCase {
     if (ashbyResolved) {
       base.platform = { adapterId: "ashby-embed", label: "Ashby embed", detectedFrom: "ashby_jid" };
     }
+    // #41 Half A: a challenge wall is gated, not content — label it (gateReason
+    // "captcha") and skip the futile render/summarize (Half B bypass isn't viable).
+    const isChallenge = stampAntibotChallenge(base, fetched);
     stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);
-    const resolved = await maybeRender({
-      result: base,
-      request,
-      renderer: this.renderer,
-      fetcher: this.fetcher,
-      extractHtml: this.extractHtml,
-      clock: this.clock,
-    });
+    const resolved = isChallenge
+      ? base
+      : await maybeRender({
+        result: base,
+        request,
+        renderer: this.renderer,
+        fetcher: this.fetcher,
+        extractHtml: this.extractHtml,
+        clock: this.clock,
+      });
     return await this.applyOutputMode(resolved, request, startMs, fetchMs);
   }
 
@@ -114,7 +120,8 @@ export class CaptatumUseCase {
     startMs: number,
     fetchMs: number,
   ): Promise<Result> {
-    if (request.requestedOutput === "raw") {
+    // #41 Half A: never summarize a challenge interstitial as page content.
+    if (base.challengeProvider || request.requestedOutput === "raw") {
       base.output = "raw";
       stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);
       return base;
@@ -233,16 +240,6 @@ function unexpectedReject(error: unknown): RejectResult {
     code: "network_error",
     message: errorMessage(error, "Fetch failed before a safe response was available"),
   };
-}
-
-function transformErrorCode(error: unknown): string {
-  return error instanceof TransformError ? error.code : "transform_failed";
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message
-    ? error.message
-    : fallback;
 }
 
 function elapsed(startMs: number, endMs: number): number {

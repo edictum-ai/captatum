@@ -86,6 +86,9 @@ export interface Result {
   contentSha256?: string;
   /** sha256 over the stable JSON of the provenance envelope — attests how the result was produced. */
   provenanceHash?: string;
+  /** Anti-bot challenge wall detected (cloudflare/akamai/perimeterx/…). When set,
+   *  the fetched bytes are a bot-protection interstitial, not page content (#41 Half A). */
+  challengeProvider?: string;
 }
 
 /** sha256 hex of a string. */

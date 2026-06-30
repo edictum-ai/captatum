@@ -13,6 +13,8 @@ export interface AccessInfo {
   mainContentAccessible: boolean;
   gated: boolean;
   gateReason: "paywall" | "login" | "captcha" | "byte_cap" | "none";
+  /** The anti-bot vendor when gateReason is "captcha" (#41 Half A). */
+  challengeProvider?: string;
 }
 
 /** Strict schema.org Article family. WebPage (a container) and event/recipe/
@@ -49,6 +51,11 @@ export function classifyContentType(result: Result): ContentType {
 
 export function classifyAccess(result: Result): AccessInfo {
   const mainContentAccessible = hasContent(result);
+  // Anti-bot challenge wall (#41 Half A): the fetched bytes are a bot-protection
+  // interstitial, not page content. Takes precedence — never silently pass it.
+  if (result.challengeProvider) {
+    return { mainContentAccessible: false, gated: true, gateReason: "captcha", challengeProvider: result.challengeProvider };
+  }
   if (isPaywalled(result.structured?.jsonLd)) {
     return { mainContentAccessible, gated: true, gateReason: "paywall" };
   }
