@@ -1,24 +1,18 @@
 import type { FetcherResult, RejectResult } from "../../application/ports/fetcher.ts";
 import type { RenderAction, RenderInput } from "../../application/ports/renderer.ts";
+import { isAdTrackerHost, isFirstPartyHost } from "../../domain/adblock.ts";
 import type { PlaywrightFrame, PlaywrightRequest, PlaywrightRoute } from "./playwright-types.ts";
 import { safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { FetcherRouteFulfiller, type RouteFulfiller } from "./route-fulfill.ts";
 
 const BLOCKED_TYPES = new Set(["image", "font", "media"]);
-const ANALYTICS_HOSTS = [
-  "doubleclick.net",
-  "google-analytics.com",
-  "googletagmanager.com",
-  "mixpanel.com",
-  "segment.io",
-];
 
 /**
  * Per-request route state for the Tier-3 render. The browser NEVER makes its own
  * egress: every non-aborted GET is resolved through the guarded FetcherPort and
  * fulfilled with the fetched bytes (`route.fulfill`), so the connection is pinned
  * to the guard-resolved IP and every redirect hop is re-validated against the
- * SSRF guards with `maxHops` enforced. Analytics/blocked body types and non-GET
+ * SSRF guards with `maxHops` enforced. Ad/tracker + blocked body types and non-GET
  * requests are aborted before any network; aborted body types are still P1/DNS
  * private-IP-checked so the action log records a private target. This closes the
  * DNS-rebinding + redirect TOCTOU that `route.continue()` left open
@@ -29,6 +23,7 @@ export class RenderRouteState {
   readonly actions: RenderAction[];
   readonly guard: BrowserUrlGuard;
   private readonly fulfiller: RouteFulfiller;
+  private readonly mainHost: string;
   status = 200;
   finalUrl = "";
   redirects: FetcherResult["redirects"] = [];
@@ -41,6 +36,7 @@ export class RenderRouteState {
     this.input = input;
     this.actions = actions;
     this.guard = guard;
+    this.mainHost = hostnameOf(input.url);
     this.fulfiller = new FetcherRouteFulfiller(input.fetcher, {
       maxBytes: input.maxBytes,
       timeoutMs: input.timeoutMs,
@@ -72,17 +68,20 @@ export class RenderRouteState {
     const request = route.request();
     const url = request.url();
     const resourceType = request.resourceType();
-    if (shouldAbortWithoutBody(url, resourceType)) {
+    // The main-frame document navigation is the page the user asked to fetch — it is
+    // never an ad/tracker (even when its host is a blocklisted vendor apex like
+    // amplitude.com), and it owns provenance below. Computed once and reused.
+    const mainFrameNav = isNavigation(request) && this.isMainFrame(request);
+    if (!mainFrameNav && shouldAbortWithoutBody(url, resourceType, this.mainHost)) {
       return this.abortBlockedType(route, url, resourceType);
     }
-    if (request.method() !== "GET") {
+    if (!mainFrameNav && request.method() !== "GET") {
       return this.abort(route, url, resourceType, "unsupported_browser_method");
     }
     if (this.budgetExceeded) {
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
     const outcome = await this.fulfiller.resolve(url, resourceType);
-    const mainFrameNav = isNavigation(request) && this.isMainFrame(request);
     if (outcome.kind === "reject") {
       if (mainFrameNav) this.fatal = outcome.reject;
       return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
@@ -141,16 +140,31 @@ export class RenderRouteState {
   }
 }
 
-function shouldAbortWithoutBody(url: string, resourceType: string): boolean {
-  return BLOCKED_TYPES.has(resourceType) || isAnalytics(url);
+/** Body types we never fetch, and ad/tracker subresources, are aborted before any
+ *  network. Adblock is THIRD-PARTY only: the fetched page's own (first-party) host
+ *  is exempt so a blocklisted vendor apex that IS the requested page (amplitude.com,
+ *  hotjar.com, …) still loads. The main-frame navigation is exempted by the caller.
+ *  Like blocked body types, an aborted ad/tracker URL is still P1/DNS private-IP-
+ *  checked (abortBlockedType) so the action log records a private target. */
+function shouldAbortWithoutBody(url: string, resourceType: string, mainHost: string): boolean {
+  if (BLOCKED_TYPES.has(resourceType)) return true;
+  if (isFirstPartyHost(hostnameOf(url), mainHost)) return false; // first-party subresource
+  return isAdTracker(url);
 }
 
-function isAnalytics(input: string): boolean {
+function isAdTracker(input: string): boolean {
   try {
-    const host = new URL(input).hostname.toLowerCase();
-    return ANALYTICS_HOSTS.some((blocked) => host === blocked || host.endsWith(`.${blocked}`));
+    return isAdTrackerHost(new URL(input).hostname);
   } catch {
     return true;
+  }
+}
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
   }
 }
 

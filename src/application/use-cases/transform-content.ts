@@ -1,5 +1,6 @@
-import { classifyAccess, classifyContentType } from "../classify.ts";
+import { isAdTrackerHost, isFirstPartyHost } from "../../domain/adblock.ts";
 import type { Result } from "../../domain/result.ts";
+import { classifyAccess, classifyContentType } from "../classify.ts";
 
 /**
  * Build the content sent to the transform model. Prepends the page's extracted
@@ -26,7 +27,54 @@ export function transformContent(base: Result): string {
     ? `\n\n--- Verified structured data (JSON-LD) — prefer these fields ---\n${JSON.stringify(stripped, null, 2)}`
     : "";
   const preamble = meta.length > 0 ? `${meta.join("\n")}\n\n` : "";
-  return `${preamble}${base.result}${jsonLd}`;
+  const pageHost = hostOf(base.finalUrl ?? base.url ?? "");
+  return stripAdTrackerUrls(`${preamble}${base.result}${jsonLd}`, pageHost);
+}
+
+/**
+ * Drop URL literals whose host is a known ad/tracker (src/domain/adblock.ts) from
+ * the transform content. These are not article content — they are ad/CDN/tracker
+ * noise that inflates the prompt (the primary-model failure mode on large news
+ * pages), worsens summaries, and was the source of the #44 false-positive URLs.
+ * Stripping here cleans the content for BOTH the safety scan and the LLM. Only the
+ * URL token is removed; surrounding prose and JSON structure are preserved
+ * (`"url":"https://doubleclick.net/x"` → `"url":""`). Conservative: the blocklist
+ * excludes apex-of-portal/shared-CDN domains, so first-party content is untouched.
+ */
+const URL_LITERAL = /https?:\/\/[^\s"'<>)\]},&`]+/gi;
+function stripAdTrackerUrls(content: string, pageHost?: string): string {
+  return content.replace(URL_LITERAL, (url) => {
+    const host = hostOf(url);
+    if (host === undefined) return url;
+    // First-party: a URL on the fetched page's own (sub)domain is real content
+    // (e.g. an amplitude.com link on the amplitude.com page), never a tracker.
+    if (isFirstPartyHost(host, pageHost ?? "")) return url;
+    return isAdTrackerHost(host) ? "" : url;
+  });
+}
+
+/** Cheap hostname extraction without constructing a URL object (avoids the
+ *  per-match `new URL()` cost on URL-dense content). The regex already terminated
+ *  the token at whitespace/quotes/brackets/`,`/`&`/backtick, so the host is the
+ *  substring between `://` and the first `/` `?` or `#`, with any userinfo
+ *  (`user:pass@`) stripped. Returns undefined when there is no host. */
+function hostOf(url: string): string | undefined {
+  const scheme = url.indexOf("://");
+  const rest = scheme >= 0 ? url.slice(scheme + 3) : url;
+  let end = rest.length;
+  for (const sep of ["/", "?", "#"]) {
+    const at = rest.indexOf(sep);
+    if (at >= 0 && at < end) end = at;
+  }
+  const authority = rest.slice(0, end);
+  const at = authority.lastIndexOf("@");
+  let host = at >= 0 ? authority.slice(at + 1) : authority;
+  if (!host.startsWith("[")) {
+    const colon = host.indexOf(":");
+    if (colon >= 0) host = host.slice(0, colon); // strip an explicit :port (match by name)
+  }
+  host = host.toLowerCase();
+  return host || undefined;
 }
 
 /**

@@ -23,26 +23,56 @@ const SENSITIVE_CREDENTIAL_PATTERNS = [
   /\bAIza[0-9A-Za-z_-]{35}\b/,
   /\bglpat-[A-Za-z0-9_-]{20,}\b/,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/,
+  // Cloud env-var / config-file secret assignments (the KEY NAME + a value shape,
+  // NOT a generic "secret=" word match — that false-positived on pages that merely
+  // discuss security). The `AKIA` regex above catches the AWS access-key id; these
+  // catch its paired secret, the STS session token, and an Azure service-principal
+  // secret when leaked as a `NAME=value` blob in fetched content.
+  /\bAWS_SECRET_ACCESS_KEY\s*=\s*[A-Za-z0-9/+=]{40}\b/,
+  /\bAWS_SESSION_TOKEN\s*=\s*[A-Za-z0-9/+=_-]{50,}\b/,
+  /\bAZURE_CLIENT_SECRET\s*=\s*[A-Za-z0-9._~+/=-]{30,}\b/,
 ];
 
 const SENSITIVE_HEADER_PATTERNS = [
-  /[Aa]uthorization:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/,
-  /[Ss]et-[Cc]ookie:\s*[^=\s;]{1,64}=[^;\s<]{16,}/,
+  // HTTP headers are case-insensitive: match any case so a lower/all-caps dump
+  // (`authorization: bearer …`, `AUTHORIZATION: BASIC …`) is still caught.
+  /authorization:\s*(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/i,
+  /set-cookie:\s*[^=\s;]{1,64}=[^;\s<]{16,}/i,
 ];
 
-const SIGNED_QUERY_KEYS = new Set([
-  "access_token",
-  "api_key",
-  "auth",
-  "expires",
-  "key",
-  "signature",
-  "sig",
-  "token",
+/** Query-param keys whose presence on a URL means the URL itself carries a real
+ *  credential — checked on BOTH the source url AND any url embedded in fetched
+ *  content. These are NOT ad-tracker noise: a presigned cloud URL or an OAuth
+ *  bearer link egressed to a hosted LLM is a genuine secret leak.
+ *  - AWS / GCS presigned-URL signing params.
+ *  - Azure Blob SAS (`sig`), generic/Alibaba JWS (`signature`), Tencent COS
+ *    (`q-signature`) signing signatures.
+ *  - OAuth bearer (`access_token`) and API-key (`api_key`) tokens. */
+const CONTENT_CREDENTIAL_QUERY_KEYS = new Set([
   "x-amz-credential",
   "x-amz-signature",
   "x-amz-security-token",
   "x-goog-signature",
+  "sig",
+  "signature",
+  "q-signature",
+  "access_token",
+  "api_key",
+]);
+
+/** Adds the generic keys ad/CDN trackers abuse (`token`, `key`, `auth`, `expires`)
+ *  for the SOURCE-url check ONLY. Fetching a url that carries one is suspicious
+ *  (it may be a signed/tokenized fetch), so it is still flagged. But a public page
+ *  that merely LINKS one (the #44 false-positive class — e.g. an estadao.com.br
+ *  search template `?token={…}`) is NOT, because on content those keys are
+ *  ordinary ad/CDN noise, not credentials. Real URL credentials use the keys in
+ *  CONTENT_CREDENTIAL_QUERY_KEYS above. */
+const SIGNED_QUERY_KEYS = new Set([
+  ...CONTENT_CREDENTIAL_QUERY_KEYS,
+  "token",
+  "key",
+  "auth",
+  "expires",
 ]);
 
 const INTERNAL_HOST_SUFFIXES = [
@@ -53,7 +83,13 @@ const INTERNAL_HOST_SUFFIXES = [
 
 /** Bounded URL-literal scan for embedded signed/internal URLs in content. */
 const SIGNED_URL_IN_CONTENT = /https?:\/\/[^\s"'<>)\]]{1,512}/gi;
-const MAX_CONTENT_SCAN = 100_000;
+/** Cap the embedded-URL scan to the head of the content. The high-confidence
+ *  credential/header patterns below scan the FULL content regardless of size;
+ *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
+ *  never flagged solely for exceeding this cap — the residual risk is an
+ *  embedded cloud-presigned URL past the cap egressing to a hosted LLM, which is
+ *  accepted (see docs/threat-model.md). */
+const MAX_CONTENT_SCAN = 500_000;
 
 export interface SensitivitySignal {
   sensitive: boolean;
@@ -76,45 +112,65 @@ export function detectSensitiveTransformInput(input: {
   for (const pattern of SENSITIVE_HEADER_PATTERNS) {
     if (pattern.test(content)) return { sensitive: true, reason: "content_header_dump" };
   }
-  // A public page that merely LINKS to a presigned CDN/S3 asset or an internal
-  // host must not be egressed to a hosted LLM. Bounded scan (REDOS/DoS hygiene).
-  const truncated = content.length > MAX_CONTENT_SCAN;
-  const head = truncated ? content.slice(0, MAX_CONTENT_SCAN) : content;
+  // A public page that merely LINKS a cloud-presigned / OAuth / signed URL or an
+  // internal host must not egress to a hosted LLM. Bounded scan (REDOS/DoS
+  // hygiene). Only real credential keys are matched here
+  // (CONTENT_CREDENTIAL_QUERY_KEYS) — not the generic ad/CDN keys (`token`/`key`/
+  // `auth`/`expires`) that caused the #44 news-page false-positive regression.
+  // The credential/header patterns above already scanned the FULL content.
+  const head = content.length > MAX_CONTENT_SCAN ? content.slice(0, MAX_CONTENT_SCAN) : content;
   for (const match of head.matchAll(SIGNED_URL_IN_CONTENT)) {
-    const reason = signedUrlReason(match[0]) ?? internalHostReason(match[0]);
+    const reason = signedUrlReason(match[0], CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(match[0]);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
-  // Fail closed: if the content was too large to scan fully, a signed/internal URL
-  // past the cap could still egress to a hosted LLM — route local rather than risk it.
-  if (truncated) return { sensitive: true, reason: "content_exceeds_scan_cap" };
   return { sensitive: false };
 }
 
-function signedUrlReason(sourceUrl: string): string | undefined {
+function signedUrlReason(sourceUrl: string, keys: Set<string> = SIGNED_QUERY_KEYS): string | undefined {
   let parsed: URL;
   try {
-    parsed = new URL(sourceUrl);
+    // HTML-escaped separators (`&amp;`, `&#38;`, `&#x26;`) would prefix parsed
+    // query keys with "amp;"/etc. and hide a presigned key (e.g. an embedded
+    // `&amp;X-Amz-Signature=`); normalize them to `&` before parsing.
+    parsed = new URL(sourceUrl.replace(/&(amp|#38|#x26);/gi, "&"));
   } catch {
     return undefined;
   }
 
   for (const key of parsed.searchParams.keys()) {
-    if (SIGNED_QUERY_KEYS.has(key.toLowerCase())) return "signed_or_tokenized_url";
+    if (keys.has(key.toLowerCase())) return "signed_or_tokenized_url";
   }
   // TRANSFORM-4: also detect high-entropy path segments (CDN/JWT-in-path tokens).
   const segments = parsed.pathname.split("/").filter(Boolean);
   for (const seg of segments) {
-    if (seg.length >= 40 && looksLikeToken(seg)) return "signed_or_tokenized_url";
+    if (looksLikeToken(seg)) return "signed_or_tokenized_url";
   }
   return undefined;
 }
 
-/** Heuristic: a path segment looks like a token if it's 40+ chars of base64url/hex
- *  AND has a high digit ratio (tokens are high-entropy; SEO slugs are mostly letters). */
+/** Min path-segment length to consider it a token. Real opaque tokens (JWT
+ *  segments, AWS signatures, share-link IDs) are ≥40 chars; shorter segments are
+ *  almost always slugs/short-IDs. CDN hashes (md5/sha1/sha256) are rejected by
+ *  looksLikeToken's alphabet check below, not by length, so 40 is safe here. */
+const MIN_TOKEN_SEGMENT_LEN = 40;
+
+/** Heuristic: does a path segment look like an opaque credential token (JWT-in-
+ *  path, presigned signature, share-link) vs ordinary content? A real token
+ *  carries entropy across the FULL base64url alphabet (mixed case + digits), NOT
+ *  just hex or decimal. So pure-hex asset hashes and pure-decimal IDs are
+ *  rejected outright, and a letter-rich mix is required (JWT/opaque tokens are
+ *  letter-dominant — this also catches letter-heavy tokens a digit-ratio rule
+ *  would miss). */
 function looksLikeToken(seg: string): boolean {
+  if (seg.length < MIN_TOKEN_SEGMENT_LEN) return false;
   if (!/^[A-Za-z0-9_.-]+$/.test(seg)) return false;
-  const digits = (seg.match(/[0-9]/g) ?? []).length;
-  return digits >= seg.length * 0.25;
+  // Evaluate the STEM: drop a trailing short extension (.js/.jpg/.css/…) so an
+  // asset filename like `<sha1>.js` is judged on its hash core, not the full name.
+  const stem = seg.replace(/\.[A-Za-z0-9]{1,5}$/, "");
+  if (/^[0-9a-f]+$/i.test(stem)) return false; // pure hex → md5/sha1/sha256 asset hash
+  if (/^[0-9]+$/.test(stem)) return false;     // pure decimal → DB PK / catalog ID
+  const letters = (stem.match(/[A-Za-z]/g) ?? []).length;
+  return letters >= stem.length * 0.20;
 }
 
 function internalHostReason(sourceUrl: string): string | undefined {

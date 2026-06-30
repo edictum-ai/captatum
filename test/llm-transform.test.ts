@@ -400,10 +400,78 @@ test("detectSensitiveTransformInput flags an embedded private-IP URL (SSRF metad
   assert.equal(r.sensitive, true);
 });
 
-test("detectSensitiveTransformInput fails closed when content exceeds the scan cap", () => {
-  const r = detectSensitiveTransformInput({ content: "x".repeat(100_001) });
+test("detectSensitiveTransformInput flags embedded cloud-presigned URLs (S3/GCS signing keys)", () => {
+  const s3 = detectSensitiveTransformInput({ content: "get it https://bucket.s3.amazonaws.com/f.pdf?X-Amz-Signature=abc123&X-Amz-Credential=KEY/20260101" });
+  assert.equal(s3.sensitive, true);
+  assert.match(s3.reason ?? "", /content_embedded_.*signed_or_tokenized/);
+  const gcs = detectSensitiveTransformInput({ content: "https://storage.googleapis.com/x/y?X-Goog-Signature=abcdef0123456789" });
+  assert.equal(gcs.sensitive, true);
+});
+
+test("detectSensitiveTransformInput does NOT flag ad/CDN URLs with generic signing keys (news-page regression #44)", () => {
+  // estadao.com.br-style ad tracker carrying generic ?token=/?key= — not credentials.
+  const ad = detectSensitiveTransformInput({ content: "Continue lendo https://ad.doubleclick.net/ddm/track/?token=AfKj9x&key=12345 corpo do artigo." });
+  assert.equal(ad.sensitive, false);
+  // md5 (32-char) and sha1 (40-char) hex CDN asset hashes in the path — rejected
+  // by length and by the pure-hex rule; never treated as tokens.
+  const md5 = detectSensitiveTransformInput({ content: "Foto https://img.example.com/cdn/f7a3b9c2e1d4a6b8f0c3e5d7a9b1c3e5.jpg" });
+  assert.equal(md5.sensitive, false);
+  const sha1 = detectSensitiveTransformInput({ content: "https://img.example.com/d/f7a3b9c2e1d4a6b8f0c3e5d7a9b1c3e5f7a3b9c2.js" });
+  assert.equal(sha1.sensitive, false);
+});
+
+test("detectSensitiveTransformInput flags embedded cloud/OAuth signed URLs — Azure SAS ?sig=, ?access_token=, ?signature= (#44 egress-hole fix)", () => {
+  // Azure Blob SAS signed with ?sig= — a real bearer credential. OLD #44 code let
+  // it egress; the content scan must catch it.
+  const azure = detectSensitiveTransformInput({ content: "Report https://acme.blob.core.windows.net/r/s.pdf?sv=2023-01-01&sr=b&sig=abcdEF1234567890ABcdEF1234567890ABcdEF1234567%3D&se=2027-01-01&sp=r" });
+  assert.equal(azure.sensitive, true);
+  assert.match(azure.reason ?? "", /content_embedded_.*signed_or_tokenized/);
+  const oauth = detectSensitiveTransformInput({ content: "https://api.example.com/v1/files/x?access_token=ya29.a0AfH6B3xV1qT4wR7pK0mZ8nL2cB5dF8gH1jK4mN7pQ" });
+  assert.equal(oauth.sensitive, true);
+  const jws = detectSensitiveTransformInput({ content: "https://cdn.example.com/d/x?signature=ABCdef1234567890" });
+  assert.equal(jws.sensitive, true);
+});
+
+test("detectSensitiveTransformInput does NOT fail-closed on a large public page with no credentials", () => {
+  const r = detectSensitiveTransformInput({ content: "x".repeat(600_000) });
+  assert.equal(r.sensitive, false);
+});
+
+test("a signed/tokenized SOURCE url is flagged even with generic keys (source keeps all keys)", () => {
+  const r = detectSensitiveTransformInput({ content: "plain body", sourceUrl: "https://app.example.com/file?token=abc&sig=def" });
   assert.equal(r.sensitive, true);
-  assert.match(r.reason ?? "", /scan_cap/);
+  assert.match(r.reason ?? "", /signed_or_tokenized_url/);
+});
+
+test("a letter-rich opaque path token (share-id / non-JWT) is flagged; a long numeric ID is not", () => {
+  // 43-char mixed-case+digits opaque token (NOT hex, not a JWT) → flagged as a token.
+  const token = "aB3dE6fH9jK2mN4pQ7sT1vW0xY3zA6bC9dE2fG5hI8k";
+  const flagged = detectSensitiveTransformInput({ content: `https://files.example.com/d/${token}` });
+  assert.equal(flagged.sensitive, true);
+  assert.match(flagged.reason ?? "", /content_embedded_.*signed_or_tokenized/);
+  // 55-digit pure-decimal catalog/DB PK → NOT a token.
+  const numeric = detectSensitiveTransformInput({ content: "https://catalog.example.com/item/1234567890123456789012345678901234567890123456789012345" });
+  assert.equal(numeric.sensitive, false);
+});
+
+test("header dumps match any case (codex SF-1) — lowercase/all-caps Authorization/Set-Cookie", () => {
+  assert.equal(detectSensitiveTransformInput({ content: "authorization: bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig1234567890abcdef" }).sensitive, true);
+  assert.equal(detectSensitiveTransformInput({ content: "AUTHORIZATION: BASIC Zm9vOmJhcg==12345678" }).sensitive, true);
+  assert.equal(detectSensitiveTransformInput({ content: "set-cookie: session=abcdefghijklmnopqrstuvwxyz123456" }).sensitive, true);
+});
+
+test("cloud env-var secret assignments are flagged, but discussion text is not (codex SF-2)", () => {
+  assert.equal(detectSensitiveTransformInput({ content: "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" }).sensitive, true);
+  assert.equal(detectSensitiveTransformInput({ content: `AWS_SESSION_TOKEN=${"A".repeat(80)}` }).sensitive, true);
+  assert.equal(detectSensitiveTransformInput({ content: "AZURE_CLIENT_SECRET=aB3dE6fH9jaB3dE6fH9jaB3dE6fH9jaB3dE6fH9j" }).sensitive, true);
+  // A page that merely DISCUSSES the env var (no real value) is not flagged.
+  assert.equal(detectSensitiveTransformInput({ content: "Set AWS_SECRET_ACCESS_KEY to your 40-character secret in the console." }).sensitive, false);
+});
+
+test("HTML-escaped &amp; signed-URL separators are normalized before the key check (codex SF-3)", () => {
+  const escaped = detectSensitiveTransformInput({ content: "get https://bucket.s3.amazonaws.com/f.pdf?&amp;X-Amz-Credential=AKIA/2026&amp;X-Amz-Signature=abcdef0123456789" });
+  assert.equal(escaped.sensitive, true);
+  assert.match(escaped.reason ?? "", /content_embedded_.*signed_or_tokenized/);
 });
 
 class FakeClock implements ClockPort {

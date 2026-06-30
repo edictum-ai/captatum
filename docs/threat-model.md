@@ -60,8 +60,14 @@ the contract reference; this file is the security reasoning.
   `FetcherPort`** (`route.fulfill`, never `route.continue`) — the browser never
   resolves or connects on its own, so DNS-rebinding and the redirect TOCTOU are
   structurally impossible and every redirect hop is re-validated (`maxHops`).
-  Image/font/media/analytics URLs are checked with the same P1 URL/DNS
-  private-IP guard and then aborted. WebSockets are closed;
+  Image/font/media URLs and known ad/tracker hosts (`src/domain/adblock.ts`,
+  a curated OSS-derived apex list) are checked with the same P1 URL/DNS
+  private-IP guard and then aborted — the ad script/pixel never loads, so it can
+  inject no DOM and exfiltrate no data, and its URL is stripped from Tier-1
+  transform content (less prompt noise, smaller egress). Adblock is THIRD-PARTY
+  only: the main-frame navigation and the fetched page's own (sub)domain are
+  exempt, so a blocklisted vendor apex that IS the requested page (amplitude.com,
+  hotjar.com, …) still loads and its own links survive the strip. WebSockets are closed;
   Service Workers are disabled; downloads are blocked; render-byte cap is
   enforced; the browser runs with an empty environment. **Sandbox model: an
   in-process launch keeps the OS sandbox ON (`chromiumSandbox` defaults true —
@@ -110,7 +116,8 @@ the contract reference; this file is the security reasoning.
 - The Transform router egresses fetched content to OpenRouter. This is acceptable
   for **public** pages. **Non-public content** (authed/signed URLs, internal hosts)
   must route to local Ollama or skip the transform; detection is signal-based, not
-  a guarantee. This is the primary data-direction risk.
+  a guarantee. This is the primary data-direction risk. See "Sensitive-content
+  detection" below for what is and isn't caught.
 - If no transform provider is configured, `output: summary` degrades to
   `output: raw` and provenance records `transform: { provider: "none" }`. Because
   summary is the default output, misconfiguration silently changes behavior.
@@ -126,6 +133,49 @@ the contract reference; this file is the security reasoning.
   HTTPS checked-IP + original TLS identity path is proven.
 - Single-node store: the default SQLite file (and single-node TiDB) is not HA.
   SQLite suits single-instance / small-team hosted deploys; select TiDB for scale.
+
+## Sensitive-content detection
+
+`detectSensitiveTransformInput` (`src/infrastructure/llm/safety.ts`) gates whether
+fetched content may egress to a hosted LLM (OpenRouter) vs. routing local-only
+(Ollama) or skipping the transform. It is a signal-based heuristic, not a guarantee.
+
+High-confidence signals (still flagged — in the source url AND embedded in content):
+- Credential values — PEM private-key headers, GitHub/Anthropic/OpenAI/AWS/Slack/
+  GitLab tokens, AWS access-key IDs (`AKIA…`), Google API keys (`AIza…`), JWTs, and
+  cloud env-var secret assignments (`AWS_SECRET_ACCESS_KEY=…`, `AWS_SESSION_TOKEN=…`,
+  `AZURE_CLIENT_SECRET=…`) matched as `NAME=value` (not a generic "secret=" word,
+  which false-positived on pages that merely discuss security).
+- Header dumps — `Authorization: Bearer/Basic …` and `Set-Cookie:`, matched
+  case-insensitively. Embedded URLs are normalized for HTML-escaped separators
+  (`&amp;`/`&#38;`/`&#x26;` → `&`) before the credential-key check.
+- Internal hosts — `.local`/`.internal`/`.corp`/`.localhost`/`.priv` suffixes and
+  private/reserved IP literals (`isPrivate`, incl. cloud-metadata `169.254.169.254`).
+- URL-embedded credentials — query params that make a url itself a credential,
+  matched on the source url AND any url embedded in content: cloud presigned
+  signatures (`x-amz-signature`/`x-amz-credential`/`x-amz-security-token`,
+  `x-goog-signature`), Azure Blob SAS (`sig`), generic/Alibaba JWS (`signature`),
+  Tencent COS (`q-signature`), and OAuth/API tokens (`access_token`, `api_key`).
+
+Deliberately NOT flagged (the #44 regression: news pages such as `estadao.com.br`
+were mis-flagged, which skipped the transform and silently dumped raw):
+- Generic ad/CDN keys (`token`, `key`, `auth`, `expires`) in content-embedded urls —
+  ad/CDN trackers abuse these and they are not credentials. The SOURCE url still
+  checks all keys (these included): fetching a tokenized url is itself suspicious.
+  (`sig`/`signature`/`access_token` are real credentials and stay flagged in content
+  — an early #44 draft over-narrowed this; corrected after adversarial review.)
+- Path-segment token heuristic — only segments ≥40 chars that are letter-rich
+  (mixed base64url alphabet) are treated as opaque tokens (JWT-in-path, share-id,
+  presigned signature). Pure-hex segments (md5/sha1/sha256 asset hashes) and
+  pure-decimal segments (DB/catalog IDs) are rejected, so hashes/IDs do not
+  false-positive.
+- Large content — there is no longer a fail-closed `content_exceeds_scan_cap`. The
+  credential/header patterns scan the FULL content; only the embedded-url scan is
+  capped at the first 500 KB (ReDoS/DoS hygiene).
+
+Residual risk: a cloud-presigned URL embedded past the 500 KB scan head could egress
+to a hosted LLM. Accepted: such a URL on a genuinely public page is low-likelihood,
+and a caller who fetches a presigned SOURCE url is still blocked at the source check.
 
 ## Implementation Gates
 

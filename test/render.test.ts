@@ -195,8 +195,27 @@ test("renderer tolerates a navigation request whose frame() throws (early naviga
   assert.equal(harness.routes[0]?.fulfilled, true);
 });
 
-test("renderer checks private image URLs before aborting blocked body types", async () => {
-  const imageUrl = "http://127.0.0.1/pixel.png";
+test("adblock never aborts the main-frame nav or first-party subresources of a vendor apex (codex SF-4)", async () => {
+  // amplitude.com is in the adblock list, but when it IS the fetched page its
+  // top-level document and own (sub)domain subresources must still load; only
+  // third-party tracker subresources are aborted.
+  const harness = new BrowserHarness({
+    requests: [
+      request("https://amplitude.com/", "document", true, true),
+      request("https://cdn.amplitude.com/assets/app.js", "script", false, true),
+      request("https://doubleclick.net/ad.js", "script", false, true),
+    ],
+  });
+  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(new FakeFetcher(), { url: "https://amplitude.com/" }));
+
+  assert.equal(result.rendered, true);
+  assert.equal(harness.routes[0]?.fulfilled, true, "main-frame nav to vendor apex fulfilled (not adblocked)");
+  assert.equal(harness.routes[1]?.fulfilled, true, "first-party subresource fulfilled (not adblocked)");
+  assert.equal(harness.routes[2]?.aborted, true, "third-party tracker subresource aborted");
+});
+
+test("renderer checks private image URLs before aborting blocked body types", async () => {  const imageUrl = "http://127.0.0.1/pixel.png";
   const guard = new FakeGuard({
     [imageUrl]: { rejected: true, code: "private_address", message: "blocked" },
   });
@@ -527,10 +546,10 @@ class FakeGuard implements BrowserUrlGuard {
 
 function renderInput(
   fetcher: FetcherPort,
-  overrides: Partial<{ maxBytes: number; timeoutMs: number }> = {},
+  overrides: Partial<{ url: string; maxBytes: number; timeoutMs: number }> = {},
 ) {
   return {
-    url: "https://public.test/",
+    url: overrides.url ?? "https://public.test/",
     maxBytes: overrides.maxBytes ?? 4096,
     timeoutMs: overrides.timeoutMs ?? 100,
     maxHops: 5,
