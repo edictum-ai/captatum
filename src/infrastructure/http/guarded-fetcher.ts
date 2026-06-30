@@ -1,4 +1,5 @@
 import type {
+  AntiBotEvidence,
   FetcherOptions,
   FetcherPort,
   FetcherResult,
@@ -121,8 +122,46 @@ export class GuardedHttpFetcher implements FetcherPort {
       contentType: headerValue(response.headers, "content-type"),
       bytes: body.byteLength,
       ...(body.truncated ? { truncated: true } : {}),
+      antibot: computeAntiBotEvidence(response.headers, body.bytes, response.status),
     };
   }
+}
+
+/** Vendor cookie prefixes set by anti-bot challenges (#41 detection). */
+const CHALLENGE_COOKIE = /(?:^|,\s*)(?:__cf_bm|__cf_chl_|datadome|_px|incap_ses|visid_incap|nlbi_)=/i;
+/** Vendor-SPECIFIC body markers (not generic "enable javascript" phrases — these
+ *  are Cloudflare/Akamai/PerimeterX challenge-page strings). */
+const CHALLENGE_BODY_MARKERS =
+  /cdn-cgi\/challenge-platform|__cf_chl|cf-browser-verification|Just a moment|akamaighost|_abck|px-captcha|\/_px\//i;
+
+/** Curated, vendor-attributed anti-bot evidence from the response. All fields are
+ *  booleans/enums — the raw attacker-controlled headers/body never leave this
+ *  function (the application layer only sees the verdict). See
+ *  docs/specs/issue-41-design.md. */
+function computeAntiBotEvidence(
+  headers: Record<string, string | string[] | number | undefined>,
+  body: Uint8Array,
+  status: number,
+): AntiBotEvidence {
+  const server = headerValue(headers, "server").toLowerCase();
+  const serverVendor: AntiBotEvidence["serverVendor"] =
+    server.includes("cloudflare") ? "cloudflare"
+      : server.includes("akamai") ? "akamai"
+        : server.includes("incapsula") ? "incapsula"
+          : server.includes("imperva") ? "imperva"
+            : server.includes("perimeterx") ? "perimeterx"
+              : "none";
+  const setCookie = headers["set-cookie"];
+  const cookies = Array.isArray(setCookie) ? setCookie.join("\n") : (setCookie ? String(setCookie) : "");
+  const bodyHead = new TextDecoder("utf8", { fatal: false }).decode(body.subarray(0, 4096));
+  return {
+    status,
+    serverVendor,
+    hasCfMitigated: headerValue(headers, "cf-mitigated") !== "",
+    hasCfRay: headerValue(headers, "cf-ray") !== "",
+    hasChallengeCookie: CHALLENGE_COOKIE.test(cookies),
+    hasChallengeBody: CHALLENGE_BODY_MARKERS.test(bodyHead),
+  };
 }
 
 function positive(value: number, name: string): number {
