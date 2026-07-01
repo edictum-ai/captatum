@@ -1,4 +1,5 @@
 import { OAuthError } from "./oauth-errors.ts";
+import type { Output } from "../../domain/tier.ts";
 
 export const OAUTH_SCOPES = ["fetch:read", "fetch:transform"] as const;
 export type OAuthScope = typeof OAUTH_SCOPES[number];
@@ -33,9 +34,11 @@ export function requireScope(auth: AuthorizedSubject, required: OAuthScope): voi
   }
 }
 
-export function requiredScopeForCaptatum(input: unknown): OAuthScope {
+export function requiredScopeForCaptatum(input: unknown, defaultOutput?: Output): OAuthScope {
   if (!isRecord(input)) return "fetch:transform";
-  const output = typeof input.output === "string" ? input.output : undefined;
+  // Resolve the effective output with the provider-conditional default, so a zero-config
+  // call that effectively resolves to `raw` only needs fetch:read (not fetch:transform).
+  const output = typeof input.output === "string" ? input.output : defaultOutput;
   if (output === "raw" && input.transform === undefined) return "fetch:read";
   return "fetch:transform";
 }

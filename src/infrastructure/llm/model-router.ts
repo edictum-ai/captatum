@@ -66,6 +66,11 @@ export class LlmTransformer implements TransformPort {
     this.clock = options.clock;
   }
 
+  /** A provider is configured iff at least one has model candidates. */
+  hasProvider(): boolean {
+    return Object.values(this.providers).some((provider) => provider.candidates().length > 0);
+  }
+
   async transform(input: TransformInput): Promise<TransformResult> {
     const messages = buildMessages(input);
     const inTokens = estimateTokens(messages.map((message) => message.content).join("\n"));

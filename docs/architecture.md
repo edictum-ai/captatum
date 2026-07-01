@@ -70,8 +70,8 @@ captatum(url, { prompt?, output?, schema?, budget?, transform?, maxBytes?, timeo
   1. TIER-1  wreq-js fetch (TLS fingerprint, anti-bot) + raw-HTML/JSON-LD extraction + shell-gate
   2. TIER-2  [optional] platform adapter short-circuit (clean JSON via public API)
   3. TIER-3  Playwright render (lazy dynamic import) → extract (gated by allowRender, default false)
-  4. TRANSFORM (DEFAULT)  OpenRouter/Ollama summarize|extract via the model router
-  → summary (default) | raw | extract + provenance
+  4. TRANSFORM  OpenRouter/Ollama summarize|extract via the model router (only for summary/extract)
+  → raw (default, no provider) | summary (default with provider) | extract + provenance
 ```
 
 - **Tier-1** is `wreq-js` (Rust-powered browser TLS/JA3+JA4 fingerprint
@@ -96,13 +96,14 @@ captatum(url, { prompt?, output?, schema?, budget?, transform?, maxBytes?, timeo
   through `FetcherPort`, checks blocked body types with the same P1 URL/DNS
   private-IP guard before aborting them, and returns `page.content()` to the
   Tier-1 extractor with tier-3 provenance.
-- **Transform** is the **default** output path (`output: summary`): resolved
+- **Transform** is the output path for `output: summary`/`extract`: resolved
   content → token-efficient answer to `prompt` via the free-model router. Configure
   `OPENROUTER_API_KEY`/`OPENROUTER_MODELS` or `OLLAMA_BASE_URL`/`OLLAMA_MODEL`.
-  If no transform provider is configured, it degrades to `output: raw` and
-  provenance records `transform: { provider: "none", reason: "unconfigured" }`.
-  Because summary is the default, this setup is first-run-critical and must be
-  documented prominently in the tool description and `docs/`.
+  The **default output is provider-conditional**: `summary` when a provider is
+  configured, `raw` (no transform) otherwise — so a missing provider no longer
+  silently degrades a default summary into a truncated excerpt. Requesting
+  `summary` explicitly with no provider still degrades to `raw` with
+  `transform: { provider: "none", reason: "unconfigured" }`.
 
 ## Hosted MCP server
 
@@ -114,8 +115,8 @@ and the MCP route. `src/interfaces/http/mcp-route.ts` authenticates every
 SDK Host/Origin DNS-rebinding protection. Hosted mode requires explicit
 `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`; local mode falls back to loopback
 host values. `GET`/`DELETE /mcp` return 405. Tool registration is in
-`src/interfaces/mcp/`; the tool schema has `additionalProperties: false`, the
-default output is summary, and raw output is advertised.
+`src/interfaces/mcp/`; the tool schema has `additionalProperties: false`, and the
+default output is provider-conditional (`raw` with no provider, `summary` with one).
 
 Scope enforcement happens after authentication and input validation, before the
 core engine runs: `output: raw` requires `fetch:read`; summary/extract or a
@@ -174,8 +175,8 @@ on those runtime assets being resolvable on the host (see `docs/dependency-ledge
 
 `pnpm run smoke` is deterministic and public-network-free. It is split into:
 
-- `pnpm run smoke:hosted` — exercises raw safe fetch, default summary with a
-  fake local transformer, blocked SSRF, render-disabled default behavior, and an
+- `pnpm run smoke:hosted` — exercises raw safe fetch, summary via a fake local
+  transformer (provider-conditional default), blocked SSRF, render-disabled default behavior, and an
   authenticated hosted `POST /mcp` tool call.
 - `pnpm run smoke:local` — exercises the same raw safe fetch use case through
   the local stdio MCP server, then launches the advertised stdio bridge process

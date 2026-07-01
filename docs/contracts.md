@@ -12,9 +12,9 @@ Current contract version: `v0`.
 
 ## Product
 
-captatum is a general-purpose MCP fetch tool for AI agents: fetch **any** URL (rendering JS when needed) and return **token-efficient** content plus **provenance** describing how the result was produced. The goal is to give agents what Claude Code's built-in `WebFetch` gives them — a concise answer about a page — but **token-efficient** (the default output is a summary produced via the free-model router), with the ability to return **raw** content on request, and actually working on JS-rendered pages.
+captatum is a general-purpose MCP fetch tool for AI agents: fetch **any** URL (rendering JS when needed) and return **token-efficient** content plus **provenance** describing how the result was produced. The goal is to give agents what Claude Code's built-in `WebFetch` gives them — a concise answer about a page — but **token-efficient**, with the ability to return **raw** content, and actually working on JS-rendered pages. The **default output is provider-conditional**: `summary` (via the free-model router) when a transform provider is configured, otherwise `raw` (full clean content, no LLM) — so a zero-config call returns real content instead of silently degrading to a truncated excerpt.
 
-Why it beats `WebFetch`: `WebFetch` is a static GET + Turndown (which drops `<script>` JSON-LD and app state) + a Haiku summary, with no JS execution. captatum uses anti-bot TLS-fingerprinted fetch (`wreq-js`), renders JS when a page needs it, extracts structured data from **raw** HTML, defaults to a token-efficient summary (free models via OpenRouter, or local Ollama), can return raw content on demand, and reports provenance on every response.
+Why it beats `WebFetch`: `WebFetch` is a static GET + Turndown (which drops `<script>` JSON-LD and app state) + a Haiku summary, with no JS execution. captatum uses anti-bot TLS-fingerprinted fetch (`wreq-js`), renders JS when a page needs it, extracts structured data from **raw** HTML, defaults to `raw` (or `summary` when a provider is configured — free models via OpenRouter, or local Ollama), can return any output on demand, and reports provenance on every response.
 
 ## Protocol
 
@@ -50,8 +50,8 @@ One tool. Input (v0):
 | Field | Required | Notes |
 | --- | --- | --- |
 | `url` | yes | Fully-formed `http`/`https`. `http` upgraded to `https`. No userinfo. |
-| `prompt` | no | What the caller wants from the page (drives the default `summary`). Mirrors WebFetch. Defaults to a general summary. |
-| `output` | no | `summary` (default) \| `raw` \| `extract`. `summary` = token-efficient answer via the Transform router. `raw` = clean resolved content, no LLM. `extract` = structured JSON per `schema`. |
+| `prompt` | no | What the caller wants from the page (drives `summary`/`extract`). Mirrors WebFetch. Defaults to a general summary. |
+| `output` | no | `raw` (default with no provider) \| `summary` (default with a provider) \| `extract`. `summary` = token-efficient answer via the Transform router. `raw` = clean resolved content, no LLM. `extract` = structured JSON per `schema`. The default is **provider-conditional**: `summary` when `OPENROUTER_API_KEY`/`OLLAMA_BASE_URL` is set, else `raw`. |
 | `schema` | no | JSON schema for `output: extract`. |
 | `budget` | no | Max tokens for `summary`. |
 | `transform` | no | Override the default router/model/provider: `{ model?, provider?, ... }`. |
@@ -60,7 +60,7 @@ One tool. Input (v0):
 | `allowRender` | no | Default **false**. If false, Tier-3 is skipped and provenance reports `render-blocked`. |
 | `debug` | no | Default **false**. When true, the MCP `structuredContent` adds heavy diagnostic fields (`attempts`, `timings`, full `structured` incl. JSON-LD `description`/`articleBody`, `redirects`, `durationMs`, `httpContentType`, `contentSha256`, `provenanceHash`, verbose `transform`). Default payload is lean (see "MCP structuredContent"). |
 
-**Default behavior is `output: summary`** — resolved content is passed through the Transform router (free-first OpenRouter, or local Ollama) to produce a token-efficient answer to `prompt`. This is exactly the role WebFetch's Haiku step plays, but cheaper and fed by accurate rendered/extracted content. `output: raw` returns the clean resolved content (markdown + parsed structured data) with no LLM pass. Output is MCP `text` with a provenance line as the first line (HTML-comment-wrapped, always model-visible). For `summary`/`extract`, a **deterministic envelope header** (backend-generated, not LLM) follows the provenance line — `contentType`, `title`, `finalUrl`, `access` (public | gated + reason), `images` count + first URL, `transformModel` — so every client (including ones that surface `content` text but not `structuredContent`) sees the key fields; `raw` output omits it. The companion `structuredContent` is a **lean agent payload** (see "MCP structuredContent"), not the full Result — heavy fields are gated behind `debug`. Token-efficiency signals (`bytes`, `contentType`, `transform.inTokens/outTokens`) let the caller follow up.
+**Default `output` is provider-conditional** — `summary` (resolved content passed through the Transform router: free-first OpenRouter, or local Ollama → a token-efficient answer to `prompt`) when a provider is configured; otherwise `raw` (clean resolved content, no LLM). This is exactly the role WebFetch's Haiku step plays, but cheaper and fed by accurate rendered/extracted content — and a zero-config call with no provider honestly returns full `raw` content instead of silently degrading to a truncated excerpt. Requesting `output: "summary"` explicitly with no provider still falls back to `raw` (`transform.provider: "none"`). Output is MCP `text` with a provenance line as the first line (HTML-comment-wrapped, always model-visible). For `summary`/`extract`, a **deterministic envelope header** (backend-generated, not LLM) follows the provenance line — `contentType`, `title`, `finalUrl`, `access` (public | gated + reason), `images` count + first URL, `transformModel` — so every client (including ones that surface `content` text but not `structuredContent`) sees the key fields; `raw` output omits it. The companion `structuredContent` is a **lean agent payload** (see "MCP structuredContent"), not the full Result — heavy fields are gated behind `debug`. Token-efficiency signals (`bytes`, `contentType`, `transform.inTokens/outTokens`) let the caller follow up.
 
 ## Provenance / Result schema
 
@@ -73,7 +73,7 @@ Result {
   bytes,                      // fetched content size (bytes)
   code, codeText,             // HTTP status of the final response
   durationMs,                 // total wall-clock
-  result,                     // payload the agent consumes: summary text (default), raw content, or extracted JSON
+  result,                     // payload the agent consumes: raw content (default, no provider) | summary text (default with provider) | extracted JSON
   // captatum provenance
   schemaVersion: 1,
   finalUrl, redirects: [{ url, status }],
@@ -222,7 +222,7 @@ detector); captcha/challenge pages currently fall to `"login"` or `"none"`.
 
 ## Transform (default output path)
 
-The Transform stage is the **default** output path (`output: summary`): resolved content is turned into a token-efficient answer to `prompt` — the role WebFetch's Haiku step plays, but fed by accurate rendered/extracted content and routed through the free-model router so it's cheap.
+The Transform stage handles `output: summary`/`extract`: resolved content is turned into a token-efficient answer to `prompt` — the role WebFetch's Haiku step plays, but fed by accurate rendered/extracted content and routed through the free-model router so it's cheap. It runs by default only when a provider is configured; otherwise the default is `raw` (no Transform pass).
 
 Modes: `summarize` (default — concise answer to `prompt`, optionally to a token `budget`) and `extract` (structured JSON per `schema`). `output: raw` skips the LLM and returns clean resolved content.
 
@@ -232,7 +232,7 @@ Provider-configurable via `transform`: **OpenRouter** (default; OpenAI-compatibl
 
 Privacy: fetched content is mostly public web content; the only egress risk is non-public content (authed/signed URLs, internal hosts) → detect via signals and route to Ollama or skip.
 
-**Setup & fallback.** Configure `OPENROUTER_API_KEY` (OpenRouter) and/or `OLLAMA_BASE_URL` (local Ollama) in the environment; `OPENROUTER_MODELS` overrides the comma-separated OpenRouter fallback list, `OPENROUTER_BASE_URL` overrides the API base, `OLLAMA_MODEL` selects the local model, and `TRANSFORM_TIMEOUT_MS` sets provider-call timeouts. The router uses whichever is configured (OpenRouter default, Ollama override for sensitive/local). An MCP tool **cannot** see or use the calling agent's own model or credentials, so there is no "use the caller's model" path. **If no transform provider is configured, `output: summary` degrades to `output: raw`** (clean resolved content, no LLM) and provenance records `transform: { provider: "none", reason: "unconfigured" }`. If a configured transform fails, the core returns raw content with `transform: { provider: "none", reason: "failed" }` and a structured transform error such as `transform_provider_failed`, `extract_invalid_json`, or `extract_schema_invalid`. **The fallback is token-safe:** when the transform did not produce a summary, the returned `result` is bounded to a ~3000-char excerpt with a note (the full page is still available via `output: "raw"`) — a failed summary never dumps the entire page into the agent context. The OpenRouter adapter retries once on an empty/error completion (transient upstream capacity) before the router demotes to the next candidate model, and surfaces OpenRouter's real inline error (top-level `error`, per-choice `error`, `finish_reason`) instead of a generic "empty completion", so the failure reason is visible in `warnings`. **Model fallback is surfaced, not silent:** when the primary model (e.g. `deepseek/deepseek-v4-flash`) fails and the router produces the summary with a later candidate (e.g. `openrouter/auto`), a non-fatal `transform_model_fallback` warning is added and `status` becomes `partial` (not `pass`) — the caller knows the output may be lower quality. To reduce the prompt size that was failing the primary model on large pages, `articleBody`/`description` are stripped from the JSON-LD fed to the transform (they duplicate the body text already in the input); the body itself is unaffected. Because summary is the default output, this setup is first-run-critical and must be documented prominently in the tool description and `docs/`.
+**Setup & fallback.** Configure `OPENROUTER_API_KEY` (OpenRouter) and/or `OLLAMA_BASE_URL` (local Ollama) in the environment; `OPENROUTER_MODELS` overrides the comma-separated OpenRouter fallback list, `OPENROUTER_BASE_URL` overrides the API base, `OLLAMA_MODEL` selects the local model, and `TRANSFORM_TIMEOUT_MS` sets provider-call timeouts. The router uses whichever is configured (OpenRouter default, Ollama override for sensitive/local). An MCP tool **cannot** see or use the calling agent's own model or credentials, so there is no "use the caller's model" path. **If no transform provider is configured, `output: summary` degrades to `output: raw`** (clean resolved content, no LLM) and provenance records `transform: { provider: "none", reason: "unconfigured" }`. If a configured transform fails, the core returns raw content with `transform: { provider: "none", reason: "failed" }` and a structured transform error such as `transform_provider_failed`, `extract_invalid_json`, or `extract_schema_invalid`. **The fallback is token-safe:** when the transform did not produce a summary, the returned `result` is bounded to a ~3000-char excerpt with a note (the full page is still available via `output: "raw"`) — a failed summary never dumps the entire page into the agent context. The OpenRouter adapter retries once on an empty/error completion (transient upstream capacity) before the router demotes to the next candidate model, and surfaces OpenRouter's real inline error (top-level `error`, per-choice `error`, `finish_reason`) instead of a generic "empty completion", so the failure reason is visible in `warnings`. **Model fallback is surfaced, not silent:** when the primary model (e.g. `deepseek/deepseek-v4-flash`) fails and the router produces the summary with a later candidate (e.g. `openrouter/auto`), a non-fatal `transform_model_fallback` warning is added and `status` becomes `partial` (not `pass`) — the caller knows the output may be lower quality. To reduce the prompt size that was failing the primary model on large pages, `articleBody`/`description` are stripped from the JSON-LD fed to the transform (they duplicate the body text already in the input); the body itself is unaffected. The default is **provider-conditional** (`summary` with a provider, `raw` without), so a missing provider no longer silently degrades a default call — it honestly returns `raw` (requesting `summary` explicitly with no provider still falls back to `raw` + the bounded excerpt above).
 
 ## OAuth (hosted flavor only)
 
@@ -255,7 +255,7 @@ The OAuth contract below applies only to the hosted flavor. It mirrors `personal
 
 Flow: authorize (PKCE S256, request-bound signed consent token) → approve (single-use code, stored as `sha256(code)`) → token (verify PKCE, issue **ES256 JWT** access token signed by `OAUTH_SIGNING_PRIVATE_JWK`, aud=resource; rotating refresh tokens stored as `sha256(raw)`, grouped by family; replay revokes the family). Auth-code TTL is 300 s, access TTL 600 s, and refresh TTL 30 days. Hosted production requires `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` (fail-fast at boot).
 
-Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). Tool handlers enforce required scope per request: raw fetch requires `fetch:read`; summary/extract/transform use requires `fetch:transform`.
+Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). Tool handlers enforce required scope per request using the **resolved** output (with the provider-conditional default applied): an effective `raw` call requires `fetch:read`; an effective `summary`/`extract`/transform call requires `fetch:transform`. So a zero-config call with no provider (resolves to `raw`) needs only `fetch:read`.
 
 ## Security controls (see threat-model.md)
 
@@ -294,9 +294,10 @@ transform seams; they do not require public internet or secrets.
 
 - `raw-safe.json` — `output: "raw"` success. MCP text starts with the provenance
   line and `structuredContent.output` is `"raw"`.
-- `summary-fallback.json` — omitted `output` requests the default summary, but
-  with no provider configured the shipped behavior falls back to raw content and
-  records `transform: { provider: "none", reason: "unconfigured" }`.
+- `summary-fallback.json` — `output: "summary"` is requested explicitly with no
+  provider configured, so the shipped behavior falls back to raw content and
+  records `transform: { provider: "none", reason: "unconfigured" }` (the default
+  with no provider is `raw`; this fixture pins the explicit-summary fallback path).
 - `blocked-ssrf.json` — guarded-fetch rejection still returns a result-shaped
   payload with `code: 0`, `codeText: "FETCH_REJECTED"`, `tier: "error"`, and the
   original guarded-fetch error in `errors[0]`.

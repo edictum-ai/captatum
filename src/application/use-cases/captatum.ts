@@ -55,7 +55,10 @@ export class CaptatumUseCase {
     this.transformer = deps.transformer;
     this.renderer = deps.renderer;
     this.defaults = { ...DEFAULT_CAPTATUM_DEFAULTS, ...deps.defaults };
+    this.defaults.defaultOutput = deps.defaults?.defaultOutput ?? (!deps.transformer || (typeof deps.transformer.hasProvider === "function" && !deps.transformer.hasProvider()) ? "raw" : "summary");
   }
+
+  get defaultOutput() { return this.defaults.defaultOutput; }
 
   async execute(input: unknown, context: CaptatumContext = {}): Promise<Result> {
     const request = normalizeCaptatumInput(input, this.defaults);

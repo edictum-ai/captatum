@@ -9,7 +9,7 @@ import { createCaptatumMcpServer } from "../mcp/server.ts";
 import { sendMcpAuthError } from "./errors.ts";
 
 export interface McpRouteDeps {
-  captatum: Pick<CaptatumUseCase, "execute">;
+  captatum: Pick<CaptatumUseCase, "execute" | "defaultOutput">;
   authorizer: Pick<RequestAuthorizer, "authorize">;
   audit: AuditLoggerPort;
   clock: ClockPort;
@@ -96,9 +96,9 @@ async function handleMcpPost(
 
 /** Wraps a CaptatumUseCase so each `execute()` acquires/releases an admission slot. */
 function withAdmission(
-  inner: Pick<CaptatumUseCase, "execute">,
+  inner: Pick<CaptatumUseCase, "execute" | "defaultOutput">,
   limiter: AdmissionLimiter,
-): Pick<CaptatumUseCase, "execute"> {
+): Pick<CaptatumUseCase, "execute" | "defaultOutput"> {
   return {
     execute: async (...args: Parameters<CaptatumUseCase["execute"]>) => {
       if (!limiter.tryAcquire()) {
@@ -110,6 +110,7 @@ function withAdmission(
         limiter.release();
       }
     },
+    defaultOutput: inner.defaultOutput,
   };
 }
 

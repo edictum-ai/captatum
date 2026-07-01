@@ -24,7 +24,7 @@ import { CAPTATUM_SERVER_INSTRUCTIONS, CAPTATUM_TOOL_NAME, captatumToolDefinitio
 const AUTH_JSONRPC_CODE = -32001;
 
 export interface CaptatumMcpServerDeps {
-  captatum: Pick<CaptatumUseCase, "execute">;
+  captatum: Pick<CaptatumUseCase, "execute" | "defaultOutput">;
   auth: RequestAuthResult;
   audit: AuditLoggerPort;
   clock: ClockPort;
@@ -54,7 +54,7 @@ async function callCaptatum(args: unknown, deps: CaptatumMcpServerDeps): Promise
   const started = deps.clock.nowMs();
   try {
     const normalized = normalizeCaptatumInput(args);
-    requireScope(deps.auth, requiredScopeForCaptatum(args));
+    requireScope(deps.auth, requiredScopeForCaptatum(args, deps.captatum.defaultOutput));
     const result = await deps.captatum.execute(args, { fetchedAt: new Date(deps.clock.nowMs()).toISOString() });
     // AUDIT-1: audit write in its own try/catch — a rejecting sink must never
     // convert a successful fetch into a client error.

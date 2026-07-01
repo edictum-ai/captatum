@@ -12,7 +12,7 @@ import { registerMcpRoute } from "./mcp-route.ts";
 import { sendHttpError } from "./errors.ts";
 
 export interface HttpAppDeps {
-  captatum: Pick<CaptatumUseCase, "execute">;
+  captatum: Pick<CaptatumUseCase, "execute" | "defaultOutput">;
   runtime: AuthRuntimeConfig;
   clock: ClockPort;
   audit: AuditLoggerPort;

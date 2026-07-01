@@ -152,12 +152,45 @@ test("output raw returns clean content without transform", async () => {
   assert.equal(transformer.calls.length, 0);
 });
 
-test("default summary degrades to raw with unconfigured transform provenance", async () => {
+test("default output is raw when no transform provider is configured (no silent excerpt)", async () => {
+  // raw-default: with no provider the default is raw — full content, no transform,
+  // no silent truncated excerpt. (Requesting summary explicitly still falls back.)
   const result = await createCaptatumUseCase({
     fetcher: new FakeFetcher(fetchResult({ html: "<main>Summary</main>" })),
     extractHtml: new FakeExtractor(extraction({ text: "Raw fallback content" })).extract,
     clock: new FakeClock([10, 14, 15, 15]),
   }).execute({ url: "https://summary.test/" });
+
+  assert.equal(result.output, "raw");
+  assert.equal(result.result, "Raw fallback content");
+  assert.equal(result.transform, undefined);
+});
+
+test("a transformer that omits hasProvider is treated as configured (summary default)", async () => {
+  // Regression guard (codex P2): a custom TransformPort that implements transform but
+  // not hasProvider still provides summaries — the default is summary, not raw.
+  const transformer = {
+    async transform() {
+      return { result: "custom summary", info: { provider: "custom", model: "x", free: false, inTokens: 1, outTokens: 1, latencyMs: 1, costUsd: 0 } };
+    },
+  };
+  const result = await createCaptatumUseCase({
+    fetcher: new FakeFetcher(fetchResult({ html: "<main>body</main>" })),
+    extractHtml: new FakeExtractor(extraction({ text: "page body" })).extract,
+    transformer: transformer as never,
+    clock: new FakeClock([0, 1, 2, 2]),
+  }).execute({ url: "https://custom.test/" });
+
+  assert.equal(result.output, "summary");
+  assert.equal(result.result, "custom summary");
+});
+
+test("summary requested with no transformer degrades to raw with unconfigured provenance", async () => {
+  const result = await createCaptatumUseCase({
+    fetcher: new FakeFetcher(fetchResult({ html: "<main>Summary</main>" })),
+    extractHtml: new FakeExtractor(extraction({ text: "Raw fallback content" })).extract,
+    clock: new FakeClock([10, 14, 15, 15]),
+  }).execute({ url: "https://summary.test/", output: "summary" });
 
   assert.equal(result.output, "raw");
   assert.equal(result.result, "Raw fallback content");

@@ -45,14 +45,14 @@ test("default summary with configured provider returns transformed provenance", 
   assert.match(provider.calls[0]?.messages[1]?.content ?? "", /<untrusted-[A-Za-z0-9_-]+>/);
 });
 
-test("default summary with unconfigured router returns raw fallback provenance", async () => {
+test("summary requested with unconfigured router returns raw fallback provenance", async () => {
   const transformer = new LlmTransformer({ router: new ModelRouter([]), providers: {} });
   const result = await createCaptatumUseCase({
     fetcher: new FakeFetcher(fetchResult({ html: "<main>raw</main>" })),
     extractHtml: new FakeExtractor(extraction({ text: "Raw fallback body" })).extract,
     transformer,
     clock: new FakeClock([0, 4, 5, 5, 6, 6]),
-  }).execute({ url: "https://fallback.test/" });
+  }).execute({ url: "https://fallback.test/", output: "summary" });
 
   assert.equal(result.output, "raw");
   // Fallback returns the transform content, which now carries the page-metadata envelope hint.

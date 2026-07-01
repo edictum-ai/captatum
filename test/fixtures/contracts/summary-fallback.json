@@ -1,7 +1,8 @@
 {
   "name": "summary-fallback",
   "input": {
-    "url": "https://fixture.test/contract"
+    "url": "https://fixture.test/contract",
+    "output": "summary"
   },
   "structuredContent": {
     "url": "https://fixture.test/contract",

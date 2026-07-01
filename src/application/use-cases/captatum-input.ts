@@ -34,6 +34,10 @@ export interface CaptatumDefaults {
   maxHops: number;
   allowRender: boolean;
   prompt: string;
+  /** Output used when the caller omits `output`. "raw" by default so a fetcher with
+   *  no transform provider returns full raw content, not a silent truncated excerpt;
+   *  the use case raises this to "summary" when a provider is configured. */
+  defaultOutput: Output;
 }
 
 export const DEFAULT_CAPTATUM_DEFAULTS: CaptatumDefaults = {
@@ -46,6 +50,7 @@ export const DEFAULT_CAPTATUM_DEFAULTS: CaptatumDefaults = {
   maxHops: 5,
   allowRender: false,
   prompt: DEFAULT_PROMPT,
+  defaultOutput: "raw",
 };
 
 export interface CaptatumInput {
@@ -100,7 +105,7 @@ export function normalizeCaptatumInput(
   return {
     url,
     prompt: parsed.prompt ?? defaults.prompt,
-    requestedOutput: parsed.output ?? "summary",
+    requestedOutput: parsed.output ?? defaults.defaultOutput,
     schema: parsed.schema,
     budget: parsed.budget,
     transform: parsed.transform as TransformOverride | undefined,

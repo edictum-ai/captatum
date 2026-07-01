@@ -118,9 +118,12 @@ the contract reference; this file is the security reasoning.
   must route to local Ollama or skip the transform; detection is signal-based, not
   a guarantee. This is the primary data-direction risk. See "Sensitive-content
   detection" below for what is and isn't caught.
-- If no transform provider is configured, `output: summary` degrades to
-  `output: raw` and provenance records `transform: { provider: "none" }`. Because
-  summary is the default output, misconfiguration silently changes behavior.
+- The default `output` is **provider-conditional**: `raw` when no transform provider
+  is configured, `summary` when one is. So a missing provider no longer silently
+  degrades a default summary into a truncated raw excerpt — the default is honestly
+  `raw` (full content, `transform` omitted). Requesting `output: "summary"`
+  explicitly with no provider still degrades to `raw` with
+  `transform: { provider: "none" }` (a bounded excerpt, not the full page).
 - Advisory-only SSRF is unacceptable for the hosted flavor. Every egress path —
   Tier-1, Tier-2, every redirect hop, every Tier-3 document/script/fetch/XHR/
   stylesheet request — must route through enforced `guardedFetch`/`page.route`

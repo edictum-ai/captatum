@@ -44,4 +44,8 @@ export class TransformError extends Error {
  */
 export interface TransformPort {
   transform(input: TransformInput): Promise<TransformResult>;
+  /** Whether any transform provider is configured (has model candidates). Used to
+   *  pick the default output: summary when a provider exists, raw otherwise. Optional
+   *  so test fakes need not implement it. */
+  hasProvider?(): boolean;
 }

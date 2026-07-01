@@ -347,6 +347,9 @@ test("scope helpers enforce read versus transform", () => {
   assert.equal(requiredScopeForCaptatum({ output: "raw" }), "fetch:read");
   assert.equal(requiredScopeForCaptatum({ output: "summary" }), "fetch:transform");
   assert.equal(requiredScopeForCaptatum({}), "fetch:transform");
+  // A zero-config call whose provider-conditional default is `raw` only needs fetch:read.
+  assert.equal(requiredScopeForCaptatum({}, "raw"), "fetch:read");
+  assert.equal(requiredScopeForCaptatum({}, "summary"), "fetch:transform");
   assert.throws(
     () => requireScope({ subject: "s", clientId: "c", scopes: ["fetch:read"] }, "fetch:transform"),
     /Missing required scope: fetch:transform/,

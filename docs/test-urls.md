@@ -56,7 +56,7 @@ degrades to `output: raw` with `transform.provider: "none"`.
 | URL | Input | Expected | Status |
 |-----|-------|----------|--------|
 | Ashby Langfuse job | `output: summary, prompt: "Extract title, salary, location"` | Summary matches JSON-LD fields | ⏳ verify with a configured provider |
-| Any page | `output: summary` (default) | Concise summary using verified JSON-LD | ⏳ verify with a configured provider |
+| Any page | `output: summary` (default with a provider) | Concise summary using verified JSON-LD | ⏳ verify with a configured provider |
 
 ## Category 6: Transform — structured extraction
 

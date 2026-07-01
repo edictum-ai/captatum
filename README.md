@@ -16,9 +16,9 @@
   <a href="SECURITY.md"><img alt="security" src="https://img.shields.io/badge/security-policy-7C5CFC.svg" /></a>
 </p>
 
-Captatum is one MCP tool that fetches a URL and returns the **actual content** — including the JS-rendered SPAs, structured data (JSON-LD / Open Graph), and dynamic pages that `WebFetch`, Firecrawl, and Jina return empty or blocked. It renders JS only when a page needs it, extracts structured data from raw HTML, and defaults to a token-efficient summary. Anti-bot challenge walls (Cloudflare/Akamai/PerimeterX) it **detects and reports as gated** rather than silently returning the challenge page — it does not bypass them (see the honest scope below). Every response also carries a **provenance receipt** (tier, final URL, whether JS was required, transform model/tokens) so the agent knows how a result was produced. It's an [MCP server](https://modelcontextprotocol.io); it works standalone and is part of the [Edictum](https://github.com/edictum-ai) ecosystem.
+Captatum is one MCP tool that fetches a URL and returns the **actual content** — including the JS-rendered SPAs, structured data (JSON-LD / Open Graph), and dynamic pages that `WebFetch`, Firecrawl, and Jina return empty or blocked. It renders JS only when a page needs it, extracts structured data from raw HTML, and defaults to the clean raw content (a token-efficient `summary` when a transform provider is configured). Anti-bot challenge walls (Cloudflare/Akamai/PerimeterX) it **detects and reports as gated** rather than silently returning the challenge page — it does not bypass them (see the honest scope below). Every response also carries a **provenance receipt** (tier, final URL, whether JS was required, transform model/tokens) so the agent knows how a result was produced. It's an [MCP server](https://modelcontextprotocol.io); it works standalone and is part of the [Edictum](https://github.com/edictum-ai) ecosystem.
 
-> **Heads-up before the first call.** The default output is `summary`, which needs a transform provider (`OPENROUTER_API_KEY` or `OLLAMA_BASE_URL`). **Without one, `summary` honestly falls back to `raw`** (`transform.provider: "none"`) — it never silently dumps a huge page. For a **zero-config** first call, use `output: "raw"`. See [Quick start](#quick-start-local-stdio).
+> **Heads-up before the first call.** The default output is **provider-conditional**: `summary` when a transform provider (`OPENROUTER_API_KEY` or `OLLAMA_BASE_URL`) is configured (e.g. the hosted server), otherwise `raw` — the full clean content, no LLM. So a zero-config first call just works (raw); set a provider and it becomes a token-efficient summary. Request `output: "summary"`/`"raw"`/`"extract"` explicitly to override. See [Quick start](#quick-start-local-stdio).
 
 ---
 
@@ -45,7 +45,7 @@ The wedge is **coverage**: captatum fetches pages other tools can't. `WebFetch` 
   - **Tier 1 (default)** — `wreq-js` fetch (HTTP TLS/JA3 fingerprint; HTTPS uses the checked-IP Node path — see the honest scope) + raw-HTML structured extraction (JSON-LD, Open Graph, Twitter, meta, canonical, app-state, images). Resolves most pages with no browser.
   - **Tier 2 (optional)** — platform-adapter short-circuit (e.g. Ashby job boards) → clean JSON.
   - **Tier 3 (gated)** — Playwright Chromium render, lazy, only for empty SPA shells. Gated behind `allowRender` (**default `false`**) so a bare call never spawns a browser.
-- **Token-efficient by default** — `output: summary` routes through a free-model router (OpenRouter) or local Ollama; `output: raw` returns clean content with no LLM; `output: extract` returns schema-validated JSON.
+- **Honest default output** — `output: raw` (the default when no transform provider is configured) returns clean content with no LLM; `output: summary` (the default when a provider is configured) routes through a free-model router (OpenRouter) or local Ollama; `output: extract` returns schema-validated JSON.
 - **Provenance first-class** — every response carries `tier`, `finalUrl`, `redirects[]`, `jsRequired`, `platform`, a lean `transform` (provider/model/free/in/out tokens), and `attempts[]`.
 - **SSRF-safe egress** — every outbound request (Tier-1, Tier-2, every redirect hop, every Tier-3 browser subresource) routes through one hardened `FetcherPort`: DNS-rebinding-proof, exhaustive IANA private-IP blocking.
 - **Prompt-injection control** — fetched content is untrusted data, never instructions (per-call nonce fence; applies to `summary`/`extract`).
@@ -67,8 +67,8 @@ npx -y @edictum/captatum        # runs the local stdio MCP server
 Add it to your MCP client config and you're set (see [Connect your client](#connect-your-client)). No auth, no network listener — the client owns the process; `stdin`/`stdout` are the JSON-RPC channel.
 
 **First call — pick one:**
-- **Zero-config:** call with `output: "raw"` (clean content + structured data, no LLM, no key).
-- **Default summary:** set `OPENROUTER_API_KEY` (free models available) **or** run [Ollama](https://ollama.com) and set `OLLAMA_BASE_URL`. Without one, `summary` honestly falls back to `raw`.
+- **Zero-config:** just call — the default is `raw` (clean content + structured data, no LLM, no key).
+- **Summary by default:** set `OPENROUTER_API_KEY` (free models available) **or** run [Ollama](https://ollama.com) and set `OLLAMA_BASE_URL`; the default then becomes `summary`. You can always pass `output: "summary"`/`"raw"`/`"extract"` explicitly.
 
 _From source (development):_ `corepack pnpm install && node --no-warnings src/interfaces/mcp/stdio-bridge.ts`. Build integrity: `corepack pnpm run check` + `node --test test/*.test.ts`.
 
@@ -102,7 +102,7 @@ _From source (development):_ `corepack pnpm install && node --no-warnings src/in
 | --- | --- | --- |
 | `url` | yes | `http`/`https` URL (`http` auto-upgraded to `https`, no userinfo). |
 | `prompt` | no | What the agent wants (drives `summary`). Defaults to a general summary. |
-| `output` | no | `summary` (default) \| `raw` \| `extract`. |
+| `output` | no | `raw` (default with no provider) \| `summary` (default with a provider) \| `extract`. |
 | `schema` | no | JSON Schema for `output: extract`. |
 | `budget` | no | Max tokens for `summary`. |
 | `transform` | no | Override the router: `{ provider?, model? }` (e.g. force local Ollama). |
