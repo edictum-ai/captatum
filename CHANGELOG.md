@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.3.0] — 2026-07-01
+
+First release shipping the post-0.2.2 safety, anti-bot, extraction, and default-output
+work to `npx` users — the npm package was stale at 0.2.2 (the deployed Docker image
+already carried these).
+
+- **feat(mcp): provider-conditional output default** (#56) — `summary` when a transform
+  provider is configured (e.g. the hosted server), `raw` otherwise (e.g. local with no
+  `OPENROUTER_API_KEY`). Retires the local DX cliff where a zero-config `summary` silently
+  degraded to a ~3000-char excerpt; a zero-config call now honestly returns full raw
+  content. The OAuth scope gate resolves the effective output, so a zero-config `raw` call
+  needs only `fetch:read`.
+- **fix(extract): Pinterest pin caption** (#54 Half A, #55) — a pin's `SocialMediaPosting`
+  JSON-LD `articleBody` (author, follower stats, source text) now surfaces on real pin
+  detail pages (`pinterest.*/pin/<id>/`, `pin.it`), without ever letting an embedded social
+  post dominate an article/landing/board page. Spoof-safe host allowlist + balanced JSON-LD
+  traversal (handles `@graph`, array scripts, co-typed nodes, multi-posting selection).
+- **feat(#41 Half A, #50): honest anti-bot detection** — Cloudflare/Akamai/PerimeterX
+  challenge walls are detected (status-independent, vendor-specific body/header markers)
+  and reported as gated (`gateReason: captcha`, `challengeProvider`) — captatum does NOT
+  bypass them. Tool description de-overclaimed accordingly.
+- **fix(llm): #48** (#53) — pinned `OPENROUTER_MODELS` order so `deepseek-v4-flash` stays
+  primary; an empty completion now retries the fallback (with `fallbackFrom` + a warning)
+  instead of demoting the primary.
+- **fix(safety): sensitive-detector FP + adblocker** (#46, #47, #49) — public news pages
+  no longer mis-flagged "sensitive" (tightened credential-query scan; dropped the
+  path-segment slug heuristic; ad/tracker domain blocklist in Tier-3 + URL strip in
+  Tier-1; closed an orphaned-credential-param bypass; source-URL JWT scan).
+- **ops/docs:** `deploy.sh` reads the running browser-sidecar tag (no stale default);
+  README/docs honest-scoped (coverage moat, HTTPS-fingerprint caveat).
+
 ## [0.2.2] — 2026-06-26
 
 First **working** npm publish (`npx -y @edictum/captatum`). Compiled `src/` → `dist/`
