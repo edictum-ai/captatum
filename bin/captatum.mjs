@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// captatum launcher — the package `bin`. Re-execs Node 24 on the compiled stdio
-// bridge (dist/ — Node 24 refuses to type-strip .ts inside node_modules, so the
-// npm package ships compiled .js; the repo itself runs .ts natively for dev).
-// npm/npx runs this; it blocks with stdio inherited so the MCP client owns the
-// process lifecycle (stdin/stdout = JSON-RPC, stderr = logs).
+// captatum launcher — the package `bin`. Re-execs Node 24 on a compiled entry
+// (dist/ — Node 24 refuses to type-strip .ts inside node_modules, so the npm
+// package ships compiled .js; the repo itself runs .ts natively for dev).
+//
+// With args it runs the one-shot CLI (fetch / skill install); with no args it
+// runs the stdio MCP bridge (for MCP clients). stdio is inherited so the caller
+// owns the process lifecycle.
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -14,8 +16,10 @@ if (!Number.isInteger(major) || major < 24) {
   process.exit(1);
 }
 
-const entry = fileURLToPath(new URL("../dist/interfaces/mcp/stdio-bridge.js", import.meta.url));
-const result = spawnSync(process.execPath, ["--no-warnings", entry, ...process.argv.slice(2)], {
+const args = process.argv.slice(2);
+const entry = args.length > 0 ? "../dist/cli.js" : "../dist/interfaces/mcp/stdio-bridge.js";
+const entryPath = fileURLToPath(new URL(entry, import.meta.url));
+const result = spawnSync(process.execPath, ["--no-warnings", entryPath, ...args], {
   stdio: "inherit",
 });
 process.exit(result.status ?? 1);

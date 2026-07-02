@@ -30,7 +30,7 @@ export function resultToMcpText(result: Result, includeTextDebug = false): strin
  * Mirrors the subset of the debug `structuredContent` fields that matter for triaging a fetch, so a
  * connector that can't render structuredContent still sees how the result was produced.
  */
-function debugTextBlock(result: Result): string {
+export function debugTextBlock(result: Result): string {
   const lines: string[] = [
     "--- debug ---",
     `tier: ${result.tier}  resolvedVia: ${result.resolvedVia}  status: ${result.code}  bytes: ${result.bytes}  durationMs: ${result.durationMs}  jsRequired: ${result.jsRequired}`,
