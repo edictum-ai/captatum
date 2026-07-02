@@ -175,7 +175,24 @@ function required(value: string | undefined, label: string): string {
  * ("*") and no unanchored prefix — an entry matches only if it is the exact
  * redirect_uri or an exact ORIGIN (scheme://host[:port], no path); userinfo is
  * rejected. Shared by authorize (here) and register (oauth-routes) so the two
- * validators cannot drift. Returns the normalized URI. */
+ * validators cannot drift. Returns the normalized URI.
+ *
+ * The DEFAULT_ALLOWED_REDIRECT_ORIGINS are always in effect (trusted MCP-client
+ * origins + loopback) so a fresh deploy works with Claude/ChatGPT/native clients
+ * out of the box; the OAUTH_REDIRECT_ALLOWLIST env ADDS to them. Loopback entries
+ * match any port per RFC 8252 §7.3 (native apps use ephemeral ports). */
+// Node reports the IPv6 loopback hostname bracketed, so match the [::1] form.
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** Built-in trusted redirect origins. Web origins match any callback path on that origin;
+ *  loopback origins match any port (RFC 8252). See docs/oauth-connectors.md. */
+export const DEFAULT_ALLOWED_REDIRECT_ORIGINS = Object.freeze([
+  "https://claude.ai",   // Claude (web) custom connectors
+  "https://chatgpt.com", // ChatGPT custom connectors (per-connector callback paths)
+  "http://localhost",    // native MCP clients (Claude Code, Cursor, CLI/desktop) — any port
+  "http://127.0.0.1",    // numeric loopback variant
+]);
+
 export function assertAllowedRedirectUri(value: string, allowlist: string[]): string {
   let url: URL;
   try {
@@ -189,15 +206,24 @@ export function assertAllowedRedirectUri(value: string, allowlist: string[]): st
   url.hash = "";
   const normalized = url.href;
   const origin = `${url.protocol}//${url.host}`;
-  const ok = allowlist.some((entry) => {
+  const effective = [...DEFAULT_ALLOWED_REDIRECT_ORIGINS, ...allowlist];
+  const ok = effective.some((entry) => {
     if (entry === "*") return false;
     if (entry === normalized) return true;
+    let e: URL;
     try {
-      const e = new URL(entry);
-      return (!e.pathname || e.pathname === "/") && !e.search && `${e.protocol}//${e.host}` === origin;
+      e = new URL(entry);
     } catch {
       return false;
     }
+    // RFC 8252 §7.3: a loopback ORIGIN entry (no port, no path, no query) matches the same scheme+host
+    // on ANY port — native apps (Claude Code, Cursor) redirect to http://localhost:<ephemeral-port>/…
+    // and the port cannot be allowlisted exhaustively. Restricted to origin-only entries (no path/query)
+    // so a path- or query-specific loopback entry is NOT widened. Local-only = safe.
+    if (!e.port && (!e.pathname || e.pathname === "/") && !e.search && LOOPBACK_HOSTS.has(e.hostname) && e.protocol === url.protocol && e.hostname === url.hostname) {
+      return true;
+    }
+    return (!e.pathname || e.pathname === "/") && !e.search && `${e.protocol}//${e.host}` === origin;
   });
   if (!ok) throw new OAuthError("invalid_redirect_uri", "redirect_uri is not allowed");
   return normalized;
