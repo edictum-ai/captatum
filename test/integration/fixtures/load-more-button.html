@@ -1,0 +1,5 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Blog Comments</title></head>
+<body><h1>Blog Comments</h1><ul id="comments"><li>Comment 1: Great post</li><li>Comment 5: Disagree</li></ul>
+<button id="load-more">Load more comments</button>
+<script>const rest=["Comment 6: Agreed","Comment 10: Closed"];document.getElementById("load-more").addEventListener("click",()=>{rest.forEach(t=>{const li=document.createElement("li");li.textContent=t;comments.appendChild(li)});document.getElementById("load-more").remove()})</script>
+</body></html>
