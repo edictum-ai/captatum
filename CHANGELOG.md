@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.0] — 2026-07-02
+
+- **feat(cli): one-shot CLI + installable agent skill** — `captatum <url>` fetches + prints + exits (kills the #1 DX cliff: the stdio server silently waiting on stdin). `captatum skill install --target claude|codex` writes a captatum agent skill (SKILL.md / AGENTS.md section) so one command gives the agent a first-class "captatum" skill that knows when/how to fetch. `captatum --help` shows usage. No args → stdio MCP server (unchanged). The bin routes based on argv.
+- **refactor(mcp): shared local-deps** — `src/interfaces/mcp/local-deps.ts` extracted (fetcher/extractor/transformer/renderer/clock/audit), side-effect-free, used by both the stdio bridge + the CLI.
+
 ## [0.4.1] — 2026-07-02
 
 - **fix(mcp): silence local stdio stderr on boot** — the local-binary stdio bridge wrote an `audit.auth` event + a "ready" line to stderr before answering the MCP `initialize` request. Some clients (notably Claude Code) treat any stderr during the handshake as a fatal server error and refuse to connect (`-32000 Failed to reconnect`). Stderr is now silent on a healthy boot (audit/ready gated behind `CAPTATUM_STDIO_DEBUG=1`); a genuine boot failure still reports to stderr. Local-binary only — the hosted HTTP gateway is unaffected.
