@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.1] — 2026-07-02
+
+- **fix(mcp): silence local stdio stderr on boot** — the local-binary stdio bridge wrote an `audit.auth` event + a "ready" line to stderr before answering the MCP `initialize` request. Some clients (notably Claude Code) treat any stderr during the handshake as a fatal server error and refuse to connect (`-32000 Failed to reconnect`). Stderr is now silent on a healthy boot (audit/ready gated behind `CAPTATUM_STDIO_DEBUG=1`); a genuine boot failure still reports to stderr. Local-binary only — the hosted HTTP gateway is unaffected.
+
 ## [0.4.0] — 2026-07-01
 
 Ships the ATS list-all-jobs Tier-2 adapters + client-aware shaping to `npx` users, and fixes the release workflow (the GitHub Releases page entry) + stale release-version doc refs.

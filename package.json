@@ -1,6 +1,6 @@
 {
   "name": "@edictum/captatum",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "description": "Captatum — adaptive MCP web-fetch tool for AI agents: fetch any URL, render JS when needed, return clean structured content + provenance.",
   "license": "MIT",

@@ -74,7 +74,9 @@ if [ -z "${check_err}" ] || [ ! -f "${check_err}" ]; then
   rm -f "${OUT}"
   exit 1
 fi
-"./${OUT}" </dev/null >/dev/null 2>"${check_err}" &
+# The bridge is stderr-silent on a healthy boot (Claude Code rejects stderr during
+# the handshake); opt into the ready line so this self-check can still detect a boot.
+CAPTATUM_STDIO_DEBUG=1 "./${OUT}" </dev/null >/dev/null 2>"${check_err}" &
 bin_pid=$!
 ( sleep 8; kill "${bin_pid}" 2>/dev/null ) &
 watchdog_pid=$!

@@ -10,8 +10,9 @@ import process from "node:process";
  * printing `> captatum@… bridge` to stdout); this one launches the real process.
  *
  * It performs only the protocol handshake + `tools/list` (no captatum call), so
- * it stays hermetic: no network egress, no public fixture. Audit/ready logs must
- * appear on stderr only.
+ * it stays hermetic: no network egress, no public fixture. A healthy boot must be
+ * stderr-SILENT (Claude Code rejects stderr during the handshake); audit/ready logs
+ * are gated behind CAPTATUM_STDIO_DEBUG=1.
  */
 
 const ENTRY = "src/interfaces/mcp/stdio-bridge.ts";
@@ -34,7 +35,9 @@ interface ToolEntry {
 const child = spawn(process.execPath, ["--no-warnings", ENTRY], {
   cwd: process.cwd(),
   stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, CAPTATUM_FLAVOR: "local-binary" },
+  // Force the DEFAULT stderr-silent path (clear any inherited CAPTATUM_STDIO_DEBUG) so this
+  // smoke asserts the Claude-Code-compatible contract regardless of the dev/CI shell env.
+  env: { ...process.env, CAPTATUM_FLAVOR: "local-binary", CAPTATUM_STDIO_DEBUG: "" },
 });
 
 if (!child.stdin || !child.stdout || !child.stderr) {
@@ -170,8 +173,13 @@ async function run(): Promise<ToolEntry> {
   if (stdoutLines.length === 0) {
     throw new Error("no JSON-RPC frames observed on stdout; bridge produced no protocol output");
   }
-  if (!stderrText().includes("local stdio bridge ready")) {
-    throw new Error(`bridge never logged its stderr ready line\nstderr:\n${stderrText()}`);
+  // A healthy boot must be stderr-SILENT: some MCP clients (Claude Code) treat any stderr
+  // during the initialize handshake as a fatal server error (-32000). Audit/ready logs are
+  // gated behind CAPTATUM_STDIO_DEBUG=1 (not set here), so stderr should be empty.
+  if (stderrText().trim() !== "") {
+    throw new Error(
+      `bridge wrote to stderr on a healthy boot (must be silent — clients like Claude Code reject stderr during the handshake):\n${stderrText()}`,
+    );
   }
   return tool;
 }
@@ -184,7 +192,7 @@ try {
   console.log(`stdout JSON-RPC frames: ${stdoutLines.length} (0 non-protocol lines)`);
   console.log("stdout is a pure JSON-RPC channel: no pnpm banner, no stray logs");
   console.log(`captatum advertised over stdio with strict schema: ${tool.name === "captatum" ? "yes" : "no"}`);
-  console.log("audit/ready logs observed on stderr only");
+  console.log("stderr silent on healthy boot (Claude-Code compatible; set CAPTATUM_STDIO_DEBUG=1 for audit/ready logs)");
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`stdio process smoke FAILED: ${message}\n`);
