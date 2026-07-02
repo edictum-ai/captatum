@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Tabbed Content</title></head>
+<body>
+<h1>Tabbed Event Page</h1>
+<div class="tab-nav">
+  <button onclick="showTab('tracks')">Tracks</button>
+  <button onclick="showTab('prizes')">Prizes</button>
+  <button onclick="showTab('rules')">Rules</button>
+</div>
+<div id="tracks" class="tab">
+  <h2>Tracks</h2>
+  <ul><li>AI Safety Track</li><li>Interpretability Track</li></ul>
+</div>
+<div id="prizes" class="tab" style="display:none">
+  <h2>Prizes</h2>
+  <p>Winner: $50,000</p>
+  <p>Runner-up: $20,000</p>
+</div>
+<div id="rules" class="tab" style="display:none">
+  <h2>Rules</h2>
+  <p>Open to all. 72 hours. Team size max 5.</p>
+</div>
+<script>
+function showTab(id) {
+  document.querySelectorAll('.tab').forEach(t => t.style.display = 'none');
+  document.getElementById(id).style.display = 'block';
+}
+</script>
+</body>
+</html>

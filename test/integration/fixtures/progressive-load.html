@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Progressive Load</title></head>
+<body>
+<div id="root">
+  <div class="skeleton">Loading event...</div>
+</div>
+<script>
+// Stage 1 (1s): partial content — a hydrated title
+setTimeout(() => {
+  document.getElementById('root').innerHTML = '<h1>Progressive Event</h1><p>Loading details...</p>';
+}, 1000);
+// Stage 2 (4s): full content — the rest loads later
+setTimeout(() => {
+  document.getElementById('root').innerHTML += `
+    <h2>Tracks</h2>
+    <ul><li>Track Alpha</li><li>Track Beta</li></ul>
+    <h2>Prizes</h2>
+    <p>Grand Prize: $25,000</p>
+    <h2>Schedule</h2>
+    <p>Day 1: Hacking starts. Day 2: Mentoring. Day 3: Judging.</p>
+  `;
+}, 4000);
+</script>
+</body>
+</html>

@@ -28,7 +28,7 @@ export interface PlaywrightRendererDeps {
   cdpEndpoint?: string;
   /** Chromium OS sandbox for in-process launch. Default true — the threat model mandates sandbox on; --no-sandbox in-process is only for a sidecar-less transitional deploy. */
   chromiumSandbox?: boolean;
-  /** Cap (ms) for the post-load network-idle settle that replaces the old flat 3s sleep. Default 3000. */
+  /** Cap (ms) for the post-load network-idle settle. Default 3000. */
   settleMs?: number;
 }
 
