@@ -34,7 +34,7 @@ interface StackFrame {
   suppressor: boolean;
 }
 
-export function stripHiddenSubtrees(html: string): string {
+export function stripHiddenSubtrees(html: string, hiddenClasses: Set<string> = new Set()): string {
   const lower = html.toLowerCase();
   const len = html.length;
   let out = "";
@@ -78,11 +78,25 @@ export function stripHiddenSubtrees(html: string): string {
     if (!tag) { if (!suppressed) out += "<"; i += 1; continue; }
     const advance = Math.max(tag.end, i + 1);
     if (VOID_ELEMENTS.has(tag.name)) {
-      if (!suppressed) out += isHidden(tag.attrs) ? " " : html.slice(i, advance);
+      if (!suppressed) out += isHidden(tag.attrs, hiddenClasses) ? " " : html.slice(i, advance);
       i = advance;
       continue;
     }
-    const startsHidden = !suppressed && isHidden(tag.attrs);
+    // Foreign (SVG/MathML) self-closing nodes like `<path display="none"/>` carry
+    // no subtree — treating them as openers would leave suppression active until a
+    // close that never arrives and drop all following siblings. A self-closing root
+    // `<svg hidden/>`/`<math/>` counts too (the element itself opens the foreign
+    // context). The trailing `/` is ignored in HTML, so only apply this for foreign
+    // element names or inside a foreign context.
+    if (
+      tag.raw.endsWith("/>") &&
+      (tag.name === "svg" || tag.name === "math" || stack.some((f) => f.name === "svg" || f.name === "math"))
+    ) {
+      if (!suppressed) out += isHidden(tag.attrs, hiddenClasses) ? " " : html.slice(i, advance);
+      i = advance;
+      continue;
+    }
+    const startsHidden = !suppressed && isHidden(tag.attrs, hiddenClasses);
     stack.push({ name: tag.name, suppressor: startsHidden });
     if (startsHidden) {
       suppressed = true;
@@ -95,22 +109,43 @@ export function stripHiddenSubtrees(html: string): string {
   return out;
 }
 
-/** `hidden` attribute, or an actual `display:none` CSS declaration in the inline
- *  `style`. Parsed per-declaration (split on `;`) so a custom-property value like
- *  `--brand: display:none` does NOT count, and a trailing `!important` is stripped
- *  before the value compare. */
-function isHidden(attrs: AttributeMap): boolean {
+/** `hidden` attribute, an actual `display:none` CSS declaration in the inline
+ *  `style`, the SVG/XML `display="none"` presentation attribute, OR a class
+ *  declared `display:none` in a `<style>` block (collected upstream by
+ *  `collectHiddenDisplayNoneClasses`). Inline `style` display is AUTHORITATIVE —
+ *  it overrides the `hidden` attr and classes (e.g. `style="display:block"` shows
+ *  an element a class hid). Inline `style` is parsed per-declaration (split on `;`)
+ *  so a custom-property value like `--brand: display:none` does NOT count, and a
+ *  trailing `!important` is stripped before the value compare. The bare
+ *  `display="none"` attribute covers SVG `<g display="none">`/`<text display="none">`
+ *  (HTML elements don't use a `display` attribute, so this is SVG-specific and not
+ *  cancellable by a descendant, unlike `visibility:hidden`). */
+function isHidden(attrs: AttributeMap, hiddenClasses: Set<string>): boolean {
+  if (typeof attrs.style === "string") {
+    const disp = inlineDisplayValue(attrs.style);
+    if (disp !== undefined) return disp === "none";
+  }
   if (attrs.hidden !== undefined) return true;
-  const style = attrs.style;
-  if (typeof style !== "string") return false;
+  if (typeof attrs.display === "string" && attrs.display.trim().toLowerCase() === "none") return true;
+  if (hiddenClasses.size > 0 && typeof attrs.class === "string") {
+    for (const token of attrs.class.split(/\s+/)) {
+      if (hiddenClasses.has(token)) return true;
+    }
+  }
+  return false;
+}
+
+/** The value of the inline `style` `display` declaration (lowercased, `!important`
+ *  stripped), or undefined when the style sets no `display`. Authoritative for
+ *  hidden-detection because inline display wins over the `hidden` attr and classes. */
+function inlineDisplayValue(style: string): string | undefined {
   for (const declaration of style.split(";")) {
     const colon = declaration.indexOf(":");
     if (colon === -1) continue;
     if (declaration.slice(0, colon).trim().toLowerCase() !== "display") continue;
-    const value = declaration.slice(colon + 1).trim().toLowerCase().replace(/\s*!\s*important\s*$/, "");
-    if (value === "none") return true;
+    return declaration.slice(colon + 1).trim().toLowerCase().replace(/\s*!\s*important\s*$/, "");
   }
-  return false;
+  return undefined;
 }
 
 /** Offset just past the `>` of the tag starting at `i` (close tags and

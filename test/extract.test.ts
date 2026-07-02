@@ -7,6 +7,8 @@ import { extractTier1FromFetchResult, preferredTitle } from "../src/application/
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { extractVisibleText, stripHtmlComments, stripHtmlTags } from "../src/infrastructure/extract/html.ts";
 import { stripHiddenSubtrees } from "../src/infrastructure/extract/hidden.ts";
+import { collectHiddenDisplayNoneClasses } from "../src/infrastructure/extract/hidden-classes.ts";
+import { extractAppState } from "../src/infrastructure/extract/app-state.ts";
 
 const FIXTURE_DIR = join(process.cwd(), "test", "fixtures", "extract");
 
@@ -1114,4 +1116,216 @@ test("extractHtml scales linearly on a <title> bare-`<` flood (REDOS-2 in metada
   const ratio = timed(200_000) / Math.max(timed(50_000), 1);
   assert.equal(typeof extractHtml({ html: html(100), url: "https://example.test/" }).title, "string");
   assert.ok(ratio < 8, `extractHtml title 200k/50k ratio ${ratio.toFixed(1)} — likely quadratic`);
+});
+
+// --- Tier-1 extraction-fidelity coverage (charset/CSS-hidden/CDATA/SVG/app-state) ---
+
+test("collectHiddenDisplayNoneClasses finds single-class display:none rules only", () => {
+  const css = `<style>
+    .a { display: none }
+    .b { display: block }
+    .c, .d { display: none !important }
+    .parent .child { display: none }
+    #id-only { display: none }
+  </style>`;
+  const classes = collectHiddenDisplayNoneClasses(css);
+  assert.ok(classes.has("a"), ".a hidden");
+  assert.ok(classes.has("c"), ".c hidden (!important stripped, value still none)");
+  assert.ok(classes.has("d"), ".d hidden");
+  assert.ok(!classes.has("b"), ".b is display:block");
+  assert.ok(!classes.has("parent"), "combinator selector skipped (no over-hiding)");
+  assert.ok(!classes.has("child"), "descendant in combinator skipped");
+  assert.ok(!classes.has("id-only"), "id selector not a class");
+});
+
+test("stripHiddenSubtrees drops a class-hidden subtree given the class set", () => {
+  // Style block already stripped upstream (as in extractVisibleText); the div is
+  // hidden only via its class matching the collected set.
+  const html = `<div class="config-hidden">SECRET tenantId</div><p>visible keep</p>`;
+  const classes = new Set(["config-hidden"]);
+  const out = stripHiddenSubtrees(html, classes);
+  assert.doesNotMatch(out, /SECRET|tenantId/);
+  assert.match(out, /visible keep/);
+});
+
+test("extractVisibleText strips class-based display:none from a <style> block", () => {
+  const html = `<html><head><style>.config-hidden{display:none}</style></head>` +
+    `<body><h1>Senior Engineer</h1><div class="config-hidden">{"tenantId":"x"}</div></body></html>`;
+  const text = extractVisibleText(html);
+  assert.match(text, /Senior Engineer/);
+  assert.doesNotMatch(text, /tenantId/);
+});
+
+test("extractVisibleText preserves SVG <text> chart data", () => {
+  const html = `<body><h1>Q3 Report</h1>` +
+    `<svg><title>chart</title><text>Q1: $1.2M</text><text>Q2: $1.8M</text></svg></body>`;
+  const text = extractVisibleText(html);
+  assert.match(text, /Q1: \$1\.2M/);
+  assert.match(text, /Q2: \$1\.8M/);
+});
+
+test("extractJsonLd strips CDATA wrappers from legacy-CMS JSON-LD", () => {
+  const html = `<script type="application/ld+json">//<![CDATA[\n` +
+    `{"@type":"NewsArticle","headline":"Legacy","articleBody":"CDATA body recovered"}\n//]]></script>`;
+  const ex = extractHtml({ html, url: "https://example.test/cdata" });
+  assert.ok(ex.structured.jsonLd, "JSON-LD parsed despite CDATA wrapper");
+  assert.match(JSON.stringify(ex.structured.jsonLd), /CDATA body recovered/);
+});
+
+test("extractAppState harvests __PRELOADED_STATE__ and any application/json script", () => {
+  const html = `<script>window.__PRELOADED_STATE__={"reviews":[{"body":"deep"}]};</script>` +
+    `<script type="application/json" id="__APP_DATA__">{"spec":"x"}</script>`;
+  const errors: unknown[] = [];
+  const state = extractAppState(html, errors as never) as Record<string, unknown>;
+  assert.deepEqual(state, {
+    __PRELOADED_STATE__: { reviews: [{ body: "deep" }] },
+    __APP_DATA__: { spec: "x" },
+  });
+});
+
+test("extractAppState never lets a hostile script id pollute prototypes", () => {
+  const before = ({} as Record<string, unknown>).polluted;
+  const html = `<script type="application/json" id="__proto__">{"polluted":"yes"}</script>`;
+  const errors: unknown[] = [];
+  const state = extractAppState(html, errors as never) as Record<string, unknown>;
+  assert.equal(({} as Record<string, unknown>).polluted, before);
+  assert.equal(state.__proto__ && (state.__proto__ as Record<string, unknown>).polluted, undefined);
+});
+
+test("extractVisibleText drops a hidden svg's <text> (no leak)", () => {
+  const html = `<body><svg hidden><text>SECRET</text></svg><p>keep</p></body>`;
+  const text = extractVisibleText(html);
+  assert.doesNotMatch(text, /SECRET/);
+  assert.match(text, /keep/);
+});
+
+test("a <style> inside a script string does not hide real content", () => {
+  const html = `<html><head>` +
+    `<script>const t='<style>.article{display:none}</style>'</script>` +
+    `</head><body><div class="article">VISIBLE ARTICLE</div></body></html>`;
+  const text = extractVisibleText(html);
+  assert.match(text, /VISIBLE ARTICLE/);
+});
+
+test("collectHiddenDisplayNoneClasses ignores inert script-string styles but keeps real ones", () => {
+  const html = `<script>const t='<style>.inert{display:none}</style>'</script>` +
+    `<style>.real-hidden{display:none}</style>`;
+  const classes = collectHiddenDisplayNoneClasses(html);
+  assert.ok(!classes.has("inert"), "style inside a script string is inert");
+  assert.ok(classes.has("real-hidden"), "real style block still collected");
+});
+
+test("collectHiddenDisplayNoneClasses does not crash on a flood of bogus </style… misses", () => {
+  const html = `<style>.x{display:none}</style>` + "</stylex".repeat(20000) + `<div class=x>OK</div>`;
+  const classes = collectHiddenDisplayNoneClasses(html);
+  assert.ok(classes.has("x"));
+});
+
+test("an empty SPA with only a generic JSON config script still escalates to render", () => {
+  const html = `<html><body><div id="app"></div>` +
+    `<script type="application/json" id="config">{"theme":"dark"}</script></body></html>`;
+  const ex = extractHtml({ html, url: "https://example.test/shell" });
+  assert.equal(ex.shellGate.reason, "empty-spa-shell");
+  assert.equal(ex.shellGate.jsRequired, true);
+  assert.ok(ex.structured.appState, "config JSON still harvested for debug/structured access");
+});
+
+test("collectHiddenDisplayNoneClasses skips print-only style blocks", () => {
+  const html = `<style media="print">.article{display:none}</style><style>.real{display:none}</style>`;
+  const classes = collectHiddenDisplayNoneClasses(html);
+  assert.ok(!classes.has("article"), "print-only style is inert on screen");
+  assert.ok(classes.has("real"), "default-media style collected");
+});
+
+test("extractVisibleText keeps content hidden only by a print stylesheet", () => {
+  const html = `<html><head><style media="print">.article{display:none}</style></head>` +
+    `<body><div class="article">VISIBLE ARTICLE</div></body></html>`;
+  assert.match(extractVisibleText(html), /VISIBLE ARTICLE/);
+});
+
+test("extractVisibleText skips SVG <text> hidden via presentation attributes", () => {
+  const html = `<body><svg><text display="none">SECRET</text><text>VISIBLE</text></svg></body>`;
+  const text = extractVisibleText(html);
+  assert.doesNotMatch(text, /SECRET/);
+  assert.match(text, /VISIBLE/);
+});
+
+test("extractVisibleText drops SVG <text> inside a hidden ancestor <g display=none>", () => {
+  const html = `<body><svg><g display="none"><text>SECRET</text></g><text>VISIBLE</text></svg></body>`;
+  const text = extractVisibleText(html);
+  assert.doesNotMatch(text, /SECRET/);
+  assert.match(text, /VISIBLE/);
+});
+
+test("extractAppState caps id-less JSON scripts and stays O(n)", () => {
+  let html = `<script type="application/json" id="__APP_DATA__">{"keep":1}</script>`;
+  for (let i = 0; i < 3000; i += 1) html += `<script type="application/json">{}</script>`;
+  const errors: unknown[] = [];
+  const state = extractAppState(html, errors as never) as Record<string, unknown>;
+  assert.equal((state.__APP_DATA__ as { keep: number }).keep, 1, "named script still harvested");
+  const synthetic = Object.keys(state).filter((k) => k.startsWith("__json_script_"));
+  assert.ok(synthetic.length <= 256, `synthetic keys capped (got ${synthetic.length})`);
+});
+
+test("collectHiddenDisplayNoneClasses respects non-screen media queries", () => {
+  const html =
+    `<style media="not screen">.a{display:none}</style>` +
+    `<style media="print and (color)">.b{display:none}</style>` +
+    `<style media="(min-width: 0)">.c{display:none}</style>` +
+    `<style>.d{display:none}</style>`;
+  const classes = collectHiddenDisplayNoneClasses(html);
+  assert.ok(!classes.has("a"), "'not screen' excludes screen");
+  assert.ok(!classes.has("b"), "'print and (color)' is non-screen");
+  assert.ok(classes.has("c"), "bare query defaults to all");
+  assert.ok(classes.has("d"), "no media applies");
+});
+
+test("inline style display:block overrides a class display:none", () => {
+  const html = `<html><head><style>.h{display:none}</style></head>` +
+    `<body><div class="h" style="display:block">VISIBLE</div></body></html>`;
+  assert.match(extractVisibleText(html), /VISIBLE/);
+});
+
+test("a self-closing SVG hidden node does not suppress sibling <text>", () => {
+  const html = `<body><svg><path display="none"/><text>VISIBLE</text></svg></body>`;
+  const text = extractVisibleText(html);
+  assert.match(text, /VISIBLE/);
+});
+
+test("a later display:block override on the same class un-hides content", () => {
+  const html = `<html><head><style>.h{display:none}.h{display:block}</style></head>` +
+    `<body><div class="h">VISIBLE</div></body></html>`;
+  assert.match(extractVisibleText(html), /VISIBLE/);
+});
+
+test("collectHiddenDisplayNoneClasses still works with a leading @font-face at-rule", () => {
+  const html = `<style>@font-face{font-family:x}.config-hidden{display:none}</style>`;
+  const classes = collectHiddenDisplayNoneClasses(html);
+  assert.ok(classes.has("config-hidden"), "utility rule after an at-rule still collected");
+});
+
+test("a self-closing SVG <text/> does not duplicate a sibling label", () => {
+  const html = `<body><svg><text/><text>Q1</text></svg></body>`;
+  const text = extractVisibleText(html);
+  const matches = text.match(/Q1/g) ?? [];
+  assert.equal(matches.length, 1, `expected one Q1, got ${matches.length}`);
+});
+
+test("a later <style> block re-shows a class an earlier block hid", () => {
+  const html = `<html><head><style>.h{display:none}</style><style>.h{display:block}</style></head>` +
+    `<body><div class="h">VISIBLE</div></body></html>`;
+  assert.match(extractVisibleText(html), /VISIBLE/);
+});
+
+test("SVG <text> inside <defs>/<symbol> (non-rendering) is not inlined", () => {
+  const html = `<body><svg><defs><text>SECRET-DEFS</text></defs>` +
+    `<symbol id="s"><text>SECRET-SYMBOL</text></symbol><text>VISIBLE</text></svg></body>`;
+  const text = extractVisibleText(html);
+  assert.doesNotMatch(text, /SECRET-DEFS|SECRET-SYMBOL/);
+  assert.match(text, /VISIBLE/);
+});
+
+test("a self-closing root <svg hidden/> does not suppress following siblings", () => {
+  const html = `<body><svg hidden/><p>VISIBLE</p></body>`;
+  assert.match(extractVisibleText(html), /VISIBLE/);
 });

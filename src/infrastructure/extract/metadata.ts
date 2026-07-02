@@ -79,7 +79,7 @@ function extractJsonLd(html: string, errors: ProvenanceError[]): unknown | undef
 
   for (const script of findElements(html, "script")) {
     if (!isJsonLdType(script.tag.attrs.type)) continue;
-    const source = script.content.trim();
+    const source = stripJsonWrapperMarkers(script.content.trim());
     if (!source) continue;
 
     const parsed = parseSafeJson(source);
@@ -122,6 +122,19 @@ function extractMetaTags(html: string): {
 
 function isJsonLdType(type: string | undefined): boolean {
   return (type ?? "").toLowerCase().split(";")[0]?.trim() === "application/ld+json";
+}
+
+/** Strip the `//<![CDATA[` / `//]]>` (and bare `<![CDATA[` / `]]>`) wrappers that
+ *  legacy CMSes (Drupal, vBulletin, old XHTML templates) put around JSON-LD
+ *  payloads. Without this, `JSON.parse` throws on the leading marker and the
+ *  ENTIRE structured-data block is silently dropped. No-op for plain JSON-LD. */
+function stripJsonWrapperMarkers(source: string): string {
+  return source
+    .replace(/^\s*\/\/\s*<!\[CDATA\[/i, "")
+    .replace(/\/\/\s*\]\]>\s*$/i, "")
+    .replace(/^\s*<!\[CDATA\[/i, "")
+    .replace(/\]\]>\s*$/i, "")
+    .trim();
 }
 
 function relTokens(rel: string | undefined): string[] {
