@@ -8,6 +8,7 @@
 | [architecture.md](./architecture.md) | Adaptive-tier architecture and the Transform stage. |
 | [extraction.md](./extraction.md) | Raw-HTML structured extraction (JSON-LD / OG / meta / app-state, shell-gate). |
 | [deploy.md](./deploy.md) | Notes on the production ECS/Fargate topology. For self-hosting, see [`../deploy/README.md`](../deploy/README.md). |
+| [oauth-connectors.md](./oauth-connectors.md) | MCP connector redirect URIs (Claude/ChatGPT/Cursor), the default allowlist, loopback (RFC 8252), + how to add a client. |
 | [brand/](./brand/) | The Captatum mark (eye/lens `(·)`, monochrome + Capture Violet variants). |
 
 Scratch / session notes (not canonical): `handoff-session-fixes.md`, `test-urls.md`.
