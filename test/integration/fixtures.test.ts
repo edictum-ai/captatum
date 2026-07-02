@@ -145,4 +145,95 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.match(r.result, /Light DOM Header/, "light DOM always extracted");
     assert.doesNotMatch(r.result, /Shadow DOM Event Details/, "shadow DOM NOT extracted (known gap)");
   });
+
+  // --- Must-Have fixtures from the 10-agent pattern research (57-pattern backlog) ---
+
+  test("skeleton-screen: skeleton filler defeats shell-gate [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/skeleton-screen`, ...RAW });
+    assert.match(r.result, /Loading event title/, "skeleton text present (satisfies shell-gate)");
+    assert.doesNotMatch(r.result, /Grand Prize/, "real content NOT captured (skeleton defeated the gate)");
+  });
+
+  test("scroll-gated: IntersectionObserver content NOT captured [GAP]", { skip: skipReason, timeout: 60_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/scroll-gated`, ...RAW, ...RENDER });
+    assert.match(r.result, /Talk 01: Rust/, "baseline content present");
+    assert.doesNotMatch(r.result, /Talk 11: Elixir/, "scroll-gated content NOT captured (renderer doesn't scroll)");
+  });
+
+  test("load-more-button: click-gated content NOT captured [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/load-more-button`, ...RAW });
+    assert.match(r.result, /Comment 1: Great post/, "baseline comments present");
+    assert.doesNotMatch(r.result, /Comment 10: Closed/, "click-gated content NOT captured");
+  });
+
+  test("css-class-hidden: class-based display:none content LEAKS [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/css-class-hidden`, ...RAW });
+    assert.match(r.result, /Senior Platform Engineer/, "real content present");
+    assert.match(r.result, /tenantId/, "class-hidden config blob LEAKS (only inline display:none stripped)");
+  });
+
+  test("cdata-jsonld: CDATA-wrapped JSON-LD dropped [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/cdata-jsonld`, ...RAW });
+    assert.match(r.result, /short visible lede/, "visible text present");
+    assert.doesNotMatch(r.result, /only recoverable if the CDATA/, "CDATA JSON-LD body NOT extracted");
+  });
+
+  test("redux-state: __PRELOADED_STATE__ not harvested [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/redux-state`, ...RAW });
+    assert.match(r.result, /Widget Pro/, "visible content present");
+    assert.doesNotMatch(r.result, /Detailed review body/, "Redux state content NOT harvested");
+  });
+
+  test("generic-json-script: non-__NEXT_DATA__ application/json ignored [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/generic-json-script`, ...RAW });
+    assert.match(r.result, /Product via embedded JSON/, "visible content present");
+    assert.doesNotMatch(r.result, /spec-only-detail-A/, "generic JSON script NOT harvested");
+  });
+
+  test("next-data: __NEXT_DATA__ IS harvested [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/next-data`, ...RAW });
+    assert.equal(r.tier, 1, "resolves at Tier-1 (SSR content)");
+    assert.match(r.result, /How to Brew Coffee/, "heading present");
+    assert.ok(r.structured?.appState, "__NEXT_DATA__ harvested into structured.appState");
+  });
+
+  test("svg-text: <svg> stripped wholesale, <text> lost [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/svg-text`, ...RAW });
+    assert.match(r.result, /Q3 Revenue Report/, "heading present");
+    assert.doesNotMatch(r.result, /Q1: \$1\.2M/, "svg <text> content NOT extracted");
+  });
+
+  test("named-entities: most HTML entities NOT decoded [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/named-entities`, ...RAW });
+    assert.match(r.result, /&copy;|&mdash;|&eacute;/, "raw entities present (NOT decoded — known gap)");
+  });
+
+  test("meta-refresh: Tier-1 doesn't follow meta refresh [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/meta-refresh`, ...RAW });
+    assert.match(r.result, /Redirecting/, "interstitial body captured");
+    assert.doesNotMatch(r.result, /Static Content Page/, "destination NOT followed (meta refresh ignored at Tier-1)");
+  });
+
+  test("streaming-suspense: bare hidden attr strips React streamed content [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/streaming-suspense`, ...RAW });
+    assert.match(r.result, /Loading article/, "skeleton present");
+    assert.doesNotMatch(r.result, /Real Streamed Article Title/, "hidden streamed content stripped");
+  });
+
+  test("error-page-404: documents 4xx body handling", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/error-404`, ...RAW });
+    // Documents whether captatum extracts 4xx bodies or treats them as errors.
+    if (r.tier === "error") {
+      // Known: captatum may treat 4xx as an error — body is dropped.
+      assert.equal(r.tier, "error", "documents: 4xx treated as error");
+    } else {
+      assert.match(r.result, /has moved to|couldn't find/, "4xx body content extracted");
+    }
+  });
+
+  test("accordion-height-zero: max-height:0 content KEPT [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/accordion-height-zero`, ...RAW });
+    assert.match(r.result, /Full refund within 30 days/, "collapsed accordion content IS captured");
+    assert.match(r.result, /SAML 2\.0 and OIDC/, "open accordion content IS captured");
+  });
 });

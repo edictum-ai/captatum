@@ -23,6 +23,16 @@ export async function startFixtureServer(): Promise<FixtureServer> {
       const url = new URL(req.url!, `http://${req.headers.host}`);
       const path = url.pathname;
 
+      // Error-page route: serve the fixture HTML with a non-200 status.
+      if (path === "/error-404") {
+        try {
+          const html = readFileSync(join(__dirname, "error-page-404.html"), "utf-8");
+          res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(html);
+        } catch { res.writeHead(500); res.end("fixture read error"); }
+        return;
+      }
+
       // Slow API endpoint (2s delay) for SPA fixtures that load content via XHR.
       if (path === "/api/slow-data") {
         setTimeout(() => {
