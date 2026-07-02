@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>XHR Load Test</title></head>
+<body>
+<div id="root"></div>
+<script>
+// Simulates a SPA that loads content via XHR (fetch API).
+// The API endpoint (/api/slow-data) responds after a 2s delay.
+fetch('/api/slow-data')
+  .then(r => r.json())
+  .then(data => {
+    document.getElementById('root').innerHTML = `
+      <h1>XHR Hackathon</h1>
+      <h2>Tracks</h2>
+      <ul>${data.tracks.map(t => `<li>${t}</li>`).join('')}</ul>
+      <h2>Prizes</h2>
+      <ul>${data.prizes.map(p => `<li>${p}</li>`).join('')}</ul>
+      <h2>Rules</h2>
+      <p>${data.rules}</p>
+    `;
+  });
+</script>
+</body>
+</html>

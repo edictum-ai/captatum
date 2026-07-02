@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Shadow DOM Test</title></head>
+<body>
+<h1>Light DOM Header</h1>
+<div id="host"></div>
+<script>
+// Content inside a Shadow DOM — some extractors cannot pierce shadow boundaries.
+const host = document.getElementById('host');
+const shadow = host.attachShadow({ mode: 'open' });
+shadow.innerHTML = `
+  <h2>Shadow DOM Event Details</h2>
+  <p>This content is inside a Shadow DOM.</p>
+  <ul>
+    <li>Shadow Track 1: Distributed Systems</li>
+    <li>Shadow Track 2: Machine Learning</li>
+  </ul>
+  <p>Shadow Prize: $15,000</p>
+`;
+</script>
+</body>
+</html>

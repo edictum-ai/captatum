@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Late Load Test</title></head>
+<body>
+<div id="root">Loading...</div>
+<script>
+// Simulates a SPA that loads content via a late callback (5s).
+// With settleMs < 5s, the content is NOT captured. This is the cerebralvalley.ai pattern.
+setTimeout(() => {
+  document.getElementById('root').innerHTML = `
+    <h1>Late Load Hackathon</h1>
+    <h2>Tracks</h2>
+    <ul>
+      <li>Track 1: Oncology Drug Discovery</li>
+      <li>Track 2: Genomic Analysis</li>
+      <li>Track 3: Clinical Trial Design</li>
+    </ul>
+    <h2>Prizes</h2>
+    <p>First Place: $10,000</p>
+    <p>Second Place: $5,000</p>
+    <h2>Rules</h2>
+    <p>Teams of 1-4. Must use Claude API. 48 hours.</p>
+  `;
+}, 5000);
+</script>
+</body>
+</html>

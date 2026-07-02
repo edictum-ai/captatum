@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Shell Test</title></head>
+<body>
+<div id="app"></div>
+<script>
+// Content ONLY appears after JS execution — the static HTML has zero visible text.
+// Tier-1 extraction should find nothing (shell gate); Tier-3 render should find it.
+document.getElementById('app').innerHTML = `
+  <h1>Rendered Content</h1>
+  <p>This text only exists after JavaScript execution.</p>
+  <p>Tier-1 extraction should find nothing; Tier-3 render should find it.</p>
+`;
+</script>
+</body>
+</html>
