@@ -375,4 +375,36 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.equal(r.tier, 1, "soft-404 treated as content (known gap)");
     assert.equal(classifyAccess(r).gated, false);
   });
+
+  test("microdata-product: microdata (itemprop) is not harvested into structured [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/microdata-product`, ...RAW });
+    assert.match(r.result, /Acme Widget Pro/, "visible product name present");
+    assert.match(r.result, /\$29\.99/, "visible price present");
+    // captatum parses JSON-LD/OG/meta/app-state but NOT microdata (itemscope/itemprop),
+    // so the structured product fields are absent. Flip when microdata is harvested.
+    assert.ok(!r.structured?.jsonLd, "microdata not converted to structured JSON-LD (known gap)");
+  });
+
+  test("canonical-points-elsewhere: the canonical URL is extracted into structured [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/canonical-points-elsewhere`, ...RAW });
+    assert.match(r.result, /Syndicated Story/);
+    // The canonical (a different origin than the fetch URL) is surfaced in structured.
+    assert.equal(r.structured?.canonicalUrl, "https://syndicated-origin.example.com/original-story");
+  });
+
+  test("truly-empty-page: an empty page is a render-blocked shell, no crash [behavior]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/truly-empty-page`, ...RAW });
+    // An empty page is a shell the gate flags for render; without allowRender it comes
+    // back render-blocked (not an error, not phantom content).
+    assert.equal(r.tier, "render-blocked");
+    assert.equal(r.result.trim(), "", "no content extracted from a truly empty page");
+  });
+
+  test("emoji-astral: astral-plane / multi-codepoint emoji are preserved [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/emoji-astral`, ...RAW });
+    assert.match(r.result, /🤖/);
+    assert.match(r.result, /🚀/);
+    assert.match(r.result, /✨/);
+    assert.match(r.result, /👩‍💻/, "ZWJ (multi-codepoint) sequence preserved");
+  });
 });
