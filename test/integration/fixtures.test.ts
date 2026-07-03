@@ -166,28 +166,34 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.doesNotMatch(r.result, /Comment 10: Closed/, "click-gated content NOT captured");
   });
 
-  test("css-class-hidden: class-based display:none content LEAKS [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+  test("css-class-hidden: class-based display:none stripped [GUARD, was GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
     const r = await captatum.execute({ url: `${server.url}/css-class-hidden`, ...RAW });
     assert.match(r.result, /Senior Platform Engineer/, "real content present");
-    assert.match(r.result, /tenantId/, "class-hidden config blob LEAKS (only inline display:none stripped)");
+    assert.doesNotMatch(r.result, /tenantId/, "class-hidden config blob stripped (collectHiddenDisplayNoneClasses)");
+    assert.doesNotMatch(r.result, /tracker-id/, "second class-hidden blob stripped");
   });
 
-  test("cdata-jsonld: CDATA-wrapped JSON-LD dropped [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+  test("cdata-jsonld: CDATA-wrapped JSON-LD parsed [GUARD, was GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
     const r = await captatum.execute({ url: `${server.url}/cdata-jsonld`, ...RAW });
     assert.match(r.result, /short visible lede/, "visible text present");
-    assert.doesNotMatch(r.result, /only recoverable if the CDATA/, "CDATA JSON-LD body NOT extracted");
+    assert.ok(r.structured?.jsonLd, "JSON-LD parsed despite CDATA wrapper");
+    assert.match(JSON.stringify(r.structured.jsonLd), /only recoverable if the CDATA/, "CDATA body recovered into structured.jsonLd");
   });
 
-  test("redux-state: __PRELOADED_STATE__ not harvested [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+  test("redux-state: __PRELOADED_STATE__ harvested into appState [GUARD, was GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
     const r = await captatum.execute({ url: `${server.url}/redux-state`, ...RAW });
     assert.match(r.result, /Widget Pro/, "visible content present");
-    assert.doesNotMatch(r.result, /Detailed review body/, "Redux state content NOT harvested");
+    const app = JSON.stringify(r.structured?.appState ?? {});
+    assert.match(app, /"__PRELOADED_STATE__"/, "__PRELOADED_STATE__ harvested");
+    assert.match(app, /Detailed review body/, "Redux state body recovered into structured.appState");
   });
 
-  test("generic-json-script: non-__NEXT_DATA__ application/json ignored [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+  test("generic-json-script: non-__NEXT_DATA__ application/json harvested [GUARD, was GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
     const r = await captatum.execute({ url: `${server.url}/generic-json-script`, ...RAW });
     assert.match(r.result, /Product via embedded JSON/, "visible content present");
-    assert.doesNotMatch(r.result, /spec-only-detail-A/, "generic JSON script NOT harvested");
+    const app = JSON.stringify(r.structured?.appState ?? {});
+    assert.match(app, /"__APP_DATA__"/, "generic application/json script harvested");
+    assert.match(app, /spec-only-detail-A/, "embedded JSON body recovered into structured.appState");
   });
 
   test("next-data: __NEXT_DATA__ IS harvested [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
@@ -197,10 +203,11 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.ok(r.structured?.appState, "__NEXT_DATA__ harvested into structured.appState");
   });
 
-  test("svg-text: <svg> stripped wholesale, <text> lost [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+  test("svg-text: <svg> <text> chart data extracted [GUARD, was GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
     const r = await captatum.execute({ url: `${server.url}/svg-text`, ...RAW });
     assert.match(r.result, /Q3 Revenue Report/, "heading present");
-    assert.doesNotMatch(r.result, /Q1: \$1\.2M/, "svg <text> content NOT extracted");
+    assert.match(r.result, /Q1: \$1\.2M/, "svg <text> chart data extracted (inlineSvgText)");
+    assert.match(r.result, /Q3: \$2\.4M/);
   });
 
   test("named-entities: most HTML entities NOT decoded [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {

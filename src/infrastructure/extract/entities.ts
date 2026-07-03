@@ -18,6 +18,17 @@ export function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+// Inline-split markup (`<span>$</span><span>10</span><span>.90</span>`) leaves
+// "$ 10 .90" (stripHtmlTags turns each tag into a space). Narrowly collapse only
+// number/price fragments: "$ 10"->"$10", "10 .90"->"10.90" (dot must be followed
+// by a digit, so "3. item"/"Done. Next" untouched; commas left so lists survive).
+export function normalizeFragmentedNumbers(text: string): string {
+  return text
+    .replace(/([€£¥₹$])\s+(\d[\d ,]*)\s*\.\s*(\d{1,4})/g, "$1$2.$3")
+    .replace(/(\d)\s+\.(\d)/g, "$1.$2")
+    .replace(/(\d)\s+([€£¥₹])/g, "$1$2");
+}
+
 function decodeEntity(entity: string): string | null {
   const lower = entity.toLowerCase();
   if (lower.startsWith("#x")) {

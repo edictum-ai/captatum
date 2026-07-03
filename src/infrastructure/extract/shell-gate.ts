@@ -31,13 +31,34 @@ export function evaluateShellGate(input: {
 
 /**
  * Whether the structured data carries content an agent can use WITHOUT rendering.
- * Only JSON-LD and embedded app state count — OG / twitter meta is social-card
- * metadata, NOT body content. An SPA can ship og:title with an empty <body>, which
- * is still a shell that needs rendering (regression: vue-realworld, react-shopping-cart
- * returned tier 1 with zero content because OG bypassed the shell-gate).
+ * Only JSON-LD and NAMED-FRAMEWORK embedded app state count — OG / twitter meta is
+ * social-card metadata, NOT body content, and a generic `<script type="application/json"
+ * id="config">` is config, not rendered page content. Counting either would let an
+ * empty SPA shell stop at Tier-1 (regression: vue-realworld, react-shopping-cart
+ * returned tier 1 with zero content because OG bypassed the shell-gate; a config-only
+ * JSON script would do the same). Generic JSON scripts are still harvested into
+ * appState for debug/structured access — they just don't satisfy the gate.
  */
 export function hasUsableStructuredData(structured: StructuredData): boolean {
-  return structured.jsonLd !== undefined || structured.appState !== undefined;
+  if (structured.jsonLd !== undefined) return true;
+  return hasContentBearingAppState(structured.appState);
+}
+
+const CONTENT_BEARING_APP_STATE_KEYS = new Set([
+  "__NEXT_DATA__",
+  "__NUXT_DATA__",
+  "__INITIAL_STATE__",
+  "__PRELOADED_STATE__",
+  "__APOLLO_STATE__",
+]);
+
+/** True only when appState carries a recognized framework state object (Next/Nuxt
+ *  SSR data, Redux/Apollo/INITIAL state) — the keys that reliably hold rendered
+ *  page content. An arbitrary embedded JSON blob does not. */
+function hasContentBearingAppState(appState: unknown): boolean {
+  if (!appState || typeof appState !== "object") return false;
+  const keys = Object.keys(appState as Record<string, unknown>);
+  return keys.some((key) => CONTENT_BEARING_APP_STATE_KEYS.has(key));
 }
 
 function hasContent(html: string, textLength: number, wordCount: number): boolean {

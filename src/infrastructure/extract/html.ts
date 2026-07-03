@@ -1,5 +1,7 @@
-import { collapseWhitespace, decodeHtmlEntities } from "./entities.ts";
+import { collapseWhitespace, decodeHtmlEntities, normalizeFragmentedNumbers } from "./entities.ts";
+import { collectHiddenDisplayNoneClasses } from "./hidden-classes.ts";
 import { stripHiddenSubtrees } from "./hidden.ts";
+import { inlineSvgText } from "./svg-text.ts";
 
 export interface HtmlTag {
   name: string;
@@ -54,24 +56,19 @@ export function findElements(html: string, tagName: string): HtmlElement[] {
 }
 
 export function extractVisibleText(html: string): string {
+  const hiddenClasses = collectHiddenDisplayNoneClasses(html);
   const body = extractBodyHtml(html) ?? stripElement(html, "head");
-  const withoutCode = ["script", "style", "noscript", "template", "svg"]
+  // `svg` is NOT stripped here — inlineSvgText (next) preserves its `<text>` chart
+  // data before the wrapper is removed. stripHiddenSubtrees also drops class-based
+  // display:none from `<style>` blocks (the hiddenClasses set).
+  const withoutCode = ["script", "style", "noscript", "template"]
     .reduce((value, tag) => stripElement(value, tag), body);
   // Linear O(n) scanners (REDOS-1/2/3): old backtracking regexes were quadratic on
-  // `<!--`/bare-`<`/`<script>` floods; stripHiddenSubtrees (next) drops non-rendered DOM.
-  const text = stripHtmlTags(stripHtmlComments(stripHiddenSubtrees(withoutCode)));
+  // `<!--`/bare-`<`/`<script>` floods. stripHiddenSubtrees runs BEFORE inlineSvgText
+  // so a hidden svg (`<svg hidden>`/display:none/hidden class) is dropped together
+  // with its `<text>` instead of leaking the labels into visible text.
+  const text = stripHtmlTags(stripHtmlComments(inlineSvgText(stripHiddenSubtrees(withoutCode, hiddenClasses))));
   return normalizeFragmentedNumbers(collapseWhitespace(decodeHtmlEntities(text)));
-}
-
-// Inline-split markup (`<span>$</span><span>10</span><span>.90</span>`) leaves
-// "$ 10 .90" (stripHtmlTags turns each tag into a space). Narrowly collapse only
-// number/price fragments: "$ 10"->"$10", "10 .90"->"10.90" (dot must be followed
-// by a digit, so "3. item"/"Done. Next" untouched; commas left so lists survive).
-function normalizeFragmentedNumbers(text: string): string {
-  return text
-    .replace(/([€£¥₹$])\s+(\d[\d ,]*)\s*\.\s*(\d{1,4})/g, "$1$2.$3") // fragmented PRICE; decimal required so literal "$ 1" (e.g. in <pre>) is untouched
-    .replace(/(\d)\s+\.(\d)/g, "$1.$2") // "10 .90"->"10.90"; dot followed by a digit so lists/periods are safe
-    .replace(/(\d)\s+([€£¥₹])/g, "$1$2");
 }
 
 /**
@@ -202,7 +199,7 @@ function extractBodyHtml(html: string): string | null {
   return body ? body.content : null;
 }
 
-function stripElement(html: string, tagName: string): string {
+export function stripElement(html: string, tagName: string): string {
   // Linear: splice each element from its start tag to its close, replacing it
   // with a space (matching the old regex's " "). The old
   // `new RegExp(`<tag\b[^>]*>[\s\S]*?</tag>`)` was quadratic on many unterminated
