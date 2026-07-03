@@ -337,4 +337,42 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.match(r.result, /Waiting for service worker/);
     assert.doesNotMatch(r.result, /SW-served secret content/, "SW-mediated content unreachable (SW blocked — known gap)");
   });
+
+  // --- Should-Have GAP-documentation patterns ---
+
+  test("closed-details-summary: a closed <details> body is over-extracted as visible [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/closed-details-summary`, ...RAW });
+    assert.match(r.result, /Frequently Asked Questions/);
+    assert.match(r.result, /What is your return policy/);
+    // A closed <details> hides its body in the browser; captatum's extractor does not
+    // model <details>, so the hidden body leaks into visible text. Flip when closed-
+    // details content is suppressed.
+    assert.match(r.result, /We accept returns within 30 days/, "closed-details body over-extracted (known gap)");
+  });
+
+  test("offscreen-positioned-text: offscreen/visually-hidden text is over-extracted [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/offscreen-positioned-text`, ...RAW });
+    assert.match(r.result, /Visible Headline/);
+    // left:-9999px / text-indent:-9999px hide text offscreen; captatum doesn't model
+    // positioning, so it leaks. Flip when offscreen text is suppressed.
+    assert.match(r.result, /SEO keyword stuffing hidden offscreen/, "offscreen text over-extracted (known gap)");
+    assert.match(r.result, /screen-reader-only label text/);
+  });
+
+  test("malformed-jsonld-trailing: a stray trailing comma drops the whole JSON-LD [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/malformed-jsonld-trailing`, ...RAW });
+    assert.match(r.result, /Visible Article Headline/);
+    // The first node is valid, but a stray comma + second node makes the whole block
+    // invalid JSON → the ENTIRE block is dropped (no partial recovery).
+    assert.ok(!r.structured?.jsonLd, "malformed JSON-LD dropped entirely (known gap — no partial recovery)");
+  });
+
+  test("soft-404-status-200: a 200 'not found' page is treated as content [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/soft-404-status-200`, ...RAW });
+    // A 200 body that says "not found" (a soft 404) is extracted as content, not
+    // flagged. Flip when a soft-404 heuristic is added.
+    assert.match(r.result, /Page not found/);
+    assert.equal(r.tier, 1, "soft-404 treated as content (known gap)");
+    assert.equal(classifyAccess(r).gated, false);
+  });
 });
