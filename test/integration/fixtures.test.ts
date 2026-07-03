@@ -100,14 +100,14 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.match(r.result, /only exists after JavaScript/);
   });
 
-  test("spa-late-load: documents the setTimeout gap (networkidle fires before 5s content)", { skip: skipReason, timeout: 60_000 }, async () => {
-    // KNOWN GAP: content loaded via setTimeout (no network activity) is NOT captured because
-    // networkidle fires instantly (no XHRs to wait for) and there's no flat settle.
-    // The cerebralvalley.ai regression. When a flat settle / content-aware wait is added,
-    // flip these assertions to assert the content IS present.
+  test("spa-late-load: content-aware settle captures setTimeout content [GUARD, was GAP]", { skip: skipReason, timeout: 60_000 }, async () => {
+    // networkidle fires instantly for content loaded via setTimeout (no network
+    // activity); the post-networkidle content-aware settle (waitForBodyStable) is
+    // what captures it. The cerebralvalley.ai regression, now fixed.
     const r = await captatum.execute({ url: `${server.url}/spa-late-load`, ...RAW, ...RENDER });
     assert.equal(r.tier, 3, "render escalates");
-    assert.doesNotMatch(r.result, /Track 1: Oncology/, "content NOT captured (known gap — setTimeout has no network signal)");
+    assert.match(r.result, /Track 1: Oncology/, "setTimeout content captured by the content-aware settle");
+    assert.match(r.result, /Teams of 1-4/);
   });
 
   test("spa-xhr-load: content fetched via XHR (2s API delay) is captured", { skip: skipReason, timeout: 60_000 }, async () => {
@@ -118,12 +118,13 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.match(r.result, /Teams of 1-4/);
   });
 
-  test("progressive-load: documents the late-hydration gap (4s stage missed)", { skip: skipReason, timeout: 60_000 }, async () => {
-    // KNOWN GAP: same as spa-late-load — the 4s stage loads via setTimeout (no network),
-    // so networkidle fires before it. The 1s stage (also setTimeout) may or may not be captured.
+  test("progressive-load: content-aware settle captures multi-stage hydration [GUARD, was GAP]", { skip: skipReason, timeout: 60_000 }, async () => {
+    // Both stages load via setTimeout (no network); the settle watches the body
+    // stabilize across the stages before capturing.
     const r = await captatum.execute({ url: `${server.url}/progressive-load`, ...RAW, ...RENDER });
     assert.equal(r.tier, 3, "render escalates");
-    assert.doesNotMatch(r.result, /Grand Prize: \$25,000/, "4s content NOT captured (known gap)");
+    assert.match(r.result, /Progressive Event/, "stage-1 hydrated title captured");
+    assert.match(r.result, /Grand Prize: \$25,000/, "stage-2 full content captured");
   });
 
   test("tabbed-display-none: visible tab extracted; display:none tabs stripped (documented behavior)", { skip: skipReason, timeout: 30_000 }, async () => {

@@ -1,0 +1,56 @@
+import type { PlaywrightPage } from "./playwright-types.ts";
+
+export interface SettleOptions {
+  /** Hard cap on the settle (ms). */
+  capMs: number;
+  /** Minimum time to keep watching even if the page looks stable — a page that
+   *  appears settled at 200ms may still inject content at 1.5s (setTimeout /
+   *  hydration). Must exceed the latest "quiet-then-change" delay you want to catch. */
+  minDwellMs: number;
+  /** How long the content length must hold steady before trusting it (ms). */
+  stableMs: number;
+  /** Poll interval (ms). */
+  intervalMs?: number;
+}
+
+/**
+ * After `networkidle`, watch the rendered content for further changes. `networkidle`
+ * fires the instant there's no network activity — so content loaded via a plain
+ * `setTimeout`/hydration callback (no XHR, no fetch) is missed: the callback hasn't
+ * run yet when `page.content()` is captured (the cerebralvalley.ai regression).
+ *
+ * Polls `page.content().length` and only trusts stability once it has held for
+ * `stableMs` AND `minDwellMs` has elapsed, capped at `capMs`. A page that keeps
+ * mutating resets the stability timer; a genuinely-settled page exits as soon as
+ * both thresholds pass. Never throws — best-effort, capped, non-fatal.
+ *
+ * `page.content()` (not `evaluate`) keeps this within the existing PlaywrightPage
+ * surface; serialization cost is bounded by the page size and the ~capMs/interval
+ * poll count.
+ */
+export async function waitForBodyStable(page: PlaywrightPage, opts: SettleOptions): Promise<void> {
+  const interval = opts.intervalMs ?? 150;
+  const start = Date.now();
+  let lastLen = -1;
+  let stableSince = start;
+
+  for (;;) {
+    const now = Date.now();
+    if (now - start >= opts.capMs) return;
+
+    let len = 0;
+    try {
+      len = (await page.content()).length;
+    } catch {
+      len = lastLen < 0 ? 0 : lastLen;
+    }
+    const checkedAt = Date.now();
+    if (len !== lastLen) {
+      lastLen = len;
+      stableSince = checkedAt;
+    }
+    if (checkedAt - start >= opts.minDwellMs && checkedAt - stableSince >= opts.stableMs) return;
+
+    await page.waitForTimeout(interval);
+  }
+}
