@@ -213,9 +213,13 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.match(r.result, /Q3: \$2\.4M/);
   });
 
-  test("named-entities: most HTML entities NOT decoded [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+  test("named-entities: common named entities decoded [GUARD, was GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
     const r = await captatum.execute({ url: `${server.url}/named-entities`, ...RAW });
-    assert.match(r.result, /&copy;|&mdash;|&eacute;/, "raw entities present (NOT decoded — known gap)");
+    assert.match(r.result, /© 2024 Acme Corp\. — All rights reserved\./, "copyright + em-dash decoded");
+    assert.match(r.result, /Submit your résumé by Q3 … spaces limited\./, "accented + ellipsis decoded");
+    assert.match(r.result, /«new» – price 10€ to 20€\./, "guillemets + en-dash + euro decoded");
+    assert.match(r.result, /“quoted” & ‘single’/, "smart quotes + amp decoded");
+    assert.doesNotMatch(r.result, /&copy;|&mdash;|&eacute;/, "no raw named entities remain");
   });
 
   test("meta-refresh: Tier-1 doesn't follow meta refresh [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
@@ -242,5 +246,52 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     const r = await captatum.execute({ url: `${server.url}/accordion-height-zero`, ...RAW });
     assert.match(r.result, /Full refund within 30 days/, "collapsed accordion content IS captured");
     assert.match(r.result, /SAML 2\.0 and OIDC/, "open accordion content IS captured");
+  });
+
+  // --- Must-Have GAP-documentation patterns from the 57-pattern backlog ---
+
+  test("noscript-fallback: <noscript> content is stripped at Tier-1 [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/noscript-fallback`, ...RAW });
+    assert.match(r.result, /Real Page Content/, "real content present");
+    // noscript content (meant for JS-disabled browsers) is stripped — a JS-enabled
+    // agent should never see the fallback prompt as page content.
+    assert.doesNotMatch(r.result, /Please enable JavaScript/);
+  });
+
+  test("pre-code-whitespace: <pre> indentation/newlines collapsed [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/pre-code-whitespace`, ...RAW });
+    assert.match(r.result, /function greet\(\)/);
+    assert.match(r.result, /return msg/);
+    // The 4-space indent and newlines are flattened to single spaces (collapseWhitespace
+    // is global) — code formatting is lost. Flip when <pre> whitespace is preserved.
+    assert.doesNotMatch(r.result, /\n/, "newlines collapsed (pre formatting lost — known gap)");
+    assert.doesNotMatch(r.result, /    const msg/, "4-space indent collapsed to one space");
+  });
+
+  test("login-wall-soft-gate: a 200 login form is treated as content, not gated [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/login-wall-soft-gate`, ...RAW });
+    // The page is a 200 login form behind which the real content lives. Captatum has
+    // no login-wall heuristic, so the form is extracted as content (access stays
+    // public — never flagged gated). Flip when a login-wall detector is added.
+    assert.match(r.result, /Sign in to continue/);
+    assert.match(r.result, /Single Sign-On/);
+    assert.equal(r.tier, 1, "login form resolves at Tier-1 as content (not gated)");
+  });
+
+  test("paywall-server-truncation: truncated article not flagged as a paywall [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/paywall-server-truncation`, ...RAW });
+    assert.match(r.result, /Premium Investigation/);
+    assert.match(r.result, /subscribe today/);
+    // No JSON-LD isAccessibleForFree flag + no truncation heuristic → the partial
+    // body is returned as content (access public, not a gated paywall).
+    assert.equal(r.tier, 1, "truncated article treated as content (known gap)");
+  });
+
+  test("iframe-same-origin-document: Tier-1 does not follow an iframe src [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/iframe-same-origin-document`, ...RAW });
+    assert.match(r.result, /Parent Page With Embed/);
+    // The iframe's target document is NOT fetched at Tier-1 (only Tier-3 render walks
+    // frames). The embedded "Static Content Page" wording is therefore absent.
+    assert.doesNotMatch(r.result, /Static Content Page/, "iframe src not followed at Tier-1 (known gap)");
   });
 });
