@@ -120,7 +120,7 @@ test("server advertises capability instructions for discoverability", () => {
   // Sent on `initialize` so clients/agents learn captatum's features (output modes,
   // provenance, when to render) without reading the repo.
   assert.ok(CAPTATUM_SERVER_INSTRUCTIONS.length > 200, "instructions are substantive");
-  for (const phrase of ["summary", "raw", "extract", "allowRender", "Provenance"]) {
+  for (const phrase of ["summary", "raw", "extract", "allowRender", "Provenance", "rule of thumb"]) {
     assert.ok(CAPTATUM_SERVER_INSTRUCTIONS.includes(phrase), `instructions missing "${phrase}"`);
   }
 });
