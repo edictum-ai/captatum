@@ -42,6 +42,17 @@ test("sqlite auth codes are hashed, single-use, expired, and not content storage
   cleanup();
 });
 
+test("sqlite sweepExpired rejects a non-millisecond cutoff (PR #86 review)", async () => {
+  const { file, cleanup } = sqlitePath();
+  const store = openSqliteStore(file);
+  // A mixed-precision cutoff string-compares wrong against fixed ...fffZ expiries and
+  // could sweep still-valid auth state — reject it (parity with TiDB's sweepExpired).
+  await assert.rejects(store.sweepExpired("2026-06-16T12:00:00Z"), (error) => error instanceof StoreInputError);
+  await store.sweepExpired(NOW); // a valid 3-ms-digit cutoff still works
+  await store.close();
+  cleanup();
+});
+
 test("sqlite rotates refresh tokens and replay revokes the refresh family", async () => {
   const { file, cleanup } = sqlitePath();
   const store = openSqliteStore(file);
