@@ -235,7 +235,7 @@ function findCloseTag(lower: string, closeOpen: string, from: number): number {
     const at = lower.indexOf(closeOpen, search);
     if (at === -1) return -1;
     const next = lower[at + closeOpen.length];
-    if (next === undefined || next === ">" || next === "/" || next === " " || next === "\t" || next === "\n" || next === "\r") {
+    if (next === undefined || next === ">" || next === "/" || next === " " || next === "\t" || next === "\n" || next === "\f" || next === "\r") {
       return at;
     }
     search = at + 1;

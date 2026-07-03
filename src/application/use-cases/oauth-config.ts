@@ -86,9 +86,11 @@ function assertHostedCloudflareAccess(env: NodeJS.ProcessEnv): void {
   if (!/^https:\/\//i.test(certsUrl)) {
     throw new AuthConfigError("CF_ACCESS_CERTS_URL must be an absolute https URL");
   }
+  parseAbsoluteUrl(certsUrl, "CF_ACCESS_CERTS_URL");
   if (!/^https:\/\//i.test(issuer)) {
     throw new AuthConfigError("CF_ACCESS_ISSUER must be an absolute https URL");
   }
+  parseAbsoluteUrl(issuer, "CF_ACCESS_ISSUER");
 }
 
 function readHostedOAuthConfig(env: NodeJS.ProcessEnv): HostedOAuthConfig {

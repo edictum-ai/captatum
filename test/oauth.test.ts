@@ -332,6 +332,9 @@ test("hosted boot fails closed when OAUTH_ISSUER or OAUTH_RESOURCE is missing/ma
   assert.throws(() => loadAuthRuntimeConfig({ ...valid, OAUTH_ISSUER: "http://captatum.test" }), /OAUTH_ISSUER/);
   // resource not an absolute URL
   assert.throws(() => loadAuthRuntimeConfig({ ...valid, OAUTH_RESOURCE: "not-a-url" }), /OAUTH_RESOURCE/);
+  // CF Access certs URL / issuer must be a real absolute https URL, not just an https:// prefix (PR #86 review)
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, CF_ACCESS_CERTS_URL: "https://" }), /CF_ACCESS_CERTS_URL/);
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, CF_ACCESS_ISSUER: "https://" }), /CF_ACCESS_ISSUER/);
   // both valid -> boots hosted (regression guard)
   assert.equal(loadAuthRuntimeConfig(valid).flavor, "hosted");
 });

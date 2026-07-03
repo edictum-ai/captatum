@@ -5,7 +5,7 @@ import { test } from "node:test";
 import type { FetcherResult } from "../src/application/ports/fetcher.ts";
 import { extractTier1FromFetchResult, preferredTitle } from "../src/application/use-cases/tier1-extract.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
-import { extractVisibleText, stripHtmlComments, stripHtmlTags } from "../src/infrastructure/extract/html.ts";
+import { extractVisibleText, findElements, stripHtmlComments, stripHtmlTags } from "../src/infrastructure/extract/html.ts";
 import { decodeHtmlEntities } from "../src/infrastructure/extract/entities.ts";
 import { stripHiddenSubtrees } from "../src/infrastructure/extract/hidden.ts";
 import { collectHiddenDisplayNoneClasses } from "../src/infrastructure/extract/hidden-classes.ts";
@@ -21,6 +21,12 @@ test("findElements skips a literal <script> inside an earlier script body (PR #8
     `<script type="application/ld+json">{"two":"second block survives"}</script>`;
   const structured = JSON.stringify(extractHtml({ html, url: "https://example.test/" }).structured);
   assert.ok(structured.includes("second block survives"), "the second JSON-LD block is not swallowed");
+});
+
+test("findElements treats a form-feed after </script as a tag boundary (PR #86 review)", () => {
+  // U+000C is HTML tag-name-terminating whitespace, so `</script\f>` closes the script.
+  const el = findElements("<script>DATA</script\f>", "script")[0];
+  assert.equal(el?.content, "DATA", "form-feed-terminated </script> is recognized as the close");
 });
 
 test("extracts title, canonical URL, and JSON-LD from json-ld.html", () => {
