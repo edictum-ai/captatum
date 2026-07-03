@@ -407,4 +407,39 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.match(r.result, /✨/);
     assert.match(r.result, /👩‍💻/, "ZWJ (multi-codepoint) sequence preserved");
   });
+
+  test("nuxt-data: __NUXT_DATA__ is harvested into appState [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/nuxt-data`, ...RAW });
+    assert.equal(r.tier, 1, "resolves at Tier-1 (SSR content + Nuxt state)");
+    assert.match(r.result, /Best Coffee Brew/);
+    const app = JSON.stringify(r.structured?.appState ?? {});
+    assert.match(app, /"__NUXT_DATA__"/, "__NUXT_DATA__ harvested (the #67 broadened app-state harvest)");
+  });
+
+  test("img-alt-informational: informational <img alt> text is lost [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/img-alt-informational`, ...RAW });
+    assert.match(r.result, /System Architecture/);
+    assert.match(r.result, /data flow between services/);
+    // The <img alt="…"> carries a meaningful description, but it's an attribute — the
+    // tag stripper drops it. Flip when informational alt text is surfaced.
+    assert.doesNotMatch(r.result, /API gateway routes requests/, "informational img alt lost (known gap)");
+  });
+
+  test("rdfa-structured: RDFa (property/vocab) is not harvested into structured [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/rdfa-structured`, ...RAW });
+    assert.match(r.result, /RDFa Marked Meetup/);
+    assert.match(r.result, /Berlin/);
+    // captatum parses JSON-LD/OG/meta/app-state but NOT RDFa, so the structured Event
+    // fields are absent. Flip when RDFa is harvested.
+    assert.ok(!r.structured?.jsonLd, "RDFa not converted to structured JSON-LD (known gap)");
+  });
+
+  test("base-href-relative: relative URLs resolve against the fetch URL, not <base> [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/base-href-relative`, ...RAW });
+    assert.match(r.result, /Page With Base Href/);
+    // captatum resolves the relative canonical against the fetch URL; the <base href>
+    // is not honored. Flip when <base> is consulted for relative-URL resolution.
+    assert.ok(r.structured?.canonicalUrl?.includes("127.0.0.1"), "canonical resolved against the fetch URL, not <base> (known gap)");
+    assert.doesNotMatch(r.structured?.canonicalUrl ?? "", /base-origin\.example\.com/);
+  });
 });
