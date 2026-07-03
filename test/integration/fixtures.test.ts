@@ -65,7 +65,9 @@ const server = await startFixtureServer();
 const captatum = createCaptatumUseCase({
   fetcher: stubFetcher,
   extractHtml,
-  renderer: new PlaywrightRenderer(),
+  // chromiumSandbox off: CI Linux runners can't run Chromium's setuid sandbox, and
+  // tests don't need the prod sandbox (the threat model is about the deployed runtime).
+  renderer: new PlaywrightRenderer({ chromiumSandbox: false }),
   clock: { nowMs: () => Date.now() },
 });
 
