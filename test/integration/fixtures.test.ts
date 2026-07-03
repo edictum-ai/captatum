@@ -468,4 +468,37 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.equal(r.tier, "render-blocked");
     assert.match(r.result, /Loading\.\.\./);
   });
+
+  test("apollo-state-skeleton: __APOLLO_STATE__ is harvested into appState [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/apollo-state-skeleton`, ...RAW });
+    assert.match(r.result, /Apollo-Powered Product/);
+    const app = JSON.stringify(r.structured?.appState ?? {});
+    assert.match(app, /"__APOLLO_STATE__"/, "__APOLLO_STATE__ harvested (the #67 broadened app-state harvest)");
+    assert.match(app, /Apollo Widget/);
+  });
+
+  test("js-location-redirect: a JS location redirect is not followed at Tier-1 [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/js-location-redirect`, ...RAW });
+    assert.match(r.result, /Redirecting/, "interstitial placeholder captured");
+    // Tier-1 doesn't run JS, so the location.href redirect is not followed.
+    assert.doesNotMatch(r.result, /Static Content Page/, "JS location redirect not followed at Tier-1 (known gap)");
+  });
+
+  test("og-image-array: multiple og:image tags collapse to one [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/og-image-array`, ...RAW });
+    assert.match(r.result, /Gallery Article/);
+    // The OG map assigns og:image directly, so only ONE survives (last wins here);
+    // the other gallery images are dropped. Flip when og:image arrays are preserved.
+    assert.equal(r.structured?.og?.["og:image"], "https://example.com/img/gallery-3.jpg");
+    const og = JSON.stringify(r.structured?.og ?? {});
+    assert.doesNotMatch(og, /hero\.jpg|secondary\.jpg/, "other og:images collapsed away (known gap)");
+  });
+
+  test("nested-comment-threads: content inside HTML comments is stripped [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/nested-comment-threads`, ...RAW });
+    assert.match(r.result, /Root comment text/);
+    assert.match(r.result, /Visible trailing comment/);
+    // A reply thread wrapped in <!-- … --> is stripped (a browser hides it too).
+    assert.doesNotMatch(r.result, /hidden reply|inside an HTML comment/, "comment-wrapped content stripped");
+  });
 });
