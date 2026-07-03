@@ -13,6 +13,16 @@ import { extractAppState } from "../src/infrastructure/extract/app-state.ts";
 
 const FIXTURE_DIR = join(process.cwd(), "test", "fixtures", "extract");
 
+test("findElements skips a literal <script> inside an earlier script body (PR #86 review)", () => {
+  // A literal `<script>` inside the first JSON-LD block must not cross-pair with the
+  // second block's close and swallow it — both JSON-LD nodes must be extracted.
+  const html =
+    `<script type="application/ld+json">{"one":"contains a <script> literal"}</script>` +
+    `<script type="application/ld+json">{"two":"second block survives"}</script>`;
+  const structured = JSON.stringify(extractHtml({ html, url: "https://example.test/" }).structured);
+  assert.ok(structured.includes("second block survives"), "the second JSON-LD block is not swallowed");
+});
+
 test("extracts title, canonical URL, and JSON-LD from json-ld.html", () => {
   const extraction = extractHtml({
     html: fixture("json-ld.html"),

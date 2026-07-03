@@ -43,16 +43,15 @@ export function findStartTags(html: string, tagName: string, limit = Number.POSI
 }
 
 export function findElements(html: string, tagName: string): HtmlElement[] {
-  // REDOS-5: linear. One advancing cursor finds each close via the boundary-checked
-  // findCloseTag (`</script` ≠ `</scripture>`, matching stripElement); the old per-tag
-  // indexOf rescanned to EOS (quadratic on `<script>` × 125k). Once it returns -1, no
-  // later opener has a close either — record this one's run-to-EOS content and stop.
+  // REDOS-5: linear — one advancing cursor finds each close via boundary-checked
+  // findCloseTag; on the first missing close, no later opener has one either, so stop.
   const lower = html.toLowerCase();
   const wanted = tagName.toLowerCase();
   const close = `</${wanted}`;
   const elements: HtmlElement[] = [];
   let cursor = 0;
   for (const tag of findStartTags(html, wanted)) {
+    if (tag.start < cursor) continue; // a tag inside an already-consumed element swallows a sibling (PR #86)
     if (tag.end > cursor) cursor = tag.end;
     const closeStart = findCloseTag(lower, close, cursor);
     if (closeStart === -1) {

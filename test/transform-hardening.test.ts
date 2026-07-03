@@ -58,4 +58,9 @@ test("postJson refuses an authorization header over cleartext http:// to a non-l
     postJson("http://remote.example/api/", { authorization: "Bearer secret" }, { q: 1 }, 1_000),
     /cleartext http|authorization/i,
   );
+  // PR #86 review: a 127.-prefixed DNS name is NOT loopback, so the key must still be refused.
+  await assert.rejects(
+    postJson("http://127.attacker.example/api/", { authorization: "Bearer secret" }, { q: 1 }, 1_000),
+    /cleartext http|authorization/i,
+  );
 });

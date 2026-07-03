@@ -46,6 +46,7 @@ function collectSvgTextElements(svgInner: string): string {
   // and stop.
   let cursor = 0;
   for (const tag of findStartTags(painted, "text")) {
+    if (tag.start < cursor) continue; // inside an already-consumed <text> element (PR #86)
     // A self-closing `<text/>` carries no content; skip it so its indexOf("</text")
     // doesn't latch onto a sibling's close tag and duplicate the sibling's label.
     if (tag.raw.endsWith("/>")) continue;

@@ -23,6 +23,10 @@ test("Ollama candidate is NOT local for a remote base URL", () => {
   assert.equal(localFlag("https://10.0.0.5:11434"), false, "LAN is not loopback");
   assert.equal(localFlag("http://0.0.0.0:11434"), false, "0.0.0.0 binds all interfaces, not loopback");
   assert.equal(localFlag("https://192.168.1.10:11434"), false);
+  // PR #86 review: a DNS name is not an IP literal, so a 127.-prefixed / localhost-prefixed
+  // hostname must NOT be treated as loopback (else a remote model is marked local).
+  assert.equal(localFlag("https://127.attacker.example:11434"), false, "127.<name> is a DNS name, not loopback");
+  assert.equal(localFlag("https://localhost.attacker.example"), false, "localhost.<name> is a DNS name, not loopback");
 });
 
 test("Ollama candidate is absent when baseUrl is empty", () => {
@@ -40,6 +44,9 @@ test("config accepts IPv6/127.x loopback OLLAMA_BASE_URL over plain http, reject
     }
     process.env.OLLAMA_BASE_URL = "http://remote.example:11434";
     assert.throws(() => config.transform.ollamaBaseUrl(), /OLLAMA_BASE_URL must be https/);
+    // PR #86 review: a 127.-prefixed DNS name over plain http must be rejected, not accepted as loopback.
+    process.env.OLLAMA_BASE_URL = "http://127.attacker.example:11434";
+    assert.throws(() => config.transform.ollamaBaseUrl(), /OLLAMA_BASE_URL must be https/, "127.<name> is not loopback");
   } finally {
     if (saved === undefined) delete process.env.OLLAMA_BASE_URL;
     else process.env.OLLAMA_BASE_URL = saved;

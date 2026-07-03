@@ -1,22 +1,21 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { isLoopbackHost } from "../../domain/policy.ts";
 
 /** Cap on a buffered LLM provider response — a summary/extract JSON is KB at
  *  most; 10 MiB is a generous abuse ceiling that prevents unbounded buffering
  *  from a misbehaving/hostile provider endpoint. */
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
-/** Whether a URL points at loopback (localhost / 127.0.0.0/8 / ::1). Used to tell a
- *  genuinely-local provider (zero-egress Ollama) from a remote one, and to permit
- *  plain http:// only to loopback. Strict loopback only — NOT isPrivate(), which
- *  wrongly classifies 0.0.0.0 and LAN ranges (10.x/192.168.x) that are
- *  network-reachable as "local". */
+/** Whether a URL points at loopback (localhost / 127.0.0.0/8 / ::1). Tells a
+ *  genuinely-local provider (zero-egress Ollama) from a remote one, and permits plain
+ *  http:// only to loopback. Delegates to isLoopbackHost, which requires an IP LITERAL:
+ *  a DNS name like "127.attacker.example" is NOT loopback (PR #86 review — otherwise it
+ *  could smuggle a cleartext-http bearer token or mark a remote model "local"). */
 export function isLoopbackUrl(value: string): boolean {
   if (!value) return false;
   try {
-    // URL.hostname returns IPv6 bracketed ("[::1]"), so strip the brackets.
-    const host = new URL(value).hostname.toLowerCase().replace(/^\[|]$/g, "");
-    return host === "localhost" || host === "::1" || /^127\./.test(host);
+    return isLoopbackHost(new URL(value).hostname);
   } catch {
     return false;
   }

@@ -31,6 +31,7 @@ export function collectHiddenDisplayNoneClasses(html: string): Set<string> {
   // first missing close means no later block has one either — break.
   let cursor = 0;
   for (const tag of findStartTags(live, "style")) {
+    if (tag.start < cursor) continue; // inside an already-consumed <style> block (PR #86)
     if (!styleAppliesToScreen(tag.attrs.media, tag.attrs.type)) continue;
     if (tag.end > cursor) cursor = tag.end;
     const closeStart = findStyleClose(lower, cursor);

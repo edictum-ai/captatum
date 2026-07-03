@@ -1,3 +1,5 @@
+import { isLoopbackHost } from "./domain/policy.ts";
+
 export const config = {
   source: {
     maxFileLines: 250,
@@ -58,10 +60,7 @@ export const config = {
       if (url) {
         try {
           const parsed = new URL(url);
-          // URL.hostname keeps IPv6 brackets ("[::1]"), so strip them before comparing.
-          const host = parsed.hostname.toLowerCase().replace(/^\[|]$/g, "");
-          const loopback = host === "localhost" || host === "::1" || /^127\./.test(host);
-          if (parsed.protocol !== "https:" && !loopback) {
+          if (parsed.protocol !== "https:" && !isLoopbackHost(parsed.hostname)) {
             throw new Error(`OLLAMA_BASE_URL must be https (or loopback): ${url}`);
           }
         } catch (e) {
