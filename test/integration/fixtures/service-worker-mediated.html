@@ -1,0 +1,20 @@
+<!DOCTYPE html><html><head><title>SW-Mediated App</title></head>
+<body>
+<div id="app"></div>
+<script>
+  // Empty app-root (static) → shell-gate escalates to a real render.
+  document.getElementById('app').textContent = 'Waiting for service worker...';
+  // The real content lives behind a service worker: register, WAIT for an active
+  // worker to control the page (ready), THEN fetch the SW-served endpoint. The
+  // renderer blocks service workers → register rejects → the fetch never runs and
+  // the secret stays unreachable. (Waiting on `ready` — not just `register` — means
+  // this FLIPS if SW blocking is ever removed: the SW activates, intercepts, serves.)
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.register('/sw.js')
+      .then(() => navigator.serviceWorker.ready)
+      .then(() => fetch('/api/sw-content').then(r => r.text()))
+      .then((t) => { if (t) document.getElementById('app').textContent = t; })
+      .catch(() => { /* SW blocked — app stays "Waiting for service worker..." */ });
+  }
+</script>
+</body></html>

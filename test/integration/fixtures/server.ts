@@ -46,6 +46,29 @@ export async function startFixtureServer(): Promise<FixtureServer> {
         return;
       }
 
+      // Service worker + the content it would serve, for the SW-mediated fixture.
+      // The renderer blocks service workers, so the page's register() rejects and the
+      // fetch never runs — the "secret" below is ONLY reachable via a live SW.
+      if (path === "/sw.js") {
+        res.writeHead(200, { "Content-Type": "text/javascript" });
+        res.end(
+          "self.addEventListener('install', (e) => self.skipWaiting());\n" +
+            "self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));\n" +
+            "self.addEventListener('fetch', (e) => {\n" +
+            "  if (new URL(e.request.url).pathname === '/api/sw-content') {\n" +
+            "    e.respondWith(new Response('SW-served secret content'));\n" +
+            "  }\n" +
+            "});\n",
+        );
+        return;
+      }
+      if (path === "/api/sw-content") {
+        // Direct (non-SW) fetch returns nothing — only the SW serves the real body.
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
       // Serve fixture HTML: /spa-late-load → spa-late-load.html
       const name = path.replace(/^\//, "");
       if (!name || name.includes("..")) {

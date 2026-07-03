@@ -328,4 +328,13 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.equal(access.challengeProvider, undefined);
     assert.match(r.result, /Just a moment/, "challenge text returned as content");
   });
+
+  test("service-worker-mediated-content: SW-blocked content unreachable [GAP]", { skip: skipReason, timeout: 60_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/service-worker-mediated`, ...RAW, ...RENDER });
+    assert.equal(r.tier, 3, "empty app-root shell escalates to a real render");
+    // The renderer blocks service workers, so register() rejects and the fetch the
+    // SW would serve never runs — the page stays on its "Waiting" placeholder.
+    assert.match(r.result, /Waiting for service worker/);
+    assert.doesNotMatch(r.result, /SW-served secret content/, "SW-mediated content unreachable (SW blocked — known gap)");
+  });
 });
