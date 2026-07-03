@@ -102,7 +102,7 @@ Captatum keeps the **calling agent's** context small: it digests a page into a s
 
 - **Summary via OpenRouter (default with a key; cheapest).** Set `OPENROUTER_API_KEY` → the default `output` becomes `summary`, routed through DeepSeek V4 Flash (~\$0.0002/call). A 50 KB page becomes a few-hundred-token summary. Best price/quality.
 - **Summary via Ollama (no key, no cloud egress).** Run [Ollama](https://ollama.com) and set `OLLAMA_BASE_URL=http://localhost:11434` (`OLLAMA_MODEL` picks the model). Same token-light summary, fully local.
-- **`output: raw` for *structured* pages (no LLM, free).** For pages with JSON-LD/structured data — a job posting, product, or recipe — `raw` returns the **lean extracted fields** (title, location, salary, ingredients…), not the full HTML, with no model call. Small and free. Reserve `summary` for long-form *text* (articles, docs) where the raw body is large.
+- **`output: raw` for *structured* pages (no LLM, free).** For pages with JSON-LD/structured data — a job posting, product, or recipe — `raw` returns the **lead description + clean visible body text** (HTML/script/style stripped, no model call), not the full raw HTML. Small and free. Reserve `summary` for long-form *text* (articles, docs) where the raw body is large. For *specific fields only* (e.g. a job's salary, a recipe's ingredients), use `output: "extract"` with a `schema` — `raw` does not serialize arbitrary JSON-LD fields into the text.
 
 > **Rule of thumb:** long text → `summary` (cheap digest); structured page → `raw`/`extract` (lean fields, no LLM). `output: "extract"` with a `schema` is the most token-tight — only the fields you ask for come back.
 

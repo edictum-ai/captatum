@@ -36,6 +36,16 @@ test("defaults: native loopback accepted on ANY port (RFC 8252 §7.3)", () => {
   }
 });
 
+test("an explicit-port loopback entry is NOT widened to any port", () => {
+  // [::1] is not a default origin, so this isolates the entry's behavior. new URL
+  // drops default ports (http://[::1]:80 → port ""), so the RAW entry is checked for
+  // an explicit port before applying any-port loopback matching.
+  assert.equal(allow("http://[::1]:9999/cb", ["http://[::1]:80"]).ok, false);
+  // …but a portless loopback entry still widens (regression guard; localhost is a default):
+  assert.equal(allow("http://localhost:9999/cb", ["http://localhost"]).ok, true);
+  assert.equal(allow("http://[::1]:9999/cb", ["http://[::1]"]).ok, true);
+});
+
 test("env allowlist ADDS origins; it cannot remove a default", () => {
   assert.equal(allow("https://my-app.com/oauth/callback", ["https://my-app.com"]).ok, true);
   // defaults remain in effect alongside a custom list

@@ -105,7 +105,11 @@ async function runFetch(argv: readonly string[]): Promise<void> {
   // CLI only: --debug shows diagnostics even for raw output (no structuredContent channel here).
   if (a.debug && result.output === "raw") text += `\n\n${debugTextBlock(result)}`;
   // Flush stdout before exiting (large piped output can truncate on immediate exit).
-  process.stdout.write(`${text}\n`, () => process.exit(result.tier === "error" ? 1 : 0));
+  // Exit nonzero for failure/no-content results (error, render-blocked, render-unavailable,
+  // or an empty body) so shell automation doesn't see a silent success on an empty fetch.
+  const failed = result.tier === "error" || result.tier === "render-blocked" || result.tier === "render-unavailable";
+  const noContent = typeof result.result !== "string" || result.result.trim() === "";
+  process.stdout.write(`${text}\n`, () => process.exit(failed || noContent ? 1 : 0));
 }
 
 function parseTarget(argv: readonly string[]): SkillTarget {

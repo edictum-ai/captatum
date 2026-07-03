@@ -5,7 +5,7 @@ import {
   resolveClientProfile,
   DEFAULT_CLIENT_PROFILE,
 } from "../src/application/client-profile.ts";
-import { resultToMcpText } from "../src/interfaces/mcp/format.ts";
+import { resultToMcpText, debugTextBlock } from "../src/interfaces/mcp/format.ts";
 import type { Result } from "../src/domain/result.ts";
 
 // ---------- profile resolver + config parsing ----------
@@ -53,6 +53,19 @@ test("resultToMcpText with textDebug appends a diagnostics block for non-raw out
   assert.match(text, /transform: openrouter x-model.*in=100.*out=20/);
   // without textDebug, no debug block
   assert.doesNotMatch(resultToMcpText(summaryResult(), false), /--- debug ---/);
+});
+
+test("debugTextBlock caps attempts so many blocked sub-resources can't flood the text", () => {
+  const attempts = Array.from({ length: 60 }, (_, n) => ({
+    step: n + 1, tier: 3 as const, outcome: "blocked" as const, durationMs: 1, bytes: 0, reason: "ad-tracker",
+  }));
+  attempts[59] = { step: 60, tier: 3, outcome: "rejected", durationMs: 5, bytes: 0, reason: "render-timeout" };
+  const block = debugTextBlock(summaryResult({ attempts }));
+  const lines = block.split("\n").filter((l) => l.startsWith("attempt "));
+  assert.equal(lines.length, 50, "only 50 attempt lines emitted (49 head + 1 terminal)");
+  assert.match(block, /\(\+10 more attempts not shown\)/);
+  // The terminal (failure) attempt is preserved even though it's past the cap.
+  assert.match(lines[49], /attempt 60: tier 3 rejected.*render-timeout/);
 });
 
 test("debug-in-text never applies to raw output (the caller asked for clean content)", () => {
