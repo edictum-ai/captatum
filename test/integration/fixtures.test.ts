@@ -442,4 +442,30 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.ok(r.structured?.canonicalUrl?.includes("127.0.0.1"), "canonical resolved against the fetch URL, not <base> (known gap)");
     assert.doesNotMatch(r.structured?.canonicalUrl ?? "", /base-origin\.example\.com/);
   });
+
+  test("object-embed-document: Tier-1 does not follow an <object data> [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/object-embed-document`, ...RAW });
+    assert.match(r.result, /Page With Object Embed/);
+    // Like an iframe, an <object data="…"> embed is a tag Tier-1 doesn't fetch.
+    assert.doesNotMatch(r.result, /Static Content Page/, "<object data> not followed at Tier-1 (known gap)");
+  });
+
+  test("large-data-table: table cell text is preserved (structure flattened) [behavior]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/large-data-table`, ...RAW });
+    assert.match(r.result, /Q3 Department Results/);
+    // Cell text is preserved though the 2D row/column structure is flattened to a line.
+    assert.match(r.result, /Engineering/);
+    assert.match(r.result, /\$1\.2M/);
+    assert.match(r.result, /Sales/);
+    assert.match(r.result, /\$2\.1M/);
+  });
+
+  test("terse-error-shell: a terse 'Loading…' placeholder escalates to render, not content [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/terse-error-shell`, ...RAW });
+    // A one-word placeholder doesn't pass the shell-gate's content threshold, so the
+    // page is flagged for render (render-blocked without allowRender) — it is NOT
+    // mistaken for real content (contrast skeleton-screen, whose bulkier filler passes).
+    assert.equal(r.tier, "render-blocked");
+    assert.match(r.result, /Loading\.\.\./);
+  });
 });
