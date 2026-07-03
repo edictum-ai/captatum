@@ -255,6 +255,65 @@ test("renderer truncates rendered HTML at the byte cap (advisory, not fatal)", a
   assert.equal(harness.browserClosed, true);
 });
 
+test("render byte budget aborts non-essential types but never essential scripts/fetches (cerebralvalley clerk.js)", async () => {
+  // Aborting a script/fetch mid-load crashes the client app (Next.js shows
+  // "Application error: a client-side exception has occurred"). Essential render
+  // types (script/fetch/xhr/document) are exempt from the cumulative budget; each
+  // is still per-response maxBytes-capped by the fetcher.
+  const fetcher = new FakeFetcher({
+    "https://public.test/a.css": fetchResult("x".repeat(80), "https://public.test/a.css"),
+    "https://public.test/b.css": fetchResult("y".repeat(50), "https://public.test/b.css"),
+    "https://public.test/app.js": fetchResult("z".repeat(60), "https://public.test/app.js"),
+    "https://public.test/flags": fetchResult("{}{}{}{}{}", "https://public.test/flags"),
+  });
+  const harness = new BrowserHarness({
+    requests: [
+      request("https://public.test/", "document", true), // nav 11 bytes → total 11
+      request("https://public.test/a.css", "stylesheet"), // 80 → total 91 (fulfilled)
+      request("https://public.test/b.css", "stylesheet"), // 50 → 141 > 100 → aborted (non-essential), budget exceeded
+      request("https://public.test/app.js", "script"), // essential → fulfilled despite budget
+      request("https://public.test/flags", "fetch"), // essential → fulfilled despite budget
+    ],
+  });
+  const result = await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(fetcher, { maxBytes: 100 }));
+
+  assert.equal(result.rendered, true);
+  assert.equal(harness.routes[0]?.fulfilled, true, "nav fulfilled");
+  assert.equal(harness.routes[1]?.fulfilled, true, "stylesheet under budget fulfilled");
+  assert.equal(harness.routes[2]?.aborted, true, "stylesheet over budget aborted (non-essential)");
+  assert.equal(harness.routes[3]?.fulfilled, true, "script fulfilled over budget (essential — aborting crashes the app)");
+  assert.equal(harness.routes[4]?.fulfilled, true, "fetch fulfilled over budget (essential)");
+});
+
+test("render byte budget caps the ESSENTIAL pool too (DoS bound): crossing script fulfilled, later scripts aborted", async () => {
+  // Essentials get their own maxBytes pool so a real app's scripts load, but the pool
+  // is still bounded — the script that crosses the cap is fulfilled (aborting it
+  // mid-load crashes the app), and every essential AFTER that is aborted. This keeps
+  // a flooding SPA from consuming unbounded bytes via script/fetch.
+  const fetcher = new FakeFetcher({
+    "https://public.test/s1.js": fetchResult("a".repeat(60), "https://public.test/s1.js"),
+    "https://public.test/s2.js": fetchResult("b".repeat(60), "https://public.test/s2.js"),
+    "https://public.test/s3.js": fetchResult("c".repeat(60), "https://public.test/s3.js"),
+    "https://public.test/s4.js": fetchResult("d".repeat(60), "https://public.test/s4.js"),
+  });
+  const harness = new BrowserHarness({
+    requests: [
+      request("https://public.test/s1.js", "script"), // 60 → pool 60 (< 100) fulfilled
+      request("https://public.test/s2.js", "script"), // 60 → 120 > 100, crossing essential → fulfilled, pool exceeded
+      request("https://public.test/s3.js", "script"), // essential pool exceeded → aborted
+      request("https://public.test/s4.js", "script"), // aborted
+    ],
+  });
+  await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(fetcher, { maxBytes: 100 }));
+
+  assert.equal(harness.routes[0]?.fulfilled, true, "s1 under the essential pool fulfilled");
+  assert.equal(harness.routes[1]?.fulfilled, true, "s2 crossing the cap fulfilled (essential — aborting crashes the app)");
+  assert.equal(harness.routes[2]?.aborted, true, "s3 after the essential pool is blown aborted (DoS bound)");
+  assert.equal(harness.routes[3]?.aborted, true, "s4 aborted");
+});
+
 test("renderer concatenates captured iframe content into the rendered HTML", async () => {
   const harness = new BrowserHarness({
     content: "<html><head><title>Host Page</title></head><body>host body text</body></html>",

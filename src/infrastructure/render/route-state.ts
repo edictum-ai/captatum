@@ -7,6 +7,21 @@ import { FetcherRouteFulfiller, type RouteFulfiller } from "./route-fulfill.ts";
 
 const BLOCKED_TYPES = new Set(["image", "font", "media"]);
 
+/** Render resource types the page's CLIENT APP needs to load, or it throws a
+ *  client-side exception (Next.js "Application error: a client-side exception has
+ *  occurred"): scripts, data fetches/XHR, and documents. These are EXEMPT from the
+ *  cumulative render byte budget — aborting one mid-load (e.g. an auth script like
+ *  Clerk, or a /api/flags fetch the app awaits) crashes the app and yields an
+ *  error-boundary page instead of content. They remain per-response `maxBytes`-capped
+ *  by the fetcher; image/font/media stay always-blocked; the render is `timeoutMs`-
+ *  bounded — so the realistic DoS vectors (huge media, huge single responses, run
+ *  time) stay bounded. (cerebralvalley.ai event pages: clerk.browser.js.) */
+const ESSENTIAL_RENDER_TYPES = new Set(["script", "fetch", "xhr", "document"]);
+
+function isEssentialRenderType(resourceType: string): boolean {
+  return ESSENTIAL_RENDER_TYPES.has(resourceType);
+}
+
 /**
  * Per-request route state for the Tier-3 render. The browser NEVER makes its own
  * egress: every non-aborted GET is resolved through the guarded FetcherPort and
@@ -29,8 +44,14 @@ export class RenderRouteState {
   redirects: FetcherResult["redirects"] = [];
   fatal?: RejectResult;
   private mainFrame?: PlaywrightFrame;
+  // Two cumulative byte pools, each capped at maxBytes: non-essential (stylesheets,
+  // etc.) and essential (script/fetch/xhr/document). Splitting them means a page
+  // whose non-essential budget is blown still gets its essential scripts/data (so the
+  // client app doesn't crash), while total egress stays bounded at ~2×maxBytes.
   private bytesFulfilled = 0;
+  private essentialBytes = 0;
   private budgetExceeded = false;
+  private essentialBudgetExceeded = false;
 
   constructor(input: RenderInput, actions: RenderAction[], guard: BrowserUrlGuard) {
     this.input = input;
@@ -78,7 +99,10 @@ export class RenderRouteState {
     if (!mainFrameNav && request.method() !== "GET") {
       return this.abort(route, url, resourceType, "unsupported_browser_method");
     }
-    if (this.budgetExceeded) {
+    // Once a pool is blown, subsequent resources in THAT pool are aborted before any
+    // network. Essentials and non-essentials have separate pools, so a blown
+    // non-essential budget still lets essential scripts/data through.
+    if (isEssentialRenderType(resourceType) ? this.essentialBudgetExceeded : this.budgetExceeded) {
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
     const outcome = await this.fulfiller.resolve(url, resourceType);
@@ -104,13 +128,31 @@ export class RenderRouteState {
       // fulfilled redirect for a navigation. Render-fidelity limit for
       // cross-origin redirects only — every hop was guard-validated, not an SSRF gap.
     }
-    // TIER3-DOS-1: abort this response if it would push cumulative bytes over the
-    // render budget. The response that crosses the cap is NOT fulfilled.
-    if (this.bytesFulfilled + outcome.body.byteLength > this.input.maxBytes) {
-      this.budgetExceeded = true;
+    // TIER3-DOS-1: each pool (essential vs non-essential) is capped at maxBytes.
+    // The response that crosses its pool's cap: NON-essential is aborted; ESSENTIAL
+    // is still fulfilled (aborting a script/fetch mid-load crashes the client app —
+    // e.g. Clerk on cerebralvalley.ai), but the pool is marked exceeded so subsequent
+    // resources in it are aborted. Total egress is thus bounded at ~2×maxBytes.
+    const essential = isEssentialRenderType(resourceType);
+    // Re-check AFTER resolve: the early check ran before this `await`, so a CONCURRENT
+    // essential may have blown the pool while this request was in flight. The first
+    // essential to cross the cap is fulfilled; every essential that finds the pool
+    // already blown is aborted. (The check + counter update below are synchronous, so
+    // two handlers can't both pass the crossing check — one sets the flag first.)
+    if (essential ? this.essentialBudgetExceeded : this.budgetExceeded) {
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
-    this.bytesFulfilled += outcome.body.byteLength;
+    const poolBytes = essential ? this.essentialBytes : this.bytesFulfilled;
+    if (poolBytes + outcome.body.byteLength > this.input.maxBytes) {
+      if (essential) {
+        this.essentialBudgetExceeded = true; // crossing essential: fulfill (fall through)
+      } else {
+        this.budgetExceeded = true;
+        return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
+      }
+    }
+    if (essential) this.essentialBytes += outcome.body.byteLength;
+    else this.bytesFulfilled += outcome.body.byteLength;
     await route.fulfill({
       status: outcome.status,
       body: outcome.body,
