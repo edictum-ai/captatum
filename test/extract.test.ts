@@ -6,6 +6,7 @@ import type { FetcherResult } from "../src/application/ports/fetcher.ts";
 import { extractTier1FromFetchResult, preferredTitle } from "../src/application/use-cases/tier1-extract.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { extractVisibleText, stripHtmlComments, stripHtmlTags } from "../src/infrastructure/extract/html.ts";
+import { decodeHtmlEntities } from "../src/infrastructure/extract/entities.ts";
 import { stripHiddenSubtrees } from "../src/infrastructure/extract/hidden.ts";
 import { collectHiddenDisplayNoneClasses } from "../src/infrastructure/extract/hidden-classes.ts";
 import { extractAppState } from "../src/infrastructure/extract/app-state.ts";
@@ -1328,4 +1329,18 @@ test("SVG <text> inside <defs>/<symbol> (non-rendering) is not inlined", () => {
 test("a self-closing root <svg hidden/> does not suppress following siblings", () => {
   const html = `<body><svg hidden/><p>VISIBLE</p></body>`;
   assert.match(extractVisibleText(html), /VISIBLE/);
+});
+
+test("decodeHtmlEntities decodes the common named entities (not just the XML 5)", () => {
+  assert.equal(decodeHtmlEntities("&copy; &mdash; &eacute; &hellip; &laquo; &raquo; &euro; &ldquo; &rdquo;"), "© — é … « » € “ ”");
+  assert.equal(decodeHtmlEntities("r&eacute;sum&eacute; caf&eacute; na&iuml;ve"), "résumé café naïve");
+  // numeric refs still decode every code point; unknown names pass through.
+  assert.equal(decodeHtmlEntities("&#65; &#x263a; &notreal;"), "A ☺ &notreal;");
+});
+
+test("decodeHtmlEntities honors case-sensitive named entities (&Eacute; ≠ &eacute;)", () => {
+  assert.equal(decodeHtmlEntities("&eacute; &Eacute;"), "é É");
+  assert.equal(decodeHtmlEntities("&dagger; &Dagger;"), "† ‡");
+  // a fully-uppercased lowercase entity still decodes leniently (&AMP; → &).
+  assert.equal(decodeHtmlEntities("&AMP;"), "&");
 });
