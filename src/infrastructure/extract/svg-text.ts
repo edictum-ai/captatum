@@ -39,6 +39,12 @@ function collectSvgTextElements(svgInner: string): string {
   const painted = stripElement(stripElement(svgInner, "defs"), "symbol");
   const lower = painted.toLowerCase();
   let out = "";
+  // REDOS-5: linear. A single advancing cursor finds each `</text>` once; the old
+  // per-tag `indexOf("</text", tag.end)` rescanned to EOS for every opener —
+  // quadratic on an svg whose body is a `<text>` flood. Once a close is missing it
+  // is missing for every later `<text>` too, so emit this one's run-to-EOS content
+  // and stop.
+  let cursor = 0;
   for (const tag of findStartTags(painted, "text")) {
     // A self-closing `<text/>` carries no content; skip it so its indexOf("</text")
     // doesn't latch onto a sibling's close tag and duplicate the sibling's label.
@@ -46,11 +52,17 @@ function collectSvgTextElements(svgInner: string): string {
     const display = (tag.attrs.display ?? "").toLowerCase();
     const visibility = (tag.attrs.visibility ?? "").toLowerCase();
     if (display === "none" || visibility === "hidden") continue;
-    const closeStart = lower.indexOf("</text", tag.end);
-    const raw = closeStart === -1 ? painted.slice(tag.end) : painted.slice(tag.end, closeStart);
+    if (tag.end > cursor) cursor = tag.end;
+    const closeStart = lower.indexOf("</text", cursor);
+    if (closeStart === -1) {
+      const cleaned = stripHtmlTags(painted.slice(tag.end)).trim();
+      if (cleaned) out += ` ${cleaned}`;
+      return out.trim();
+    }
     // `<tspan>` and similar nested tags inside `<text>` are stripped to bare text.
-    const cleaned = stripHtmlTags(raw).trim();
+    const cleaned = stripHtmlTags(painted.slice(tag.end, closeStart)).trim();
     if (cleaned) out += ` ${cleaned}`;
+    cursor = closeStart + 1;
   }
   return out.trim();
 }

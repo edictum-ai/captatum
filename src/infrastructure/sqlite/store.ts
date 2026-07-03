@@ -1,6 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { AuthCodeRecord, RefreshTokenRecord, SaveAuthCodeInput, SaveRefreshTokenInput, StorePort } from "../../application/ports/store.ts";
-import { StoreInputError, assertSha256Hex, assertUtcIsoTimestamp } from "../../application/ports/store.ts";
+import { type AuthCodeRecord, type RefreshTokenRecord, type SaveAuthCodeInput, type SaveRefreshTokenInput, type StorePort, StoreInputError, assertSha256Hex, assertUtcIsoTimestamp } from "../../application/ports/store.ts";
 import { migrateSqliteStore } from "./schema.ts";
 
 interface AuthCodeRow { code_hash: string; client_id: string; subject: string; redirect_uri: string; resource: string; scopes_json: string; code_challenge: string; code_challenge_method: "S256"; expires_at: string; }
@@ -49,6 +48,7 @@ export class SqliteStore implements StorePort {
 
   async consumeConsentJti(jti: string, expiresAtIso: string): Promise<boolean> {
     this.ensureOpen();
+    assertUtcIsoTimestamp(expiresAtIso, "expiresAtIso");
     // OAUTH-2: INSERT ... ON CONFLICT DO NOTHING — a row is inserted only on the
     // first use; a replay hits the existing PK and inserts 0 rows.
     const result = this.db.prepare(
@@ -120,8 +120,12 @@ export class SqliteStore implements StorePort {
     this.transaction(() => {
       this.db.prepare(`DELETE FROM oauth_auth_codes WHERE expires_at < ?`).run(nowIso);
       this.db.prepare(`DELETE FROM oauth_consent_jtis WHERE expires_at < ?`).run(nowIso);
-      this.db.prepare(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND consumed_at IS NULL`).run(nowIso);
-      this.db.prepare(`DELETE FROM oauth_refresh_token_families WHERE revoked_at IS NOT NULL AND family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`).run();
+      // Retain a consumed token until its whole FAMILY is past validity: a successor
+      // (expires_at = rotation + TTL) outlives the consumed predecessor, so sweeping at
+      // the predecessor's own expiry would drop the replay signal while it is still live.
+      this.db.prepare(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t2 WHERE t2.family_id = oauth_refresh_tokens.family_id AND t2.expires_at >= ?)`).run(nowIso, nowIso);
+      // Clean every orphaned family (not only revoked) once it has no tokens left.
+      this.db.prepare(`DELETE FROM oauth_refresh_token_families WHERE family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`).run();
     });
   }
 

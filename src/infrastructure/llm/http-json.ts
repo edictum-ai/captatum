@@ -6,10 +6,34 @@ import { request as httpsRequest } from "node:https";
  *  from a misbehaving/hostile provider endpoint. */
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
+/** Whether a URL points at loopback (localhost / 127.0.0.0/8 / ::1). Used to tell a
+ *  genuinely-local provider (zero-egress Ollama) from a remote one, and to permit
+ *  plain http:// only to loopback. Strict loopback only — NOT isPrivate(), which
+ *  wrongly classifies 0.0.0.0 and LAN ranges (10.x/192.168.x) that are
+ *  network-reachable as "local". */
+export function isLoopbackUrl(value: string): boolean {
+  if (!value) return false;
+  try {
+    // URL.hostname returns IPv6 bracketed ("[::1]"), so strip the brackets.
+    const host = new URL(value).hostname.toLowerCase().replace(/^\[|]$/g, "");
+    return host === "localhost" || host === "::1" || /^127\./.test(host);
+  } catch {
+    return false;
+  }
+}
+
 export async function postJson<T>(url: string, headers: Record<string, string>, body: unknown, timeoutMs: number): Promise<T> {
   const payload = JSON.stringify(body);
   return await new Promise<T>((resolve, reject) => {
     const parsed = new URL(url);
+    // #5: refuse to send an authorization header over cleartext http:// to a
+    // non-loopback host — a misconfigured OPENROUTER_BASE_URL would egress the key in
+    // plaintext. OpenRouterProvider also guards its baseUrl at construction; this is
+    // defense-in-depth at the transport. (Ollama's no-auth loopback path is unaffected.)
+    if (parsed.protocol === "http:" && !isLoopbackUrl(url) && hasAuthHeader(headers)) {
+      reject(new Error(`refusing to send authorization header over cleartext http:// to ${parsed.host}`));
+      return;
+    }
     const request = parsed.protocol === "http:" ? httpRequest : httpsRequest;
     const req = request(parsed, {
       method: "POST",
@@ -46,4 +70,8 @@ export async function postJson<T>(url: string, headers: Record<string, string>, 
     req.on("error", reject);
     req.end(payload);
   });
+}
+
+function hasAuthHeader(headers: Record<string, string>): boolean {
+  return Object.keys(headers).some((key) => /^authorization$/i.test(key));
 }

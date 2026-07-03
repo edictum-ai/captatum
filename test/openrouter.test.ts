@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isFreeTextModel, parseOpenRouterCompletion } from "../src/infrastructure/llm/openrouter.ts";
+import { isFreeTextModel, OpenRouterProvider, parseOpenRouterCompletion } from "../src/infrastructure/llm/openrouter.ts";
 
 const free = (overrides: Record<string, unknown> = {}) => ({
   id: "meta-llama/llama-3.3-70b-instruct:free",
@@ -67,4 +67,21 @@ test("parseOpenRouterCompletion surfaces a per-choice error", () => {
     () => parseOpenRouterCompletion({ choices: [{ error: { message: "rate limited" } }] }),
     /OpenRouter.*rate limited/,
   );
+});
+
+test("OpenRouterProvider rejects a non-loopback http:// baseUrl at construction (#5)", () => {
+  // The API key must never egress in cleartext. The guard fires at construction so it
+  // covers BOTH generate() (postJson) and discover() (native fetch).
+  assert.throws(
+    () => new OpenRouterProvider({ apiKey: "k", baseUrl: "http://remote.example/api/v1" }),
+    /OPENROUTER_BASE_URL must be https/,
+  );
+});
+
+test("OpenRouterProvider allows loopback http:// and the default https baseUrl (#5)", () => {
+  assert.doesNotThrow(() => new OpenRouterProvider({ apiKey: "k", baseUrl: "http://localhost:11434/api/v1" }));
+  assert.doesNotThrow(() => new OpenRouterProvider({ apiKey: "k", baseUrl: "http://127.0.0.1:11434/" }));
+  assert.doesNotThrow(() => new OpenRouterProvider({ apiKey: "k", baseUrl: "http://[::1]:11434/" }));
+  assert.doesNotThrow(() => new OpenRouterProvider({ apiKey: "k" })); // default https://openrouter.ai
+  assert.doesNotThrow(() => new OpenRouterProvider({ apiKey: "k", baseUrl: "https://openrouter.ai/api/v1" }));
 });

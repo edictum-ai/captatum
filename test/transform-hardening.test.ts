@@ -50,3 +50,12 @@ test("postJson rejects a provider response exceeding the 10 MiB byte cap", async
     server.close();
   }
 });
+
+test("postJson refuses an authorization header over cleartext http:// to a non-loopback host (#5)", async () => {
+  // Defense-in-depth at the transport: a misconfigured http:// OPENROUTER_BASE_URL
+  // must not leak the bearer key. Rejects before any connection is attempted.
+  await assert.rejects(
+    postJson("http://remote.example/api/", { authorization: "Bearer secret" }, { q: 1 }, 1_000),
+    /cleartext http|authorization/i,
+  );
+});

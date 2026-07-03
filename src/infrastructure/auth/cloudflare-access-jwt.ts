@@ -3,13 +3,19 @@ import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload } from "jose";
 /**
  * Verifies a Cloudflare Access JWT (`Cf-Access-Jwt-Assertion`) so the OAuth
  * subject is the real authenticated email, not a hardcoded placeholder. Ported
- * from personal-memory-gateway. RS256 against Cloudflare's public JWKS,
- * audience + issuer checked, email constrained to the allowed address.
+ * from personal-memory-gateway. RS256 against Cloudflare's public JWKS with
+ * audience + issuer + expiry checked in code. The email ALLOWLIST (which emails
+ * may mint a token) is enforced by the Cloudflare Zero Trust Access application
+ * policy — the single source of truth — NOT by this verifier; an optional
+ * CF_ACCESS_EMAIL_ALLOWLIST adds a defense-in-depth second gate here (#9).
  */
 export interface CloudflareAccessJwtConfig {
   audience: string;
   certsUrl: string;
   issuer: string;
+  /** Optional defense-in-depth email allowlist. Empty/undefined delegates WHO is
+   *  allowed entirely to the CF Zero Trust app policy (the default behavior). */
+  emailAllowlist?: string[];
 }
 
 export interface VerifiedCloudflareAccessJwt {
@@ -44,14 +50,17 @@ export function createCloudflareAccessJwtVerifier(config: CloudflareAccessJwtCon
   };
 }
 
-function validateClaims(payload: AccessJwtPayload, config: CloudflareAccessJwtConfig): JwtVerifyResult {
+export function validateClaims(payload: AccessJwtPayload, config: CloudflareAccessJwtConfig): JwtVerifyResult {
   if (!payload.exp) return { ok: false, reason: "access_jwt_missing_expiry" };
-  // The Cloudflare Access APPLICATION's identity policy is the single source of
-  // truth for WHO is allowed (the email allowlist lives private in Zero Trust,
-  // never in code/repos). Here we only confirm the JWT is well-formed and carry
-  // the verified email as the subject; signature/audience/issuer/expiry were
-  // already checked by jwtVerify in the caller.
+  // Signature/audience/issuer/expiry were already checked by jwtVerify in the caller.
+  // The email ALLOWLIST (WHO may mint a token) is the Cloudflare Zero Trust app
+  // policy's job by default; an optional CF_ACCESS_EMAIL_ALLOWLIST (#9) adds a
+  // defense-in-depth second gate here. Exported so the gate is unit-testable without
+  // the JWKS network fetch.
   if (!payload.email) return { ok: false, reason: "access_jwt_email_not_allowed" };
+  if (config.emailAllowlist && config.emailAllowlist.length > 0 && !emailAllowed(payload.email, config.emailAllowlist)) {
+    return { ok: false, reason: "access_jwt_email_not_allowed" };
+  }
   return {
     ok: true,
     claims: {
@@ -62,6 +71,14 @@ function validateClaims(payload: AccessJwtPayload, config: CloudflareAccessJwtCo
       subject: payload.sub ?? payload.email,
     },
   };
+}
+
+/** Case-insensitive, whitespace-trimmed email membership test. Exported so the
+ *  defense-in-depth gate is unit-testable without the JWKS network call. */
+export function emailAllowed(email: string, allowlist: string[]): boolean {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return false;
+  return allowlist.some((entry) => entry.trim().toLowerCase() === normalized);
 }
 
 function jwtErrorReason(error: unknown): string {

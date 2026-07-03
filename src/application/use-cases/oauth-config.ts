@@ -37,6 +37,8 @@ export function assertHostedProductionSecrets(env: NodeJS.ProcessEnv = process.e
   const missing = [
     ["OAUTH_CONSENT_SIGNING_SECRET", env.OAUTH_CONSENT_SIGNING_SECRET],
     ["OAUTH_SIGNING_PRIVATE_JWK", env.OAUTH_SIGNING_PRIVATE_JWK],
+    ["OAUTH_ISSUER", env.OAUTH_ISSUER],
+    ["OAUTH_RESOURCE", env.OAUTH_RESOURCE],
   ].filter(([, value]) => !value || !value.trim()).map(([name]) => name);
   if (missing.length) {
     throw new AuthConfigError(`Hosted requires ${missing.join(" and ")}`);
@@ -52,6 +54,17 @@ export function assertHostedProductionSecrets(env: NodeJS.ProcessEnv = process.e
   if (jwk.kty !== "EC" || jwk.crv !== "P-256" || !jwk.d || !jwk.x || !jwk.y) {
     throw new AuthConfigError("OAUTH_SIGNING_PRIVATE_JWK must be an EC P-256 key with d, x, y");
   }
+  // #6: validate issuer (absolute https URL) + resource (absolute http(s) URL) so a
+  // hosted boot with these unset/garbage fails closed. The raw `https://` prefix check
+  // rejects inputs Node's lenient URL parser would normalize (e.g. `https:/host`).
+  if (!/^https:\/\//i.test(env.OAUTH_ISSUER ?? "")) {
+    throw new AuthConfigError("OAUTH_ISSUER must be an absolute https URL");
+  }
+  parseAbsoluteUrl(env.OAUTH_ISSUER ?? "", "OAUTH_ISSUER");
+  if (!/^https?:\/\//i.test(env.OAUTH_RESOURCE ?? "")) {
+    throw new AuthConfigError("OAUTH_RESOURCE must be an absolute http(s) URL");
+  }
+  parseAbsoluteUrl(env.OAUTH_RESOURCE ?? "", "OAUTH_RESOURCE");
 }
 
 /** AUTH-1/CONFIG-2: the hosted flavor MUST sit behind Cloudflare Access. A hosted
@@ -66,6 +79,15 @@ function assertHostedCloudflareAccess(env: NodeJS.ProcessEnv): void {
     throw new AuthConfigError(
       "Hosted flavor requires Cloudflare Access: CF_ACCESS_ENABLED=true plus CF_ACCESS_AUDIENCE, CF_ACCESS_CERTS_URL, CF_ACCESS_ISSUER",
     );
+  }
+  // The JWKS fetch (CF_ACCESS_CERTS_URL) is the inbound-auth trust root — require
+  // https so a network MITM cannot substitute their own RSA key into the JWKS response
+  // and then sign a Cf-Access-Jwt-Assertion as any identity (total auth bypass).
+  if (!/^https:\/\//i.test(certsUrl)) {
+    throw new AuthConfigError("CF_ACCESS_CERTS_URL must be an absolute https URL");
+  }
+  if (!/^https:\/\//i.test(issuer)) {
+    throw new AuthConfigError("CF_ACCESS_ISSUER must be an absolute https URL");
   }
 }
 
@@ -119,6 +141,19 @@ function parsePrivateJwk(raw: string): JWK {
   } catch (error) {
     throw new AuthConfigError(`OAUTH_SIGNING_PRIVATE_JWK must be valid JSON: ${message(error)}`);
   }
+}
+
+function parseAbsoluteUrl(raw: string, label: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new AuthConfigError(`${label} must be an absolute URL`);
+  }
+  if (!parsed.protocol || !parsed.host) {
+    throw new AuthConfigError(`${label} must be an absolute URL`);
+  }
+  return parsed;
 }
 
 function message(error: unknown): string {

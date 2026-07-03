@@ -1,4 +1,4 @@
-import { postJson } from "./http-json.ts";
+import { isLoopbackUrl, postJson } from "./http-json.ts";
 import type { LlmGenerateInput, LlmGenerateResult, LlmModelCandidate, LlmProvider } from "./types.ts";
 
 const DEFAULT_CONTEXT_TOKENS = 128_000;
@@ -24,6 +24,7 @@ export class OpenRouterProvider implements LlmProvider {
   constructor(options: OpenRouterProviderOptions) {
     this.apiKey = options.apiKey.trim();
     this.baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
+    assertHttpsEgress(this.baseUrl);
     this.models = options.models?.filter(Boolean) ?? DEFAULT_MODELS;
     this.timeoutMs = options.timeoutMs ?? 20_000;
   }
@@ -114,6 +115,23 @@ const RETRY_DELAY_MS = 400;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** #5: the OpenRouter API key egresses only over https://. Reject a non-loopback
+ *  http:// baseUrl at construction — this covers BOTH generate() (via postJson) AND
+ *  discover() (via native fetch, which bypasses postJson, so a transport-only guard
+ *  would leave it exposed). Fails fast at config load rather than mid-request. A
+ *  malformed baseUrl is left for the request layer to surface. */
+function assertHttpsEgress(baseUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return;
+  }
+  if (parsed.protocol === "http:" && !isLoopbackUrl(baseUrl)) {
+    throw new Error(`OPENROUTER_BASE_URL must be https:// for a non-loopback host (refusing cleartext API-key egress): ${baseUrl}`);
+  }
 }
 
 /**
