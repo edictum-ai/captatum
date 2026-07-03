@@ -121,9 +121,9 @@ export class SqliteStore implements StorePort {
     this.transaction(() => {
       this.db.prepare(`DELETE FROM oauth_auth_codes WHERE expires_at < ?`).run(nowIso);
       this.db.prepare(`DELETE FROM oauth_consent_jtis WHERE expires_at < ?`).run(nowIso);
-      // Retain a consumed token until its whole FAMILY is past validity: a successor
-      // outlives its consumed predecessor, so sweeping at the predecessor's own expiry drops a live replay signal.
-      this.db.prepare(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t2 WHERE t2.family_id = oauth_refresh_tokens.family_id AND t2.expires_at >= ?)`).run(nowIso, nowIso);
+      // Retain a consumed token until its whole FAMILY is past validity (a successor outlives its
+      // predecessor). Materialized derived table — a self-referencing NOT EXISTS is rejected by MySQL/TiDB.
+      this.db.prepare(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND family_id NOT IN (SELECT family_id FROM (SELECT DISTINCT family_id FROM oauth_refresh_tokens WHERE expires_at >= ?) AS live_families)`).run(nowIso, nowIso);
       // Clean every orphaned family (not only revoked) once it has no tokens left.
       this.db.prepare(`DELETE FROM oauth_refresh_token_families WHERE family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`).run();
     });

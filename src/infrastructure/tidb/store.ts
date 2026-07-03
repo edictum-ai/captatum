@@ -118,8 +118,9 @@ export class TidbStore implements StorePort {
       // Retain a consumed token until its whole FAMILY is past validity: a successor's
       // expires_at = rotation + refresh TTL outlives the consumed predecessor, so sweeping
       // at the predecessor's own expiry would drop the replay signal while the successor is
-      // still live (a stolen-token replay must still revoke the family).
-      await tx.execute(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t2 WHERE t2.family_id = oauth_refresh_tokens.family_id AND t2.expires_at >= ?)`, [nowIso, nowIso]);
+      // still live. Materialized derived table, NOT a self-referencing NOT EXISTS — MySQL/TiDB
+      // reject deleting a table referenced in its own subquery (ER_UPDATE_TABLE_USED).
+      await tx.execute(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND family_id NOT IN (SELECT family_id FROM (SELECT DISTINCT family_id FROM oauth_refresh_tokens WHERE expires_at >= ?) AS live_families)`, [nowIso, nowIso]);
       // Clean every orphaned family (not only revoked ones) once it has no tokens left.
       await tx.execute(`DELETE FROM oauth_refresh_token_families WHERE family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`);
     });
