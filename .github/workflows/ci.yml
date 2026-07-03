@@ -26,3 +26,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check      # syntax + 250-line limit + typecheck
       - run: pnpm test           # node --test test/*.test.ts (unit suite; no browser)
+
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      # The deterministic fixture suite exercises captatum's full fetch → render →
+      # extract pipeline against self-hosted pages (real Playwright Chromium). It
+      # auto-skips without a browser, so a fail-fast launch check guarantees it
+      # actually RUNS here rather than silently skipping on a misconfigured runner.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Verify Chromium launches (no silent skip)
+        run: node --input-type=module -e "const {chromium}=await import('playwright'); const b=await chromium.launch(); await b.close();"
+      - run: node --no-warnings --test test/integration/fixtures.test.ts
