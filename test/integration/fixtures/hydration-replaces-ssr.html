@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><head><title>Hydration Demo</title></head>
+<body>
+<div id="root">SSR Content Visible Before Hydration</div>
+<script>
+// Hydration REPLACES the SSR'd DOM with different (here, less) content — a real
+// pattern where a Tier-3 render returns different text than the Tier-1 static HTML.
+setTimeout(() => {
+  document.getElementById('root').textContent = 'Hydrated Only Content';
+}, 300);
+</script>
+</body></html>

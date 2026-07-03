@@ -19,6 +19,7 @@ import { startFixtureServer, type FixtureServer } from "./fixtures/server.ts";
 import { createCaptatumUseCase } from "../../src/application/use-cases/captatum.ts";
 import { extractHtml } from "../../src/infrastructure/extract/index.ts";
 import { PlaywrightRenderer } from "../../src/infrastructure/render/index.ts";
+import { classifyAccess } from "../../src/application/classify.ts";
 import type { CaptatumUseCase } from "../../src/application/use-cases/captatum.ts";
 import type { FetcherPort, FetcherResult, RejectResult, FetcherOptions } from "../../src/application/ports/fetcher.ts";
 
@@ -293,5 +294,38 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     // The iframe's target document is NOT fetched at Tier-1 (only Tier-3 render walks
     // frames). The embedded "Static Content Page" wording is therefore absent.
     assert.doesNotMatch(r.result, /Static Content Page/, "iframe src not followed at Tier-1 (known gap)");
+  });
+
+  test("hydration-replaces-ssr-content: render returns the hydrated text, not the SSR text [behavior]", { skip: skipReason, timeout: 60_000 }, async () => {
+    // The static HTML carries SSR content; client hydration REPLACES the DOM. So a
+    // Tier-3 render returns different text than the Tier-1 static extract — a real
+    // pattern where render ≠ Tier-1 (not a bug, but worth pinning).
+    const tier1 = await captatum.execute({ url: `${server.url}/hydration-replaces-ssr`, ...RAW });
+    assert.match(tier1.result, /SSR Content Visible Before Hydration/);
+    const rendered = await captatum.execute({ url: `${server.url}/hydration-replaces-ssr`, ...RAW, ...RENDER });
+    assert.equal(rendered.tier, 3);
+    assert.match(rendered.result, /Hydrated Only Content/);
+    assert.doesNotMatch(rendered.result, /SSR Content Visible/);
+  });
+
+  test("lazy-iframe-below-fold: a data-src iframe never loads (renderer doesn't scroll) [GAP]", { skip: skipReason, timeout: 60_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/lazy-iframe-below-fold`, ...RAW, ...RENDER });
+    assert.equal(r.tier, 3, "empty app-root shell escalates to a real render");
+    assert.match(r.result, /Lazy Iframe App/, "rendered app heading present");
+    // data-src (not src) is a lazy iframe; without scrolling it into view it never
+    // loads, so its target content ("Static Content Page") is absent post-render.
+    assert.doesNotMatch(r.result, /Static Content Page/, "lazy data-src iframe not loaded (no scroll — known gap)");
+  });
+
+  test("cloudflare-challenge-no-markers: a marker-less challenge escapes detection [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+    const r = await captatum.execute({ url: `${server.url}/cloudflare-challenge-no-markers`, ...RAW });
+    // The page reads like a Cloudflare interstitial, but lacks the vendor markers
+    // (cdn-cgi/challenge-platform, __cf_chl, cf-mitigated, _abck, px-captcha) the
+    // detector keys on → NOT flagged (access public, no challengeProvider). Assert
+    // the detection metadata so this FLIPS when a marker-less heuristic is added.
+    const access = classifyAccess(r);
+    assert.equal(access.gated, false, "marker-less challenge not detected (known gap)");
+    assert.equal(access.challengeProvider, undefined);
+    assert.match(r.result, /Just a moment/, "challenge text returned as content");
   });
 });
