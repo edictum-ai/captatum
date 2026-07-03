@@ -228,15 +228,12 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.doesNotMatch(r.result, /Real Streamed Article Title/, "hidden streamed content stripped");
   });
 
-  test("error-page-404: documents 4xx body handling", { skip: skipReason, timeout: 30_000 }, async () => {
+  test("error-page-404: 4xx body is extracted, not dropped as a fatal error [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
     const r = await captatum.execute({ url: `${server.url}/error-404`, ...RAW });
-    // Documents whether captatum extracts 4xx bodies or treats them as errors.
-    if (r.tier === "error") {
-      // Known: captatum may treat 4xx as an error — body is dropped.
-      assert.equal(r.tier, "error", "documents: 4xx treated as error");
-    } else {
-      assert.match(r.result, /has moved to|couldn't find/, "4xx body content extracted");
-    }
+    // A 4xx is a completed fetch (not a guarded-fetch rejection), so the body is
+    // extracted at Tier-1 — guard that this stays true (no escape hatch).
+    assert.notEqual(r.tier, "error", "4xx body is extracted, not treated as a fatal error");
+    assert.match(r.result, /has moved to|couldn't find/, "4xx body content extracted");
   });
 
   test("accordion-height-zero: max-height:0 content KEPT [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {

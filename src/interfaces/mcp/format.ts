@@ -1,6 +1,13 @@
-import type { Result } from "../../domain/result.ts";
+import type { AttemptTrace, Result } from "../../domain/result.ts";
 import { classifyAccess, classifyContentType } from "../../application/classify.ts";
 import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
+
+/** Max attempt lines emitted in the debug text block (MCP debug + CLI --debug). */
+const DEBUG_ATTEMPTS_CAP = 50;
+
+function formatAttempt(a: AttemptTrace): string {
+  return `attempt ${a.step}: tier ${a.tier} ${a.outcome}${a.status !== undefined ? ` ${a.status}` : ""} ${a.durationMs}ms${a.reason ? ` (${a.reason})` : ""}`;
+}
 
 /**
  * The MCP text returned to the caller: a machine provenance comment (always
@@ -35,8 +42,19 @@ export function debugTextBlock(result: Result): string {
     "--- debug ---",
     `tier: ${result.tier}  resolvedVia: ${result.resolvedVia}  status: ${result.code}  bytes: ${result.bytes}  durationMs: ${result.durationMs}  jsRequired: ${result.jsRequired}`,
   ];
-  for (const a of result.attempts) {
-    lines.push(`attempt ${a.step}: tier ${a.tier} ${a.outcome}${a.status !== undefined ? ` ${a.status}` : ""} ${a.durationMs}ms${a.reason ? ` (${a.reason})` : ""}`);
+  // Cap attempts so a page that blocks many sub-resources can't turn this compact
+  // diagnostics block into thousands of model-visible lines (the debug text channel
+  // is shared by the MCP debug block and the CLI --debug block). When capping, keep
+  // the FIRST (cap-1) and ALWAYS the terminal attempt — the last is often the
+  // render/fetch failure reason, the most diagnostic line in the high-attempt case.
+  const total = result.attempts.length;
+  if (total <= DEBUG_ATTEMPTS_CAP) {
+    for (const a of result.attempts) lines.push(formatAttempt(a));
+  } else {
+    const head = result.attempts.slice(0, DEBUG_ATTEMPTS_CAP - 1);
+    for (const a of head) lines.push(formatAttempt(a));
+    lines.push(`(+${total - DEBUG_ATTEMPTS_CAP} more attempts not shown)`);
+    lines.push(formatAttempt(result.attempts[total - 1]));
   }
   if (result.transform) {
     const t = result.transform;

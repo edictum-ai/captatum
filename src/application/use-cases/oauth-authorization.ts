@@ -218,9 +218,11 @@ export function assertAllowedRedirectUri(value: string, allowlist: string[]): st
     }
     // RFC 8252 §7.3: a loopback ORIGIN entry (no port, no path, no query) matches the same scheme+host
     // on ANY port — native apps (Claude Code, Cursor) redirect to http://localhost:<ephemeral-port>/…
-    // and the port cannot be allowlisted exhaustively. Restricted to origin-only entries (no path/query)
-    // so a path- or query-specific loopback entry is NOT widened. Local-only = safe.
-    if (!e.port && (!e.pathname || e.pathname === "/") && !e.search && LOOPBACK_HOSTS.has(e.hostname) && e.protocol === url.protocol && e.hostname === url.hostname) {
+    // and the port cannot be allowlisted exhaustively. Restricted to origin-only entries (no path/query,
+    // and no EXPLICIT port in the raw entry) so a port-scoped or path/query-specific loopback entry is
+    // NOT widened. `new URL` drops default ports (http://localhost:80 → e.port === ""), so the raw
+    // entry is checked for an explicit port before applying any-port matching. Local-only = safe.
+    if (!e.port && !hasExplicitPort(entry) && (!e.pathname || e.pathname === "/") && !e.search && LOOPBACK_HOSTS.has(e.hostname) && e.protocol === url.protocol && e.hostname === url.hostname) {
       return true;
     }
     return (!e.pathname || e.pathname === "/") && !e.search && `${e.protocol}//${e.host}` === origin;
@@ -236,4 +238,12 @@ function hostOf(value: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Whether a raw allowlist entry string carries an explicit `:port` (before any
+ *  path/query/fragment). `new URL` normalizes default ports away (http://localhost:80
+ *  → port ""), so this reads the raw entry to keep a port-scoped loopback entry from
+ *  being widened to any port. Handles bracketed IPv6 (`http://[::1]:80`). */
+function hasExplicitPort(entry: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\/(?:\[[^\]]*\]|[^\s:/?#]+):\d+(?=[/?#]|$)/i.test(entry);
 }
