@@ -1,0 +1,13 @@
+<!DOCTYPE html><html><head><title>Lazy Iframe App</title></head>
+<body>
+<div id="app"></div>
+<script>
+// Empty app-root + a script → shell-gate escalates to a real render. The app
+// injects a heading, but the lazy iframe (data-src, never scrolled into view)
+// never loads — so its target content stays absent after render.
+setTimeout(() => {
+  document.getElementById('app').innerHTML = '<h1>Lazy Iframe App</h1>';
+}, 100);
+</script>
+<iframe data-src="/static-content" title="lazy embed" width="600" height="400"></iframe>
+</body></html>
