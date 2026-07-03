@@ -10,6 +10,7 @@ import type {
 import { streamFromBytes } from "../http/body.ts";
 import { P1BrowserUrlGuard, safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { RenderRouteState } from "./route-state.ts";
+import { waitForBodyStable } from "./settle.ts";
 import type {
   PlaywrightBrowser,
   PlaywrightDownload,
@@ -28,8 +29,12 @@ export interface PlaywrightRendererDeps {
   cdpEndpoint?: string;
   /** Chromium OS sandbox for in-process launch. Default true — the threat model mandates sandbox on; --no-sandbox in-process is only for a sidecar-less transitional deploy. */
   chromiumSandbox?: boolean;
-  /** Cap (ms) for the post-load network-idle settle. Default 3000. */
+  /** Post-load settle: networkidle cap, content-stability min dwell, and stable
+   *  threshold (ms). The content-aware settle catches setTimeout/hydration content
+   *  networkidle misses. Defaults 3000 / 1500 / 400. */
   settleMs?: number;
+  settleMinDwellMs?: number;
+  settleStableMs?: number;
 }
 
 export class PlaywrightRenderer implements RenderPort {
@@ -38,6 +43,8 @@ export class PlaywrightRenderer implements RenderPort {
   private readonly cdpEndpoint?: string;
   private readonly chromiumSandbox: boolean;
   private readonly settleMs: number;
+  private readonly settleMinDwellMs: number;
+  private readonly settleStableMs: number;
   /** Lazily-connected, reused CDP browser. Connecting per-render would leak a WebSocket every call. */
   private cdpBrowser?: PlaywrightBrowser;
 
@@ -47,6 +54,8 @@ export class PlaywrightRenderer implements RenderPort {
     this.cdpEndpoint = deps.cdpEndpoint;
     this.chromiumSandbox = deps.chromiumSandbox ?? true;
     this.settleMs = deps.settleMs ?? 3000;
+    this.settleMinDwellMs = deps.settleMinDwellMs ?? 1500;
+    this.settleStableMs = deps.settleStableMs ?? 400;
   }
 
   async render(input: RenderInput): Promise<RenderOutput> {
@@ -82,13 +91,22 @@ export class PlaywrightRenderer implements RenderPort {
       state.setMainFrame(page.mainFrame());
       await installPageControls(page, actions, input.timeoutMs);
       await page.route("**/*", (route) => state.handle(route));
+      const startedAt = Date.now();
+      const remaining = (): number => Math.max(0, input.timeoutMs - (Date.now() - startedAt));
       const response = await withTimeout(
         page.goto(input.url, { waitUntil: "domcontentloaded", timeout: input.timeoutMs }),
         input.timeoutMs,
       );
-      // Idle-aware settle (replaces a flat 3s sleep): wait for network quiescence,
-      // capped at settleMs; never fail if a page holds a long-lived connection.
-      await page.waitForLoadState("networkidle", { timeout: this.settleMs }).catch(() => {});
+      // Idle-aware settle: network quiescence, then a content-aware settle for
+      // setTimeout/hydration content with NO network signal. Both bounded by the
+      // REMAINING render budget so the total respects input.timeoutMs.
+      await page.waitForLoadState("networkidle", { timeout: Math.min(this.settleMs, remaining()) }).catch(() => {});
+      const settleCap = Math.min(this.settleMs, remaining());
+      await waitForBodyStable(page, {
+        capMs: settleCap,
+        minDwellMs: Math.min(this.settleMinDwellMs, settleCap),
+        stableMs: this.settleStableMs,
+      });
       if (state.fatal) return renderFailure(state.fatal, actions);
       let content = await page.content();
       try {
@@ -99,9 +117,8 @@ export class PlaywrightRenderer implements RenderPort {
           if (frameContent.length > 100) content += "\n" + frameContent;
         }
       } catch { /* iframe capture best-effort */ }
-      // Advisory byte cap: the rendered HTML is already in memory, so truncate
-      // at the cap and keep rendering with a provenance note rather than throwing
-      // it away. The fetch-path cap stays a hard reject (a pre-download abuse guard).
+      // Advisory byte cap: rendered HTML is in memory, so truncate at the cap and
+      // keep it (with a provenance note) rather than throwing it away.
       const { bytes, truncated } = capRenderedBytes(content, input.maxBytes);
       const notice: ProvenanceError | undefined = truncated
         ? { code: "max_bytes", message: `Rendered content truncated at ${input.maxBytes} bytes` }
@@ -155,12 +172,8 @@ async function closeWebSocket(socket: PlaywrightWebSocketRoute, actions: RenderA
 }
 
 function renderSuccess(
-  input: RenderInput,
-  page: PlaywrightPage,
-  status: number,
-  bytes: Uint8Array,
-  state: RenderRouteState,
-  notice?: ProvenanceError,
+  input: RenderInput, page: PlaywrightPage, status: number,
+  bytes: Uint8Array, state: RenderRouteState, notice?: ProvenanceError,
 ): RenderOutput {
   return {
     rendered: true,
@@ -177,12 +190,8 @@ function renderSuccess(
   };
 }
 
-/**
- * UTF-8-safe truncation that never exceeds the cap. Encode once, then cut at the
- * largest character boundary at or below maxBytes by walking back past any
- * trailing continuation bytes (0x80–0xBF) — so the slice never splits a
- * multibyte sequence and is always valid UTF-8.
- */
+/** UTF-8-safe truncation: cut at the largest char boundary ≤ maxBytes by walking
+ *  back past trailing continuation bytes (0x80–0xBF) so the slice is always valid UTF-8. */
 function capRenderedBytes(content: string, maxBytes: number): { bytes: Uint8Array; truncated: boolean } {
   const full = new TextEncoder().encode(content);
   if (full.byteLength <= maxBytes) return { bytes: full, truncated: false };
@@ -205,7 +214,6 @@ async function defaultLoadPlaywright(): Promise<PlaywrightModule> {
 
 class RenderError extends Error {
   readonly code: string;
-
   constructor(code: string, message: string) {
     super(message);
     this.name = "RenderError";
@@ -234,17 +242,9 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   const timer = new Promise<T>((_, reject) => {
     timeout = setTimeout(() => reject(new Error("render_timeout")), timeoutMs);
   });
-  try {
-    return await Promise.race([promise, timer]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
+  try { return await Promise.race([promise, timer]); } finally { if (timeout) clearTimeout(timeout); }
 }
 
 async function closeQuietly(closeable: { close(): Promise<void> } | undefined): Promise<void> {
-  try {
-    await closeable?.close();
-  } catch {
-    // Best-effort browser cleanup only.
-  }
+  try { await closeable?.close(); } catch { /* best-effort cleanup */ }
 }

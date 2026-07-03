@@ -4,8 +4,10 @@
 <body>
 <div id="root">Loading...</div>
 <script>
-// Simulates a SPA that loads content via a late callback (5s).
-// With settleMs < 5s, the content is NOT captured. This is the cerebralvalley.ai pattern.
+// Simulates a SPA that injects content via a late setTimeout callback (1s) with NO
+// network activity — networkidle fires instantly, so the content-aware settle
+// (waitForBodyStable) is what captures it. This is the cerebralvalley.ai pattern
+// at a realistic hydration latency; very-late loads (>settleMs) need a higher cap.
 setTimeout(() => {
   document.getElementById('root').innerHTML = `
     <h1>Late Load Hackathon</h1>
@@ -21,7 +23,7 @@ setTimeout(() => {
     <h2>Rules</h2>
     <p>Teams of 1-4. Must use Claude API. 48 hours.</p>
   `;
-}, 5000);
+}, 1000);
 </script>
 </body>
 </html>
