@@ -15,9 +15,17 @@ import { inlineSvgText } from "../src/infrastructure/extract/svg-text.ts";
 // quadratic regression misses by 1000×+.
 
 const FLOOD = 125_000; // "<script>".repeat(125000) ≈ 1 MB, the EXTRACT_CHAR_BUDGET ceiling
-// Generous on shared CI, but ~1000× under a quadratic regression (which is tens of
-// seconds). Bumped for the end-to-end path that runs several scanners over 1 MB.
+// Wall-clock bounds a LINEAR pass clears with room to spare but a quadratic regression
+// (tens of seconds on this input) misses by 10×+. Sized to each scanner's real linear
+// COST, not shaved to the millisecond. DIRECT_MS is for a single-pass scanner
+// (findElements); MULTI_PASS_MS covers scanners that make several passes over 1 MB AND
+// parse attributes on 125k tags — collectHiddenDisplayNoneClasses strips
+// script/noscript/template + comments first; inlineSvgText strips defs/symbol + builds
+// 125k <text> tags. Those are genuinely linear but a higher constant, so a 500 ms
+// micro-bound flaked on a slow shared runner (~520–588 ms) even though the full
+// multi-scanner pipeline stays under ENDE_TO_END_MS — still ~12×+ under a quadratic.
 const DIRECT_MS = 500;
+const MULTI_PASS_MS = 2500;
 const ENDE_TO_END_MS = 3000;
 
 function timed<T>(label: string, limitMs: number, fn: () => T): T {
@@ -42,14 +50,14 @@ test("findElements is linear on an unclosed <body> flood (REDOS-5)", () => {
 
 test("collectHiddenDisplayNoneClasses is linear on a <style> flood (REDOS-5)", () => {
   const html = "<style>".repeat(FLOOD);
-  timed("collectHiddenDisplayNoneClasses", DIRECT_MS, () => collectHiddenDisplayNoneClasses(html));
+  timed("collectHiddenDisplayNoneClasses", MULTI_PASS_MS, () => collectHiddenDisplayNoneClasses(html));
 });
 
 test("inlineSvgText is linear on a closed <svg> whose body is a <text> flood (REDOS-5)", () => {
   // The svg must be CLOSED so inlineSvgText reaches collectSvgTextElements; an
   // unclosed svg returns early before the <text> scan.
   const html = `<svg>${"<text>".repeat(FLOOD)}</svg>`;
-  timed("inlineSvgText", DIRECT_MS, () => inlineSvgText(html));
+  timed("inlineSvgText", MULTI_PASS_MS, () => inlineSvgText(html));
 });
 
 test("findElements does not treat </scripture> as a </script> close (boundary check)", () => {
