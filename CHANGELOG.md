@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0] — 2026-07-04
+
+Receipt trustworthiness: four correctness fixes — three of them stop the provenance receipt from actively lying to the agent. Additive contract surface (new `contentType: "json"` + `resolvedVia: "tier1-json"`/`"tier1-text"`); no breaks.
+
+- **fix(shell-gate): non-HTML short bodies are content, not empty SPA shells** (#92) — a legit plain 404 with a trivial `text/plain` body was reported as a login-gated SPA needing JS render (`contentType: "spa"`, `gateReason: "login"`, `tier: "render-blocked"`). The shell-gate now short-circuits non-HTML bodies (`text/plain`, markdown, JSON, XML, image) to `content-present` before any render escalation, and `extractHtml` returns non-HTML bodies verbatim (no HTML-stripping, whitespace-collapse, or trim).
+- **fix(tier1): route non-HTML responses away from the HTML extractor** (#94) — JSON API responses (e.g. `registry.npmjs.org`) were HTML-extracted, fabricating image URLs (`registry.npmjs.org/%22…svg%22`) from JSON string values, mislabeled `contentType: "unknown"`, falsely `resolvedVia: "tier1-html"`. JSON now: raw body verbatim, no fabricated images/structured, `contentType: "json"`, `resolvedVia: "tier1-json"`; text/markdown get `"tier1-text"`. The MCP text formatter omits the provenance comment for all JSON bodies (`application/json` + `+json`) so raw stays parseable.
+- **fix(extract): scope raw visible text to the main `<article>`** (#93) — repo/blog/docs pages returned flattened site chrome (GitHub's nav header) with zero README text. `extractVisibleText` now runs on the page's main `<article>` (the README on GitHub, the body on most blogs/docs); the page is pre-cleaned (hidden/script/template/comment stripped) so a hidden or inert article isn't selected. Falls back to the full body when there's no `<article>`.
+- **fix(store): self-diagnosing error when the SQLite store dir is unwritable** (#85) — under the hosted image's `USER node` the default `./data/captatum.sqlite` path is root-owned; a cryptic `EACCES` boot crash is now an actionable message naming the resolved dir + the `CAPTATUM_SQLITE_PATH` fix (covers both can't-create and exists-but-unwritable).
+- **test:** REDOS-2 ratio guard hardened for CI stability (absolute budget + looser ratio).
+
+Checks: `pnpm run check` + 415 unit + 50 integration fixture tests green.
+
 ## [0.6.0] — 2026-07-04
 
 Ships the Tier-1 extraction-fidelity + cerebralvalley render-settle work, the shell-gate fix for client-rendered SPAs, the extraction/transform/hosted-auth hardening bundle, and a ~50-pattern deterministic integration fixture suite (real Chromium) now run in CI. Additive + fixes; no public-contract breaks.
