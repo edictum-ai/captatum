@@ -73,3 +73,18 @@ test("shell-gate: ABSENT content-type still escalates a genuinely empty HTML she
   assert.equal(gate.jsRequired, true, "an empty shell with no declared type still needs render");
   assert.equal(gate.reason, "empty-spa-shell");
 });
+
+// #92 review (codex P2): once a non-HTML body is treated as complete content, extractHtml must
+// return the RAW decoded body — not the HTML-stripped text, which mangles angle-bracket data.
+
+test("extractHtml preserves a non-HTML body verbatim, including angle-bracket data (#92 review)", () => {
+  const out = extractHtml({ html: '{"x":"<b>hi</b>"}', url: "https://x.test/api", contentType: "application/json" });
+  assert.equal(out.text, '{"x":"<b>hi</b>"}', "JSON angle-bracket data must not be HTML-stripped");
+  assert.equal(out.shellGate.jsRequired, false);
+});
+
+test("extractHtml preserves newlines in text/markdown bodies (#92 review, covers #94 markdown half)", () => {
+  const md = "# Title\n\nfirst paragraph\n\nsecond paragraph";
+  const out = extractHtml({ html: md, url: "https://x.test/readme.md", contentType: "text/markdown" });
+  assert.equal(out.text, md, "markdown newlines must be preserved, not collapsed");
+});
