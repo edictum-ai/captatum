@@ -186,14 +186,11 @@ export class CaptatumUseCase {
     base.result = transformed.result;
     base.output = transformed.info.provider === "none" ? "raw" : request.requestedOutput;
     base.transform = transformed.info;
-    // Non-fatal: primary model(s) failed and the router fell back — surface it so
-    // status becomes `partial` (not `pass`) and the caller knows the output may be lower quality.
-    if (transformed.info.fallbackFrom) {
-      base.errors.push({
-        code: "transform_model_fallback",
-        message: `Primary model(s) ${transformed.info.fallbackFrom} failed; produced this ${base.output} with ${transformed.info.model ?? transformed.info.provider}. It may be lower quality — retry if it looks off.`,
-      });
-    }
+    // (#82) A successful model fallback is SILENT in the user-facing receipt — no warning, so
+    // status stays `pass` and the caller is not told a model failed. The failed-primary list rides
+    // on `transform.fallbackFrom`, visible via `debug:true` and the audit log (transformFallbackFrom)
+    // for the operator. An all-models-fail still surfaces honestly via the catch above
+    // (provider:"none", reason:"failed").
     // No summary was produced. For a Tier-2 roster, restore the parseable JSON roster (transformed.result
     // is the preambled LLM input, not valid JSON); for pages, bound the fallback to a token-safe excerpt.
     if (transformed.info.provider === "none") {

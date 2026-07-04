@@ -127,6 +127,7 @@ async function auditResult(deps: CaptatumMcpServerDeps, result: Result): Promise
     transformCostUsd: result.transform?.costUsd,
     transformInTokens: result.transform?.inTokens,
     transformOutTokens: result.transform?.outTokens,
+    transformFallbackFrom: result.transform?.fallbackFrom,
   });
 }
 

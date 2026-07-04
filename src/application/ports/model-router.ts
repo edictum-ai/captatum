@@ -1,7 +1,8 @@
 /**
- * Transform router port: picks a provider+model for the summary/extract stage,
- * and receives per-result feedback for deterministic per-model EMA scoring
- * (flaky/garbage self-demotes). Implemented by src/infrastructure/llm/model-router.ts.
+ * Transform router port: picks a provider+model for the summary/extract stage, and receives
+ * per-result feedback that drives sticky per-model health (a model demotes one rank only on
+ * SUSTAINED hard failure — ≥3 of the last 5 attempts — so transient empties and soft/garbage
+ * output don't demote). Implemented by src/infrastructure/llm/model-router.ts.
  *
  * See docs/contracts.md "Ports → ModelRouterPort" and "Transform".
  */
@@ -27,10 +28,13 @@ export interface ModelPick {
 
 export interface ModelScore {
   model: string;
-  /** 0..1; valid JSON? in-budget? non-empty? latency-weighted. */
-  score: number;
-  /** Whether the response was usable at all. */
-  valid: boolean;
+  /**
+   * One attempt's outcome. `hard_fail` (provider throw / empty / non-2xx / invalid JSON /
+   * unsupported schema keyword) pushes into the sticky window and may demote; `success` recovers;
+   * `soft` (a parseable-but-schema-mismatched extract — garbage-ish, can't be reliably told from
+   * a legit short answer) is a no-op so it never demotes.
+   */
+  outcome: "success" | "hard_fail" | "soft";
 }
 
 export interface ModelRouterPort {
