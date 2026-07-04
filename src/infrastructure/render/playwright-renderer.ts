@@ -29,9 +29,8 @@ export interface PlaywrightRendererDeps {
   cdpEndpoint?: string;
   /** Chromium OS sandbox for in-process launch. Default true — the threat model mandates sandbox on; --no-sandbox in-process is only for a sidecar-less transitional deploy. */
   chromiumSandbox?: boolean;
-  /** Post-load settle: networkidle cap, content-stability min dwell, and stable
-   *  threshold (ms). The content-aware settle catches setTimeout/hydration content
-   *  networkidle misses. Defaults 5000 / 1500 / 400. */
+  /** Post-load settle: networkidle cap, content-stability min dwell, stable threshold (ms).
+   *  The content-aware settle catches setTimeout/hydration content networkidle misses. Defaults 5000 / 1500 / 400. */
   settleMs?: number;
   settleMinDwellMs?: number;
   settleStableMs?: number;
@@ -97,10 +96,11 @@ export class PlaywrightRenderer implements RenderPort {
         page.goto(input.url, { waitUntil: "domcontentloaded", timeout: input.timeoutMs }),
         input.timeoutMs,
       );
-      // Idle-aware settle: network quiescence, then a content-aware settle for
-      // setTimeout/hydration content with NO network signal. Both bounded by the
-      // REMAINING render budget so the total respects input.timeoutMs.
-      await page.waitForLoadState("networkidle", { timeout: Math.min(this.settleMs, remaining()) }).catch(() => {});
+      // Idle-aware settle: networkidle then a content-stability dwell for setTimeout/hydration content.
+      // The networkidle cap RESERVES settleMinDwellMs for the content-stability phase — without it a
+      // never-arriving networkidle consumes the whole budget on short-timeoutMs callers (codex P2).
+      const networkidleCap = Math.min(this.settleMs, Math.max(0, remaining() - this.settleMinDwellMs));
+      await page.waitForLoadState("networkidle", { timeout: networkidleCap }).catch(() => {});
       const settleCap = Math.min(this.settleMs, remaining());
       await waitForBodyStable(page, {
         capMs: settleCap,

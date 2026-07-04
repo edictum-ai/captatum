@@ -290,6 +290,33 @@ test("a render that still yields an empty shell is NOT promoted to Tier-3 (#110)
   assert.ok(result.errors.some((e) => e.code === "render_empty"), "render_empty error recorded");
 });
 
+test("a render with usable structured data but no visible text is promoted, not render_empty (#110 codex P2)", async () => {
+  // The rendered page has no body text, but the client app injected a JobPosting JSON-LD. The
+  // shell-gate sets jsRequired=false (structured-data-found), so this is NOT an empty render —
+  // promote it so summary/extract can consume the structured data.
+  const shellHtml = "<div id=\"root\"></div>";
+  const renderedHtml = "<div id=\"root\"></div><script type=\"application/ld+json\">{\"@type\":\"JobPosting\"}</script>";
+  const renderer = new FakeRenderer({ rendered: true, fetchResult: fetchResult({ html: renderedHtml }), actions: [] });
+  const extractor = new ScriptedExtractor((input) => {
+    if (input.html === renderedHtml) {
+      return extraction({ text: "", jsRequired: false, shellReason: "structured-data-found", structured: { jsonLd: { "@type": "JobPosting", title: "Senior Engineer" } } });
+    }
+    return extraction({ text: "", jsRequired: true, shellReason: "empty-spa-shell" });
+  });
+
+  const result = await createCaptatumUseCase({
+    fetcher: new FakeFetcher(fetchResult({ html: shellHtml })),
+    extractHtml: extractor.extract,
+    renderer,
+    clock: new FakeClock([0, 0, 5, 6, 7, 19, 20, 21]),
+  }).execute({ url: "https://spa.test/", output: "raw", allowRender: true });
+
+  assert.equal(result.tier, 3, "structured-data render is promoted (not render_empty)");
+  assert.equal(result.resolvedVia, "tier3-playwright");
+  assert.equal(result.errors.some((e) => e.code === "render_empty"), false, "no render_empty error");
+  assert.deepEqual(result.structured?.jsonLd, { "@type": "JobPosting", title: "Senior Engineer" });
+});
+
 test("configured transform receives prompt, schema, budget, and transform override", async () => {
   const transformer = new FakeTransform({
     result: "Transformed summary",
