@@ -40,8 +40,25 @@ export function evaluateShellGate(input: {
  * appState for debug/structured access — they just don't satisfy the gate.
  */
 export function hasUsableStructuredData(structured: StructuredData): boolean {
-  if (structured.jsonLd !== undefined) return true;
+  if (hasContentBearingJsonLd(structured.jsonLd)) return true;
   return hasContentBearingAppState(structured.appState);
+}
+
+/**
+ * Whether JSON-LD actually carries content an agent can use WITHOUT rendering — a
+ * typed node or a real data property. `null` / `[]` / `{}` / a context-only
+ * `{"@context":…}` node do NOT count: those are common on client-rendered SPA shells,
+ * and treating any-defined jsonLd as usable let an empty `<script type="ld+json">[]`
+ * stop a true empty shell from rendering, returning no content (#81). Recurses arrays
+ * and `@graph`. (Trivial JSON-LD is still harvested into `structured` for debug/output.)
+ */
+function hasContentBearingJsonLd(jsonLd: unknown): boolean {
+  if (Array.isArray(jsonLd)) return jsonLd.some(hasContentBearingJsonLd);
+  if (!jsonLd || typeof jsonLd !== "object") return false;
+  const node = jsonLd as Record<string, unknown>;
+  if (hasContentBearingJsonLd(node["@graph"])) return true;
+  // A real node declares a @type or carries a data property beyond @context/@id/@graph.
+  return Object.keys(node).some((key) => key !== "@context" && key !== "@id" && key !== "@graph");
 }
 
 const CONTENT_BEARING_APP_STATE_KEYS = new Set([
