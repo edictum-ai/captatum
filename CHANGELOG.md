@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.0] — 2026-07-04
+
+Ships the Tier-1 extraction-fidelity + cerebralvalley render-settle work, the shell-gate fix for client-rendered SPAs, the extraction/transform/hosted-auth hardening bundle, and a ~50-pattern deterministic integration fixture suite (real Chromium) now run in CI. Additive + fixes; no public-contract breaks.
+
+- **feat(mcp): output-choice rule of thumb in server instructions** (#79) — `CAPTATUM_SERVER_INSTRUCTIONS` (sent on `initialize`) now teaches the token-saving default: long-form text → `summary`, structured page → `raw` for the lean extracted fields, specific fields → `extract` with a `schema`. Additive; test-locked.
+- **fix(extract): Tier-1 content fidelity** (#67) — `<meta charset>` prescan; expanded app-state harvest (`__PRELOADED_STATE__` / `__APOLLO_STATE__` / `__NUXT_DATA__` / any `application/json` script, proto-pollution-safe keying); CSS `display:none` suppression; CDATA stripping before `JSON.parse`; inline SVG `<text>` harvest.
+- **fix(render): content-aware post-networkidle settle** (#68) — the cerebralvalley regression: polls `page.content().length` so `setTimeout`/hydration-injected content is captured instead of snapped too early (settleMs 3000 / minDwellMs 1500 / stableMs 400).
+- **fix(render): byte-budget no longer aborts essential scripts/fetches** (#80).
+- **fix(extract): trivial JSON-LD no longer satisfies the shell-gate** (#87, #81) — empty / context-only `ld+json` blocks (`[]`, `{}`, `{@context}`) no longer count as usable structured data, so client-rendered SPAs correctly route to Tier-3 render instead of returning empty.
+- **fix(extract): named-entities normalization** (#71).
+- **fix: address outstanding PR review comments** (#59, #61, #63, #64, #66) (#69).
+- **harden(extract / transform / hosted-auth / store)** (#86) — linearized adversarial-markup scanners (DoS-bound; `</script` no longer matches `</scripture>`); default output-token cap; Ollama `local` flag derived from a loopback URL; **refuse a bearer credential over cleartext http to a non-loopback host**; Cloudflare Access `https` + absolute-URL boot gates + optional email allowlist; consent-JTI expiry validation; pooled-connection release on all transaction paths; refresh-token family retention; fixed-precision UTC timestamps; IPv4/IPv6-literal loopback check (closes a `127.attacker.example` bypass); form-feed tag-boundary parser fix; TiDB-safe refresh-token sweep. The cleartext-bearer / CF-Access-https / absolute-`OAUTH_ISSUER` items are fail-fast boot guards on previously insecure-or-late-crashing inputs — noted here, not a contract change.
+- **test/ci: deterministic integration fixture suite** (#65–#78, #70) — ~50 extraction/render patterns against real Chromium, run as a CI job.
+- **docs: README re-centered on the trustworthy, provenance-carrying read** (#88); `CLAUDE.md` + `package.json` description aligned; stale `v0.4.0` release-version refs in `SECURITY.md`, `README.md`, and `docs/contracts.md` updated to `v0.6.0`.
+
 ## [0.5.0] — 2026-07-02
 
 - **feat(cli): one-shot CLI + installable agent skill** — `captatum <url>` fetches + prints + exits (kills the #1 DX cliff: the stdio server silently waiting on stdin). `captatum skill install --target claude|codex` writes a captatum agent skill (SKILL.md / AGENTS.md section) so one command gives the agent a first-class "captatum" skill that knows when/how to fetch. `captatum --help` shows usage. No args → stdio MCP server (unchanged). The bin routes based on argv.
