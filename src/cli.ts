@@ -27,7 +27,8 @@ Fetch flags:
   --prompt "<text>"                  What you want from the page (drives summary).
   --schema '<json>'                  JSON Schema for --output extract.
   --budget <n>                       Max tokens for the summary.
-  --allow-render                     Render in a real browser (JS-only pages).
+  --allow-render                     Render JS-shell pages in a real browser (default; a
+                                     no-browser runtime reports render-unavailable).
   --debug                            Append diagnostics (tier, attempts, model/tokens).
   --max-bytes <n>                    Fetch byte cap.
   --timeout-ms <n>                   Fetch timeout (ms).
@@ -49,7 +50,7 @@ interface ParsedArgs {
 }
 
 export function parseArgs(argv: readonly string[]): ParsedArgs {
-  const out: ParsedArgs = { debug: false, allowRender: false };
+  const out: ParsedArgs = { debug: false, allowRender: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "--output") out.output = argv[++i];
