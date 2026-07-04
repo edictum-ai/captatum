@@ -26,14 +26,22 @@ import { findElements, stripElement, stripHtmlComments } from "./html.ts";
  *      lose the head `<style>` context that `extractVisibleText` would have used) (#97 review). (#93)
  */
 export function selectMainContentHtml(html: string): string | null {
-  // Fast path: no <article> at all → nothing to select. Skips the full pre-clean on the common
-  // no-article page and — critically — on pathological inputs (the REDOS-5 <script> flood), so the
+  // Fast path: no <article> AND no <main> → nothing to select. Skips the full pre-clean on the common
+  // no-main-content page and — critically — on pathological inputs (the REDOS-5 <script> flood), so the
   // cleaning runs once (in extractVisibleText) instead of twice and extractHtml stays linear.
-  if (!/<article/i.test(html)) return null;
+  if (!/<article/i.test(html) && !/<main/i.test(html)) return null;
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
   const withoutCode = ["script", "style", "noscript", "template"]
     .reduce((value, tag) => stripElement(value, tag), html);
   const clean = stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses));
+  // Prefer the first <article> (GitHub README, blog articles — #93). Then fall back to <main>:
+  // VitePress, GitBook, mdBook, Svelte, and HashiCorp docs SSR the prose into <main> with the
+  // sidebar in a sibling <aside>/<nav>, so <main> carries the content (not the nav). <main> is a
+  // subset of <body>, so selecting it never returns MORE chrome than the full body would — and
+  // <main> rarely nests, so findElements' first-close match is reliable (unlike <div> containers
+  // such as .vp-doc/.md-content, which nest and would need a balanced extractor). (#93 extension)
   const article = findElements(clean, "article")[0];
-  return article ? article.content : null;
+  if (article) return article.content;
+  const main = findElements(clean, "main")[0];
+  return main ? main.content : null;
 }
