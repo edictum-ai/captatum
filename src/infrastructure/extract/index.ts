@@ -6,6 +6,7 @@ import type {
 } from "../../application/use-cases/tier1-extract.ts";
 import { isHtmlContentType } from "../http/body.ts";
 import { extractVisibleText } from "./html.ts";
+import { selectMainContentHtml } from "./main-content.ts";
 import { extractPageMetadata } from "./metadata.ts";
 import { evaluateShellGate } from "./shell-gate.ts";
 
@@ -24,7 +25,10 @@ export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
   const metadata = html
     ? extractPageMetadata(input.html, input.url, errors)
     : { title: undefined as string | undefined, structured: {} as StructuredData };
-  const text = html ? extractVisibleText(input.html) : input.html;
+  // Scope visible text to the main-content <article> when present so site chrome (GitHub's nav
+  // header, blog headers/footers) doesn't crowd out the README/body. Metadata (title/og/jsonLd)
+  // is still extracted from the full page — only the visible TEXT is scoped. (#93)
+  const text = html ? extractVisibleText(selectMainContentHtml(input.html) ?? input.html) : input.html;
   const shellGate = evaluateShellGate({
     html: input.html,
     text,

@@ -6,6 +6,7 @@ import type { FetcherResult } from "../src/application/ports/fetcher.ts";
 import { extractTier1FromFetchResult, preferredTitle } from "../src/application/use-cases/tier1-extract.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { extractVisibleText, findElements, stripHtmlComments, stripHtmlTags } from "../src/infrastructure/extract/html.ts";
+import { selectMainContentHtml } from "../src/infrastructure/extract/main-content.ts";
 import { decodeHtmlEntities } from "../src/infrastructure/extract/entities.ts";
 import { stripHiddenSubtrees } from "../src/infrastructure/extract/hidden.ts";
 import { collectHiddenDisplayNoneClasses } from "../src/infrastructure/extract/hidden-classes.ts";
@@ -1409,4 +1410,30 @@ test("isJsonContentType: application/json + +json suffixes, not text/html/absent
   assert.equal(isJsonContentType("text/plain"), false);
   assert.equal(isJsonContentType("text/html"), false);
   assert.equal(isJsonContentType(undefined), false);
+});
+
+// #93: GitHub repo / blog / docs pages wrap the real content in <article>; without main-content
+// selection, extractVisibleText flattened the whole <body> and the lean payload was pure nav chrome.
+
+test("selectMainContentHtml returns the first <article>'s inner HTML, else null (#93)", () => {
+  const withArticle = '<html><body><header>NAV</header><main>'
+    + '<article class="markdown-body entry-content" itemprop="text"><h1>Title</h1><p>body</p></article>'
+    + '</main><footer>FOOT</footer></body></html>';
+  const main = selectMainContentHtml(withArticle);
+  assert.match(main ?? "", /<h1>Title<\/h1>/);
+  assert.equal(selectMainContentHtml("<html><body><div>no article here</div></body></html>"), null);
+});
+
+test("extractHtml scopes visible text to <article>, dropping GitHub-style nav chrome (#93)", () => {
+  const html = "<html><body>"
+    + "<header>Skip to content Navigation Menu Toggle navigation Sign in Pricing Saved searches</header>"
+    + '<main id="js-repo-pjax-container"><article class="markdown-body entry-content container-lg" itemprop="text">'
+    + "<h1>mcp-oauth-server</h1><p>OAuth 2.1 server. npm install mcp-oauth-server@latest</p>"
+    + "</article></main><footer>© footer chrome</footer></body></html>";
+  const out = extractHtml({ html, url: "https://github.com/x/y", contentType: "text/html; charset=utf-8" });
+  assert.match(out.text, /mcp-oauth-server/);
+  assert.match(out.text, /npm install/);
+  for (const chrome of ["Skip to content", "Navigation Menu", "Pricing", "Saved searches", "© footer chrome"]) {
+    assert.equal(out.text.includes(chrome), false, `chrome leaked into text: "${chrome}"`);
+  }
 });
