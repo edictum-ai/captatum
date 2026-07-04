@@ -2,7 +2,7 @@
   "name": "@edictum/captatum",
   "version": "0.5.0",
   "type": "module",
-  "description": "Captatum — adaptive MCP web-fetch tool for AI agents: fetch any URL, render JS when needed, return clean structured content + provenance.",
+  "description": "Captatum — adaptive MCP web-fetch tool for AI agents: SSRF-safe, injection-safe reads with a provenance receipt on every call; renders JS only when needed, extracts structured data (JSON-LD/OG).",
   "license": "MIT",
   "repository": {
     "type": "git",
