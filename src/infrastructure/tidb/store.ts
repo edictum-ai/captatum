@@ -42,6 +42,7 @@ export class TidbStore implements StorePort {
 
   async consumeConsentJti(jti: string, expiresAtIso: string): Promise<boolean> {
     this.ensureOpen();
+    assertUtcIsoTimestamp(expiresAtIso, "expiresAtIso");
     // OAUTH-2: INSERT IGNORE inserts only on the first use; a replay affects 0 rows.
     const [result] = await this.client.execute(
       `INSERT IGNORE INTO oauth_consent_jtis (jti, expires_at) VALUES (?, ?)`,
@@ -114,8 +115,14 @@ export class TidbStore implements StorePort {
     await this.transaction(async (tx) => {
       await tx.execute(`DELETE FROM oauth_auth_codes WHERE expires_at < ?`, [nowIso]);
       await tx.execute(`DELETE FROM oauth_consent_jtis WHERE expires_at < ?`, [nowIso]);
-      await tx.execute(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND consumed_at IS NULL`, [nowIso]);
-      await tx.execute(`DELETE FROM oauth_refresh_token_families WHERE revoked_at IS NOT NULL AND family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`);
+      // Retain a consumed token until its whole FAMILY is past validity: a successor's
+      // expires_at = rotation + refresh TTL outlives the consumed predecessor, so sweeping
+      // at the predecessor's own expiry would drop the replay signal while the successor is
+      // still live. Materialized derived table, NOT a self-referencing NOT EXISTS — MySQL/TiDB
+      // reject deleting a table referenced in its own subquery (ER_UPDATE_TABLE_USED).
+      await tx.execute(`DELETE FROM oauth_refresh_tokens WHERE expires_at < ? AND family_id NOT IN (SELECT family_id FROM (SELECT DISTINCT family_id FROM oauth_refresh_tokens WHERE expires_at >= ?) AS live_families)`, [nowIso, nowIso]);
+      // Clean every orphaned family (not only revoked ones) once it has no tokens left.
+      await tx.execute(`DELETE FROM oauth_refresh_token_families WHERE family_id NOT IN (SELECT DISTINCT family_id FROM oauth_refresh_tokens)`);
     });
   }
 
@@ -127,14 +134,25 @@ export class TidbStore implements StorePort {
   }
 
   private async transaction<T>(fn: (tx: TidbTransaction) => Promise<T>): Promise<T> {
+    // Acquire the connection, then run begin/commit/rollback inside the try so a
+    // throw in beginTransaction() still hits finally{release()}. Without this, a
+    // handful of begin failures permanently exhaust the connectionLimit:5 pool and
+    // every OAuth store call hangs (auth outage). `begun` guards rollback() so we
+    // don't call it on a connection with no open transaction (which would throw and
+    // shadow the original error); the inner try swallows a cleanup-time rollback
+    // failure so the caller still sees the real error.
     const tx = await this.client.getConnection();
-    await tx.beginTransaction();
+    let begun = false;
     try {
+      await tx.beginTransaction();
+      begun = true;
       const result = await fn(tx);
       await tx.commit();
       return result;
     } catch (error) {
-      await tx.rollback();
+      if (begun) {
+        try { await tx.rollback(); } catch { /* swallow cleanup error; throw original */ }
+      }
       throw error;
     } finally {
       tx.release();

@@ -73,7 +73,8 @@ export interface StorePort {
   /** OAUTH-2: bind a consent token to a single use. Atomically records the jti;
    *  returns true on first use (proceed) or false on replay (reject). */
   consumeConsentJti(jti: string, expiresAtIso: string): Promise<boolean>;
-  /** Delete expired auth codes, expired refresh tokens, and orphaned revoked families. */
+  /** Delete expired auth codes, expired consent jtis, refresh tokens past their
+   *  validity window (consumed or not), and any orphaned token families. */
   sweepExpired(nowIso: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -89,7 +90,11 @@ export function assertSha256Hex(value: string, label: string): void {
 }
 
 export function assertUtcIsoTimestamp(value: string, label: string): void {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) {
-    throw new StoreInputError(`${label} must be a UTC ISO timestamp`);
+  // Require EXACTLY 3 millisecond digits. Expiry checks compare these strings
+  // lexicographically (SQLite TEXT / TiDB VARCHAR columns), which only matches
+  // chronological order at uniform precision — a mixed-precision producer would
+  // invert ordering ("…00Z" sorts after "…00.500Z") and flip "expired" into "valid".
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+    throw new StoreInputError(`${label} must be a UTC ISO timestamp with milliseconds`);
   }
 }

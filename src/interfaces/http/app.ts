@@ -62,7 +62,12 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
     // (the boot gate in oauth-config guarantees CF_ACCESS_* are set for hosted).
     const cf = config.cloudflareAccess;
     const cfAccessVerifier = cf.enabled() && cf.certsUrl()
-      ? createCloudflareAccessJwtVerifier({ audience: cf.audience(), certsUrl: cf.certsUrl(), issuer: cf.issuer() })
+      ? createCloudflareAccessJwtVerifier({
+        audience: cf.audience(),
+        certsUrl: cf.certsUrl(),
+        issuer: cf.issuer(),
+        emailAllowlist: cf.emailAllowlist(),
+      })
       : undefined;
     await registerOAuthRoutes(app, {
       config: deps.runtime.oauth,

@@ -311,6 +311,79 @@ test("hosted boot fails closed without Cloudflare Access config (AUTH-1/CONFIG-2
   assert.equal(runtime.flavor, "hosted");
 });
 
+test("hosted boot fails closed when OAUTH_ISSUER or OAUTH_RESOURCE is missing/malformed (#6)", () => {
+  const valid = {
+    CAPTATUM_FLAVOR: "hosted",
+    NODE_ENV: "production",
+    OAUTH_ISSUER: "https://captatum.test",
+    OAUTH_RESOURCE: "https://captatum.test/mcp",
+    OAUTH_CONSENT_SIGNING_SECRET: "test-consent-secret-with-enough-entropy",
+    OAUTH_SIGNING_PRIVATE_JWK: JSON.stringify(testPrivateJwk()),
+    CF_ACCESS_ENABLED: "true",
+    CF_ACCESS_AUDIENCE: "aud",
+    CF_ACCESS_CERTS_URL: "https://x/certs",
+    CF_ACCESS_ISSUER: "https://x",
+  } as Record<string, string>;
+  // missing issuer / resource (empty) — previously defaulted to "" and booted broken.
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, OAUTH_ISSUER: "" }), /OAUTH_ISSUER/);
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, OAUTH_RESOURCE: "" }), /OAUTH_RESOURCE/);
+  // issuer not an absolute URL / not https
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, OAUTH_ISSUER: "not-a-url" }), /OAUTH_ISSUER/);
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, OAUTH_ISSUER: "http://captatum.test" }), /OAUTH_ISSUER/);
+  // resource not an absolute URL
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, OAUTH_RESOURCE: "not-a-url" }), /OAUTH_RESOURCE/);
+  // CF Access certs URL / issuer must be a real absolute https URL, not just an https:// prefix (PR #86 review)
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, CF_ACCESS_CERTS_URL: "https://" }), /CF_ACCESS_CERTS_URL/);
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, CF_ACCESS_ISSUER: "https://" }), /CF_ACCESS_ISSUER/);
+  // both valid -> boots hosted (regression guard)
+  assert.equal(loadAuthRuntimeConfig(valid).flavor, "hosted");
+});
+
+test("hosted boot fails closed on a plaintext http:// CF_ACCESS_CERTS_URL (review)", () => {
+  // The JWKS fetch is the inbound-auth trust root — an http:// URL lets a MITM inject
+  // their own key and mint tokens as any identity. Must be rejected like OAUTH_ISSUER.
+  const valid = {
+    CAPTATUM_FLAVOR: "hosted",
+    NODE_ENV: "production",
+    OAUTH_ISSUER: "https://captatum.test",
+    OAUTH_RESOURCE: "https://captatum.test/mcp",
+    OAUTH_CONSENT_SIGNING_SECRET: "test-consent-secret-with-enough-entropy",
+    OAUTH_SIGNING_PRIVATE_JWK: JSON.stringify(testPrivateJwk()),
+    CF_ACCESS_ENABLED: "true",
+    CF_ACCESS_AUDIENCE: "aud",
+    CF_ACCESS_CERTS_URL: "https://x/certs",
+    CF_ACCESS_ISSUER: "https://x",
+  } as Record<string, string>;
+  assert.throws(
+    () => loadAuthRuntimeConfig({ ...valid, CF_ACCESS_CERTS_URL: "http://cloudflareaccess.com/cdn-cgi/access/certs" }),
+    /CF_ACCESS_CERTS_URL/,
+  );
+  assert.throws(
+    () => loadAuthRuntimeConfig({ ...valid, CF_ACCESS_ISSUER: "http://x" }),
+    /CF_ACCESS_ISSUER/,
+  );
+});
+
+test("hosted boot rejects URL shapes Node would normalize (single-slash issuer, non-http resource)", () => {
+  const valid = {
+    CAPTATUM_FLAVOR: "hosted",
+    NODE_ENV: "production",
+    OAUTH_ISSUER: "https://captatum.test",
+    OAUTH_RESOURCE: "https://captatum.test/mcp",
+    OAUTH_CONSENT_SIGNING_SECRET: "test-consent-secret-with-enough-entropy",
+    OAUTH_SIGNING_PRIVATE_JWK: JSON.stringify(testPrivateJwk()),
+    CF_ACCESS_ENABLED: "true",
+    CF_ACCESS_AUDIENCE: "aud",
+    CF_ACCESS_CERTS_URL: "https://x/certs",
+    CF_ACCESS_ISSUER: "https://x",
+  } as Record<string, string>;
+  // `https:/host` (one slash) is normalized by new URL to https://host — the raw
+  // prefix check must reject it, or discovery metadata is built from a malformed issuer.
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, OAUTH_ISSUER: "https:/captatum.test" }), /OAUTH_ISSUER/);
+  // resource must be http(s) (not an opaque javascript:/ftp: scheme).
+  assert.throws(() => loadAuthRuntimeConfig({ ...valid, OAUTH_RESOURCE: "ftp://h/r" }), /OAUTH_RESOURCE/);
+});
+
 test("approve rejects a cross-origin POST (OAUTH-4 CSRF fail-closed)", async () => {
   const ctx = await setup();
   const authorize = await ctx.app.inject({ method: "GET", url: "/oauth/authorize", headers: { "cf-access-jwt-assertion": STUB_TOKEN }, query: { response_type: "code", client_id: "client-1", redirect_uri: REDIRECT, code_challenge: pkceChallenge("verifier-12345678901234567890"), code_challenge_method: "S256" } });

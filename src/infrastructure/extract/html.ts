@@ -43,16 +43,26 @@ export function findStartTags(html: string, tagName: string, limit = Number.POSI
 }
 
 export function findElements(html: string, tagName: string): HtmlElement[] {
+  // REDOS-5: linear — one advancing cursor finds each close via boundary-checked
+  // findCloseTag; on the first missing close, no later opener has one either, so stop.
   const lower = html.toLowerCase();
   const wanted = tagName.toLowerCase();
-  return findStartTags(html, wanted).map((tag) => {
-    const closeStart = lower.indexOf(`</${wanted}`, tag.end);
+  const close = `</${wanted}`;
+  const elements: HtmlElement[] = [];
+  let cursor = 0;
+  for (const tag of findStartTags(html, wanted)) {
+    if (tag.start < cursor) continue; // a tag inside an already-consumed element swallows a sibling (PR #86)
+    if (tag.end > cursor) cursor = tag.end;
+    const closeStart = findCloseTag(lower, close, cursor);
     if (closeStart === -1) {
-      return { tag, content: html.slice(tag.end), end: html.length };
+      elements.push({ tag, content: html.slice(tag.end), end: html.length });
+      return elements;
     }
     const closeEnd = findTagEnd(html, closeStart + 2);
-    return { tag, content: html.slice(tag.end, closeStart), end: closeEnd };
-  });
+    elements.push({ tag, content: html.slice(tag.end, closeStart), end: closeEnd });
+    cursor = closeEnd;
+  }
+  return elements;
 }
 
 export function extractVisibleText(html: string): string {
@@ -91,12 +101,8 @@ export function stripHtmlComments(html: string): string {
   return out;
 }
 
-/**
- * Remove `<...>` tag spans linearly, replacing each with a space (matching the
- * old `<[^>]*>` → " "). When a `<` has no following `>`, the rest is literal
- * text — append it once and stop, avoiding the per-`<` EOS rescan that made
- * `<[^>]*>` quadratic on a bare-`<` flood (REDOS-2).
- */
+/** Remove `<...>` tag spans linearly → " " (old `<[^>]*>` was REDOS-2). A `<` with no
+ *  following `>` ends the scan: the rest is literal text, appended once. */
 export function stripHtmlTags(html: string): string {
   let out = "";
   let cursor = 0;
@@ -200,12 +206,9 @@ function extractBodyHtml(html: string): string | null {
 }
 
 export function stripElement(html: string, tagName: string): string {
-  // Linear: splice each element from its start tag to its close, replacing it
-  // with a space (matching the old regex's " "). The old
-  // `new RegExp(`<tag\b[^>]*>[\s\S]*?</tag>`)` was quadratic on many unterminated
-  // openers (REDOS-3). Closes are monotonic, so the first missing close means
-  // none follow — return instead of re-scanning. The close is boundary-checked so
-  // `</script` does not match `</scripture>`.
+  // Linear: splice each element start→close to a space. The old regex was quadratic
+  // on unterminated openers (REDOS-3); closes are monotonic, so the first missing
+  // close means none follow — return. Boundary-checked so `</script` ≠ `</scripture>`.
   const wanted = tagName.toLowerCase();
   const lower = html.toLowerCase();
   let out = "";
@@ -232,7 +235,7 @@ function findCloseTag(lower: string, closeOpen: string, from: number): number {
     const at = lower.indexOf(closeOpen, search);
     if (at === -1) return -1;
     const next = lower[at + closeOpen.length];
-    if (next === undefined || next === ">" || next === "/" || next === " " || next === "\t" || next === "\n" || next === "\r") {
+    if (next === undefined || next === ">" || next === "/" || next === " " || next === "\t" || next === "\n" || next === "\f" || next === "\r") {
       return at;
     }
     search = at + 1;

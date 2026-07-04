@@ -30,7 +30,9 @@ export interface LlmGenerateInput {
   schema?: unknown;
   budget?: number;
   messages: LlmMessage[];
-  maxOutputTokens?: number;
+  /** Always bounded by the transformer via resolveOutputCap (#3) — required so no
+   *  future caller can silently omit it and trigger unbounded provider generation. */
+  maxOutputTokens: number;
 }
 
 export interface LlmGenerateResult {

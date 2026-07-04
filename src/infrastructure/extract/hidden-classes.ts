@@ -25,11 +25,19 @@ export function collectHiddenDisplayNoneClasses(html: string): Set<string> {
     stripHtmlComments(html),
   );
   const lower = live.toLowerCase();
+  // REDOS-5: linear. A single advancing cursor finds each `</style>` once; the old
+  // per-block `findStyleClose(tag.end)` + `continue` on -1 rescanned to EOS for every
+  // `<style>` opener (quadratic on a `<style>` flood). Closes are monotonic, so the
+  // first missing close means no later block has one either — break.
+  let cursor = 0;
   for (const tag of findStartTags(live, "style")) {
+    if (tag.start < cursor) continue; // inside an already-consumed <style> block (PR #86)
     if (!styleAppliesToScreen(tag.attrs.media, tag.attrs.type)) continue;
-    const closeStart = findStyleClose(lower, tag.end);
-    if (closeStart === -1) continue;
+    if (tag.end > cursor) cursor = tag.end;
+    const closeStart = findStyleClose(lower, cursor);
+    if (closeStart === -1) break;
     collectDisplayNoneClasses(live.slice(tag.end, closeStart), lastIsHidden);
+    cursor = closeStart + 1;
   }
   const classes = new Set<string>();
   for (const [cls, hidden] of lastIsHidden) if (hidden) classes.add(cls);

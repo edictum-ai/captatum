@@ -8,12 +8,15 @@ import { OllamaProvider } from "./ollama.ts";
 import { OpenRouterProvider } from "./openrouter.ts";
 import { buildMessages } from "./prompts.ts";
 import { detectSensitiveTransformInput } from "./safety.ts";
-import { estimateTokens, normalizeBudget } from "./tokens.ts";
+import { estimateTokens, MAX_OUTPUT_TOKENS_CAP, resolveOutputCap } from "./tokens.ts";
 import type { LlmGenerateResult, LlmModelCandidate, ProviderMap } from "./types.ts";
 
 const INITIAL_SCORE = 0.8;
 const EMA_ALPHA = 0.25;
-const RESERVED_OUTPUT_TOKENS = 2_000;
+// Reserved output headroom for the context-fit gate. Equals the output-token hard cap
+// so a model admitted by fits() can always hold the requested generation (admission
+// and the cap agree — no mid-completion context overflow).
+const RESERVED_OUTPUT_TOKENS = MAX_OUTPUT_TOKENS_CAP;
 
 export class ModelRouter implements ModelRouterPort {
   private readonly candidatesByKey: Map<string, LlmModelCandidate>;
@@ -53,17 +56,22 @@ export interface LlmTransformerOptions {
   router: ModelRouterPort;
   providers: ProviderMap;
   clock?: ClockPort;
+  /** Output-token cap applied when the caller omits `budget` (#3). Defaults to the
+   *  TRANSFORM_MAX_OUTPUT_TOKENS config knob. */
+  maxOutputTokensDefault?: number;
 }
 
 export class LlmTransformer implements TransformPort {
   private readonly router: ModelRouterPort;
   private readonly providers: ProviderMap;
   private readonly clock?: ClockPort;
+  private readonly maxOutputTokensDefault: number;
 
   constructor(options: LlmTransformerOptions) {
     this.router = options.router;
     this.providers = options.providers;
     this.clock = options.clock;
+    this.maxOutputTokensDefault = options.maxOutputTokensDefault ?? config.transform.maxOutputTokensDefault();
   }
 
   /** A provider is configured iff at least one has model candidates. */
@@ -118,7 +126,7 @@ export class LlmTransformer implements TransformPort {
           schema: input.schema,
           budget: input.budget,
           messages,
-          maxOutputTokens: normalizeBudget(input.budget),
+          maxOutputTokens: resolveOutputCap(input.budget, this.maxOutputTokensDefault),
         });
         // #48 B: an empty completion (DeepSeek capacity pressure) is a failure —
         // retry the next candidate (qwen) with `fallbackFrom`, instead of failing

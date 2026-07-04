@@ -410,6 +410,63 @@ test("summary budget is sent to provider and over-budget output lowers feedback"
   assert.ok(router.scoreFor("free/model") < 0.8);
 });
 
+test("transform with no budget sends a bounded default output cap, never undefined (#3)", async () => {
+  // Pre-fix, an omitted budget left maxOutputTokens undefined → JSON.stringify dropped
+  // it → providers generated with no server-side bound (unbounded paid spend).
+  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), { text: "ok" });
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  await transformer.transform({ mode: "summarize", output: "summary", content: "x", prompt: "p" });
+  const cap = provider.calls[0]?.maxOutputTokens;
+  assert.equal(typeof cap, "number", "maxOutputTokens must always be set");
+  assert.equal(Number.isInteger(cap), true);
+  assert.ok((cap ?? 0) >= 1);
+  assert.equal(cap, 2000, "default cap applied when budget is omitted");
+});
+
+test("explicit budget below the default is honored (#3)", async () => {
+  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), { text: "ok" });
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  await transformer.transform({ mode: "summarize", output: "summary", content: "x", prompt: "p", budget: 50 });
+  assert.equal(provider.calls[0]?.maxOutputTokens, 50, "small explicit budget must not be bumped to the default");
+});
+
+test("explicit budget above the hard cap is clamped (#3)", async () => {
+  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), { text: "ok" });
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  await transformer.transform({ mode: "summarize", output: "summary", content: "x", prompt: "p", budget: 999_999 });
+  assert.equal(provider.calls[0]?.maxOutputTokens, 4000, "budget clamped to the hard cap");
+});
+
+test("maxOutputTokensDefault option overrides the config default (#3)", async () => {
+  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), { text: "ok" });
+  const transformer = new LlmTransformer({
+    router: new ModelRouter(provider.candidates()),
+    providers: { openrouter: provider },
+    maxOutputTokensDefault: 123,
+  });
+  await transformer.transform({ mode: "summarize", output: "summary", content: "x", prompt: "p" });
+  assert.equal(provider.calls[0]?.maxOutputTokens, 123);
+});
+
+test("sensitive content with only a remote Ollama falls back to raw, no egress (#4)", async () => {
+  // A remote OLLAMA_BASE_URL yields local:false, so the sensitive-content gate
+  // (localOnly) cannot select it → raw fallback instead of egressing credentials.
+  const remote = new RecordingProvider(candidate("ollama", "remote-model", { free: true, local: false }), new Error("must not egress"));
+  const transformer = new LlmTransformer({
+    router: new ModelRouter(remote.candidates()),
+    providers: { ollama: remote },
+  });
+  const result = await transformer.transform({
+    mode: "summarize",
+    output: "summary",
+    content: "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig\nPublic body",
+    prompt: "Summarize",
+  });
+  assert.equal(result.info.provider, "none");
+  assert.equal(result.info.reason, "sensitive_content_no_local_provider");
+  assert.equal(remote.calls.length, 0, "no egress to the remote provider");
+});
+
 test("sensitive content prefers local Ollama and skips hosted provider", async () => {
   const hosted = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), { text: "hosted" });
   const local = new RecordingProvider(candidate("ollama", "local/model", { free: true, local: true }), { text: "local summary" });

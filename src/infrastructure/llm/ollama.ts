@@ -1,4 +1,4 @@
-import { postJson } from "./http-json.ts";
+import { isLoopbackUrl, postJson } from "./http-json.ts";
 import type { LlmGenerateInput, LlmGenerateResult, LlmModelCandidate, LlmProvider } from "./types.ts";
 
 const DEFAULT_CONTEXT_TOKENS = 128_000;
@@ -23,11 +23,15 @@ export class OllamaProvider implements LlmProvider {
 
   candidates(): LlmModelCandidate[] {
     if (!this.baseUrl) return [];
+    // #4: `local` is derived from the base URL actually being loopback, not hardcoded.
+    // A remote HTTPS OLLAMA_BASE_URL is local:false, so the sensitive-content gate
+    // (localOnly) won't select it and flagged content falls back to raw rather than
+    // egressing to a remote host. The "stays local" guarantee is loopback-derived.
     return [{
       provider: this.id,
       model: this.model,
       free: true,
-      local: true,
+      local: isLoopbackUrl(this.baseUrl),
       supportsJson: true,
       contextTokens: DEFAULT_CONTEXT_TOKENS,
       costWeight: 0,

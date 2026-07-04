@@ -90,6 +90,14 @@ the contract reference; this file is the security reasoning.
   explicit; local mode must stay loopback-only.
 - Response guards: reject `Content-Length` > max before reading; stream through a
   counting `TransformStream`.
+- Linear HTML extraction (REDOS-5): every element/close-tag/comment/`<style>`/svg-`<text>`
+  scanner uses a monotonic close-search cursor (no per-tag rescan to EOS), so an
+  unclosed-same-tag flood within the 1 MB `EXTRACT_CHAR_BUDGET` cannot stall the
+  synchronous event loop. The byte budget is a backstop, not the primary control.
+- Bounded transform generation: every provider call carries a bounded
+  `max_tokens`/`num_predict` — the server default (`TRANSFORM_MAX_OUTPUT_TOKENS`,
+  2000) when `budget` is omitted, clamped to a 4000 hard cap — so a missing budget
+  cannot trigger unbounded paid generation (cost/latency DoS).
 - Logging: metadata-only allow-list (tier, finalUrl, platform, status, bytes,
   timing, blockReason); never body, never `Set-Cookie`/`Authorization`; canonicalize
   logged URLs to scheme+host when host is private.
@@ -104,10 +112,20 @@ the contract reference; this file is the security reasoning.
 - Authorization codes and refresh tokens are stored only as `sha256` hashes.
 - Refresh-token rotation keeps consumed token hashes so replay can be detected;
   replay revokes the token family and blocks future rotations in that family.
+  Retention is bounded but covers the full family validity window: each rotation
+  issues a fresh TTL, so a successor outlives its consumed predecessor — a consumed
+  row is retained as long as any family member is still valid (so a stolen-token
+  replay can still revoke the family), and GC'd only once the whole family is past
+  validity. Orphaned families are cleaned, so the store is not a perpetual accumulator.
 - Hosted production requires `OAUTH_CONSENT_SIGNING_SECRET` +
-  `OAUTH_SIGNING_PRIVATE_JWK`, fail-fast at boot. The hosted flavor must not
-  silently generate production signing secrets; missing injection is a boot
-  failure.
+  `OAUTH_SIGNING_PRIVATE_JWK` + `OAUTH_ISSUER` (absolute `https` URL) +
+  `OAUTH_RESOURCE` (absolute URL), fail-fast at boot. The hosted flavor must not
+  silently generate production signing secrets or boot with empty iss/aud;
+  missing/malformed injection is a boot failure.
+- The Cloudflare Access JWT verifier confirms signature/audience/issuer/expiry and
+  email presence in code; identity allowlisting (which emails may mint a token) is
+  delegated to the CF Zero Trust Access app policy — the single source of truth.
+  `CF_ACCESS_EMAIL_ALLOWLIST` is an optional defense-in-depth second gate.
 
 ## Known Risks
 
@@ -136,12 +154,26 @@ the contract reference; this file is the security reasoning.
   HTTPS checked-IP + original TLS identity path is proven.
 - Single-node store: the default SQLite file (and single-node TiDB) is not HA.
   SQLite suits single-instance / small-team hosted deploys; select TiDB for scale.
+- TiDB transaction lifecycle (availability): the pooled-connection transaction
+  (`getConnection` → `beginTransaction` → commit/rollback → `release`) releases its
+  connection on every exit path including a `beginTransaction` failure, so the small
+  (`connectionLimit:5`) pool cannot be exhausted by a handful of begin errors and
+  stall every OAuth store operation (auth outage via pool exhaustion).
+- OpenRouter API-key egress is `https://`-only: a non-loopback `http://`
+  `OPENROUTER_BASE_URL` is rejected at provider construction (and the transport
+  refuses an authorization header over cleartext http to a non-loopback host), so a
+  misconfigured base URL cannot leak the key in plaintext.
 
 ## Sensitive-content detection
 
 `detectSensitiveTransformInput` (`src/infrastructure/llm/safety.ts`) gates whether
-fetched content may egress to a hosted LLM (OpenRouter) vs. routing local-only
-(Ollama) or skipping the transform. It is a signal-based heuristic, not a guarantee.
+fetched content may egress to a hosted LLM (OpenRouter) vs. routing to a
+loopback-only provider or skipping the transform. `localOnly` selects only
+candidates whose base URL resolves to loopback (`localhost` / `127.0.0.0/8` / `::1`);
+a remote HTTPS `OLLAMA_BASE_URL` yields `local:false`, so flagged content falls back
+to raw rather than egressing to it — the "stays local" guarantee is loopback-derived
+from the actual URL, not from the provider name. It is a signal-based heuristic, not
+a guarantee.
 
 High-confidence signals (still flagged — in the source url AND embedded in content):
 - Credential values — PEM private-key headers, GitHub/Anthropic/OpenAI/AWS/Slack/

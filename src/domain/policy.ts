@@ -67,6 +67,19 @@ export function isPrivate(ip: string): boolean {
   return false;
 }
 
+/** Whether a host is a loopback endpoint: the name "localhost", an IPv4 literal in
+ *  127.0.0.0/8, or the IPv6 literal ::1. A DNS NAME such as "127.attacker.example" is
+ *  NOT loopback — only IP literals count — so it cannot smuggle a cleartext-http bearer
+ *  credential or mark a remote provider "local" for sensitive-content routing (PR #86). */
+export function isLoopbackHost(host: string): boolean {
+  const cleaned = stripBracketsAndZone(host);
+  if (cleaned === "localhost") return true;
+  const v4 = parseIpv4(cleaned);
+  if (v4 !== null) return v4 >>> 24 === 127;
+  const v6 = parseIpv6(cleaned);
+  return v6 !== null && v6 === 1n;
+}
+
 export function ipVersion(ip: string): 0 | 4 | 6 {
   if (parseIpv4(stripBracketsAndZone(ip)) !== null) return 4;
   if (parseIpv6(stripBracketsAndZone(ip)) !== null) return 6;

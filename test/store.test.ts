@@ -6,13 +6,14 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { SaveAuthCodeInput, SaveRefreshTokenInput } from "../src/application/ports/store.ts";
-import { StoreInputError } from "../src/application/ports/store.ts";
+import { StoreInputError, assertUtcIsoTimestamp } from "../src/application/ports/store.ts";
 import { openSqliteStore } from "../src/infrastructure/sqlite/index.ts";
 import { migrateTidbStore, TidbStore } from "../src/infrastructure/tidb/index.ts";
 import type { TidbClient } from "../src/infrastructure/tidb/index.ts";
 
 const NOW = "2026-06-16T12:00:00.000Z";
 const LATER = "2026-06-16T12:05:00.000Z";
+const MID = "2026-06-16T12:30:00.000Z";
 const FUTURE = "2026-06-16T13:00:00.000Z";
 const PAST = "2026-06-16T11:00:00.000Z";
 
@@ -38,6 +39,17 @@ test("sqlite auth codes are hashed, single-use, expired, and not content storage
   await store.close();
   assertNoRawStrings(file, [rawCode, expiredRawCode]);
   assertNoContentTables(file);
+  cleanup();
+});
+
+test("sqlite sweepExpired rejects a non-millisecond cutoff (PR #86 review)", async () => {
+  const { file, cleanup } = sqlitePath();
+  const store = openSqliteStore(file);
+  // A mixed-precision cutoff string-compares wrong against fixed ...fffZ expiries and
+  // could sweep still-valid auth state — reject it (parity with TiDB's sweepExpired).
+  await assert.rejects(store.sweepExpired("2026-06-16T12:00:00Z"), (error) => error instanceof StoreInputError);
+  await store.sweepExpired(NOW); // a valid 3-ms-digit cutoff still works
+  await store.close();
   cleanup();
 });
 
@@ -205,6 +217,185 @@ test("tidb rotation preserves refresh-token metadata from the consumed token", a
   assert.deepEqual(second?.scopes, ["fetch:read"]);
 });
 
+test("tidb transaction releases the connection even when beginTransaction fails", async () => {
+  // #2: getConnection() + beginTransaction() ran before the try/finally, so a begin
+  // throw leaked the pooled connection. With connectionLimit:5, five such failures
+  // exhaust the pool and every OAuth call hangs. After the fix, release() still runs.
+  class BeginFailsTidb extends FakeTidb {
+    async beginTransaction(): Promise<void> {
+      throw new Error("begin exploded");
+    }
+  }
+  const fake = new BeginFailsTidb();
+  await migrateTidbStore(fake);
+  const store = new TidbStore(fake);
+  await assert.rejects(store.findRefreshToken(sha256Hex("any")), /begin exploded/);
+  assert.ok(
+    fake.txEvents.includes("release"),
+    "connection leaked: release() not called after beginTransaction threw",
+  );
+});
+
+test("assertUtcIsoTimestamp requires millisecond precision to keep expiry ordering lexicographic", () => {
+  // #8: expiry is compared as a string; uniform 3-digit-ms precision is required or
+  // ordering can invert ("…00Z" sorts after "…00.500Z"), flipping expired→valid.
+  assert.throws(() => assertUtcIsoTimestamp("2026-07-03T12:00:00Z", "expiresAt"), StoreInputError);
+  assert.throws(() => assertUtcIsoTimestamp("2026-07-03T12:00:00+00:00", "expiresAt"), StoreInputError);
+  assert.throws(() => assertUtcIsoTimestamp("2026-07-03T12:00:00.12Z", "expiresAt"), StoreInputError);
+  assert.throws(() => assertUtcIsoTimestamp("2026-07-03T12:00:00.1234Z", "expiresAt"), StoreInputError);
+  assert.doesNotThrow(() => assertUtcIsoTimestamp("2026-07-03T12:00:00.000Z", "expiresAt"));
+  assert.doesNotThrow(() => assertUtcIsoTimestamp("2026-07-03T12:00:00.500Z", "expiresAt"));
+});
+
+test("sqlite sweeps consumed refresh tokens past validity and cleans the orphaned family", async () => {
+  // #7: pre-fix, the sweep kept `AND consumed_at IS NULL` and the family cleanup
+  // required `revoked_at IS NOT NULL`, so consumed rows + non-revoked families grew
+  // without bound. Both tokens here expire LATER; rotate at NOW consumes T1.
+  const { file, cleanup } = sqlitePath();
+  const store = openSqliteStore(file);
+  const rawOne = "gc-refresh-one";
+  const rawTwo = "gc-refresh-two";
+  await store.saveRefreshToken(refreshToken(rawOne, "gc-family", null, LATER));
+  await store.rotateRefreshToken(
+    sha256Hex(rawOne),
+    refreshToken(rawTwo, "gc-family", sha256Hex(rawOne), LATER),
+    NOW,
+  );
+  await store.sweepExpired(FUTURE);
+  assert.equal(rowCount(file, "oauth_refresh_tokens"), 0, "consumed + expired tokens swept");
+  assert.equal(rowCount(file, "oauth_refresh_token_families"), 0, "orphaned (non-revoked) family cleaned");
+  await store.close();
+  cleanup();
+});
+
+test("sqlite retains a still-valid consumed token so replay still revokes the family", async () => {
+  // #7 regression guard: a consumed token must survive until its expires_at, else a
+  // stolen-token replay after the sweep sees no row and silently fails to revoke.
+  const { file, cleanup } = sqlitePath();
+  const store = openSqliteStore(file);
+  const rawOne = "retain-refresh-one";
+  const rawTwo = "retain-refresh-two";
+  const rawThree = "retain-refresh-three";
+  await store.saveRefreshToken(refreshToken(rawOne, "retain-family", null, FUTURE));
+  await store.rotateRefreshToken(
+    sha256Hex(rawOne),
+    refreshToken(rawTwo, "retain-family", sha256Hex(rawOne), FUTURE),
+    NOW,
+  );
+  await store.sweepExpired(LATER); // LATER < FUTURE — still within validity
+  assert.notEqual(await store.findRefreshToken(sha256Hex(rawOne)), null, "consumed token retained within validity");
+  assert.equal(await store.rotateRefreshToken(
+    sha256Hex(rawOne),
+    refreshToken(rawThree, "retain-family", sha256Hex(rawOne), FUTURE),
+    LATER,
+  ), null, "replay of consumed T1 detected");
+  assert.equal(await store.rotateRefreshToken(
+    sha256Hex(rawTwo),
+    refreshToken(rawThree, "retain-family", sha256Hex(rawTwo), FUTURE),
+    LATER,
+  ), null, "family revoked — successor T2 is dead");
+  await store.close();
+  cleanup();
+});
+
+test("sqlite retains a consumed predecessor until its whole family is past validity (#7 replay window)", async () => {
+  // Production gives each rotation a FRESH TTL, so a successor outlives its consumed
+  // predecessor. Sweeping at the predecessor's own expiry must NOT delete it while a
+  // family successor is still valid, or a stolen-token replay can no longer revoke it.
+  const { file, cleanup } = sqlitePath();
+  const store = openSqliteStore(file);
+  const rawOne = "window-refresh-one";
+  const rawTwo = "window-refresh-two";
+  const rawThree = "window-refresh-three";
+  // T1 issued at NOW, expires LATER; rotated to T2 which expires FUTURE (fresh TTL).
+  await store.saveRefreshToken(refreshToken(rawOne, "window-family", null, LATER));
+  await store.rotateRefreshToken(
+    sha256Hex(rawOne),
+    refreshToken(rawTwo, "window-family", sha256Hex(rawOne), FUTURE),
+    NOW,
+  );
+  // Sweep at MID (LATER < MID < FUTURE): T1 is expired, T2 is still valid.
+  await store.sweepExpired(MID);
+  assert.notEqual(
+    await store.findRefreshToken(sha256Hex(rawOne)),
+    null,
+    "consumed predecessor retained while a family successor is still valid",
+  );
+  // The expired-but-retained T1 replay must still revoke the family.
+  assert.equal(await store.rotateRefreshToken(
+    sha256Hex(rawOne),
+    refreshToken(rawThree, "window-family", sha256Hex(rawOne), FUTURE),
+    MID,
+  ), null, "stolen T1 replay still detected (revokes the family)");
+  assert.equal(await store.rotateRefreshToken(
+    sha256Hex(rawTwo),
+    refreshToken(rawThree, "window-family", sha256Hex(rawTwo), FUTURE),
+    MID,
+  ), null, "successor T2 now dead (family was revoked)");
+  await store.close();
+  cleanup();
+});
+
+test("sqlite does not sweep a family that still holds a current token", async () => {
+  const { file, cleanup } = sqlitePath();
+  const store = openSqliteStore(file);
+  const rawOne = "active-refresh-one";
+  const rawTwo = "active-refresh-two";
+  await store.saveRefreshToken(refreshToken(rawOne, "active-family", null, FUTURE));
+  await store.rotateRefreshToken(
+    sha256Hex(rawOne),
+    refreshToken(rawTwo, "active-family", sha256Hex(rawOne), FUTURE),
+    NOW,
+  );
+  await store.sweepExpired(NOW);
+  assert.equal(rowCount(file, "oauth_refresh_tokens"), 2, "current tokens retained");
+  assert.equal(rowCount(file, "oauth_refresh_token_families"), 1, "active family retained");
+  await store.close();
+  cleanup();
+});
+
+test("tidb fake sweeps consumed refresh tokens past validity and cleans the orphaned family", async () => {
+  const fake = new FakeTidb();
+  await migrateTidbStore(fake);
+  const store = new TidbStore(fake);
+  const rawOne = "tidb-gc-one";
+  const rawTwo = "tidb-gc-two";
+  await store.saveRefreshToken(refreshToken(rawOne, "tidb-gc-family", null, LATER));
+  await store.rotateRefreshToken(
+    sha256Hex(rawOne),
+    refreshToken(rawTwo, "tidb-gc-family", sha256Hex(rawOne), LATER),
+    NOW,
+  );
+  await store.sweepExpired(FUTURE);
+  assert.equal(fake.refreshTokens.size, 0, "consumed + expired tokens swept");
+  assert.equal(fake.families.size, 0, "orphaned (non-revoked) family cleaned");
+});
+
+test("tidb fake retains a consumed predecessor while a family successor is valid (#7 replay window)", async () => {
+  const fake = new FakeTidb();
+  await migrateTidbStore(fake);
+  const store = new TidbStore(fake);
+  const rawOne = "tidb-window-one";
+  const rawTwo = "tidb-window-two";
+  await store.saveRefreshToken(refreshToken(rawOne, "tidb-window-family", null, LATER));
+  await store.rotateRefreshToken(
+    sha256Hex(rawOne),
+    refreshToken(rawTwo, "tidb-window-family", sha256Hex(rawOne), FUTURE),
+    NOW,
+  );
+  // Sweep at MID (LATER < MID < FUTURE): T1 expired but T2 still valid -> T1 retained.
+  await store.sweepExpired(MID);
+  assert.equal(fake.refreshTokens.size, 2, "consumed predecessor retained while successor is valid");
+  assert.ok(fake.refreshTokens.has(sha256Hex(rawOne)), "T1 not swept");
+});
+
+function rowCount(file: string, table: string): number {
+  const db = new DatabaseSync(file);
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: unknown };
+  db.close();
+  return Number(row.n);
+}
+
 function authCode(rawCode: string, expiresAt: string): SaveAuthCodeInput {
   return {
     codeHash: sha256Hex(rawCode),
@@ -327,6 +518,15 @@ class FakeTidb implements TidbClient {
     if (normalized.startsWith("UPDATE oauth_refresh_tokens SET consumed_at")) {
       return this.consumeRefreshToken(params);
     }
+    if (normalized.startsWith("DELETE FROM oauth_consent_jtis")) {
+      return [{ affectedRows: 0 }, []];
+    }
+    if (normalized.startsWith("DELETE FROM oauth_refresh_tokens WHERE expires_at")) {
+      return this.sweepRefreshTokens(params);
+    }
+    if (normalized.startsWith("DELETE FROM oauth_refresh_token_families")) {
+      return this.sweepOrphanedFamilies();
+    }
     throw new Error(`Unhandled fake TiDB SQL: ${normalized}`);
   }
 
@@ -416,6 +616,33 @@ class FakeTidb implements TidbClient {
     if (!token || token.consumed_at !== null) return [{ affectedRows: 0 }, []];
     token.consumed_at = String(params[0]);
     return [{ affectedRows: 1 }, []];
+  }
+
+  private sweepRefreshTokens(params: unknown[]): [unknown, unknown] {
+    // Mirror the store SQL: retain an expired token whose family still has a valid
+    // member (so a stolen-token replay can still revoke the family while a successor lives).
+    const cutoff = String(params[0]);
+    const familyStillValid = new Set<string>();
+    for (const row of this.refreshTokens.values()) {
+      if (row.expires_at >= cutoff) familyStillValid.add(row.family_id);
+    }
+    let deleted = 0;
+    for (const [key, row] of [...this.refreshTokens]) {
+      if (row.expires_at < cutoff && !familyStillValid.has(row.family_id)) {
+        this.refreshTokens.delete(key);
+        deleted += 1;
+      }
+    }
+    return [{ affectedRows: deleted }, []];
+  }
+
+  private sweepOrphanedFamilies(): [unknown, unknown] {
+    const remaining = new Set([...this.refreshTokens.values()].map((row) => row.family_id));
+    let deleted = 0;
+    for (const key of this.families.keys()) {
+      if (!remaining.has(key)) { this.families.delete(key); deleted += 1; }
+    }
+    return [{ affectedRows: deleted }, []];
   }
 
   private clone() {
