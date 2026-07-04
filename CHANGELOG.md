@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.10.0] — 2026-07-05
+
+Closes three of the four reliability gaps the 0.9.0 cross-model benchmark + 5-agent failure diagnosis filed (#108–#111). Three extraction/render fixes, all backward-compatible; each codex-reviewed. (#111 — first-party POST forwarding for Notion-style SPAs — is designed and deferred to 0.11.0; it touches the SSRF-critical egress path and warrants its own focused PR.)
+
+- **fix(extract): score `<article>`/`<main>` by visible-text length (#108)** — `selectMainContentHtml` returned the *first* `<article>` blindly; on card-grid hubs (MS-Learn) that was a 4-word tile while the real text sat in `<main>`. Now scores the first `<article>` vs the richest chrome-stripped `<main>` and picks the larger, with `<main>` winning only when substantially richer (≥1.5×). `<aside>`/`<nav>`/`<footer>` stripped before scoring so a chrome-heavy `<main>` (Anthropic/Mintlify global footer) can't win on bulk. CJK-safe (character length, not a word-count filter). Live: MS-Learn hub 43-char tile → 1263-char hub intro; Anthropic + Vitepress unchanged.
+- **fix(render): raise essential byte budget, guard empty-render promotion, bump settle (#110)** — (1) essential render pool 1×→3× `maxBytes`: heavy client apps (Cursor docs) ship >5MB of JS and crashed into an error boundary at the 1× cap; Cursor docs went 85-char "Something went wrong" → 1580 chars of real content. (2) a render that still yields empty text is no longer promoted as a Tier-3 pass (`render_empty`). (3) post-load settle 3000→5000ms for slow-hydrating docs SPAs. Plus the codex follow-ups (PR #115): empty-render preserves structured-data-only renders; `networkidle` reserves `settleMinDwellMs` for body-stability on short-`timeoutMs` callers (and skips at cap 0 — Playwright `timeout:0` is no-timeout, a hang risk); removed an unreachable render-failure advisory (#114).
+- **fix(shell-gate): scaffolding WebPage/WebSite JSON-LD with empty content must not satisfy the gate (#109)** — JetBrains/Writerside ship `WebPage` nodes with an empty `description` as routing metadata; those satisfied the shell-gate so the page stopped at Tier-1 and returned *empty* content. A node typed only as a scaffolding type (WebPage/WebSite/CollectionPage/BreadcrumbList/…) now counts only with a non-empty content property OR a content-bearing nested entity (`mainEntity`/`about`/…), depth-capped against cycles. Live: JetBrains `welcome.html` empty tier1-jsonld → renders 1330 chars.
+
+Checks: `pnpm run check` + 444 unit + 50 integration fixture tests green.
+
 ## [0.9.0] — 2026-07-04
 
 Closes the gap a cross-model benchmark (captatum vs a naive webfetch, 48+ dev pages) found: captatum was losing to a plain fetch on JS-rendered docs and on docs themes whose prose isn't in an `<article>`. Two fixes + a breaking receipt label.
