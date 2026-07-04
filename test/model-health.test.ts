@@ -59,3 +59,23 @@ test("model-health: a hard failure between successes resets the recovery count (
   recordOutcome(h, "success");
   assert.equal(h.demotion, 1, "still demoted — the hard failure reset the recovery run");
 });
+
+test("model-health: intermittent failures amid successes do NOT demote (#101 review)", () => {
+  // Codex case: F,S,S,F,S,S,F — only 2 of the last 5 attempts failed. Successes must age the
+  // window so stale failures don't accumulate into a permanent demotion.
+  const h = emptyHealth();
+  for (const o of ["hard_fail", "success", "success", "hard_fail", "success", "success", "hard_fail"] as const) {
+    recordOutcome(h, o);
+  }
+  assert.equal(h.demotion, 0, "intermittent failures amid successes do not demote");
+});
+
+test("model-health: a clean run after early failures clears the failure count (#101 review)", () => {
+  const h = emptyHealth();
+  recordOutcome(h, "hard_fail");
+  recordOutcome(h, "hard_fail"); // 2 of last 5 — not yet sustained
+  for (let i = 0; i < HEALTH_WINDOW; i++) recordOutcome(h, "success"); // window is now all successes
+  assert.equal(h.recent.filter(Boolean).length, 0);
+  recordOutcome(h, "hard_fail"); // 1 of last 5 — not sustained
+  assert.equal(h.demotion, 0, "a single failure after a clean run does not demote on stale history");
+});
