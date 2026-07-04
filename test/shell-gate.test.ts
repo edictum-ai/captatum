@@ -36,6 +36,49 @@ test("shell-gate: real body text + empty JSON-LD resolves via content-present, n
   assert.equal(gate.reason, "content-present");
 });
 
+// #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
+// description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
+// on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no
+// content. A scaffolding node counts only when it carries a non-empty content property.
+
+test("shell-gate: scaffolding WebPage JSON-LD with an empty description does not stop an empty shell (#109)", () => {
+  const shell = '<html><body><div id="root"></div>'
+    + '<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"IntelliJ Platform SDK","description":"","url":"https://x.test/p"}</script>'
+    + '</body></html>';
+  const gate = extractHtml({ html: shell, url: "https://x.test/p" }).shellGate;
+  assert.equal(gate.jsRequired, true, "scaffolding WebPage (empty description) must not satisfy the gate");
+  assert.equal(gate.reason, "empty-spa-shell");
+});
+
+test("shell-gate: WebPage JSON-LD WITH a real description still resolves at Tier-1 (#109 regression guard)", () => {
+  const html = '<html><body><div id="root"></div>'
+    + '<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","description":"A real page summary an agent can use without rendering."}</script>'
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://x.test/p" }).shellGate;
+  assert.equal(gate.jsRequired, false);
+  assert.equal(gate.reason, "structured-data-found");
+});
+
+test("hasUsableStructuredData: scaffolding-only nodes need a non-empty content property (#109)", () => {
+  const notUsable: unknown[] = [
+    { "@type": "WebPage", name: "X", description: "" },
+    { "@type": "WebSite", name: "X Help", url: "https://x.test/" },
+    { "@type": "BreadcrumbList", itemListElement: [{ "@type": "ListItem", name: "Home" }] },
+    { "@type": ["WebPage"], name: "x" },
+  ];
+  for (const jsonLd of notUsable) {
+    assert.equal(hasUsableStructuredData({ jsonLd } as StructuredData), false, `scaffolding not usable: ${JSON.stringify(jsonLd)}`);
+  }
+  const usable: unknown[] = [
+    { "@type": "WebPage", description: "Real summary." },
+    { "@type": ["WebPage", "Article"], headline: "x" },
+    { "@type": "JobPosting", title: "Eng" },
+  ];
+  for (const jsonLd of usable) {
+    assert.equal(hasUsableStructuredData({ jsonLd } as StructuredData), true, `usable: ${JSON.stringify(jsonLd)}`);
+  }
+});
+
 test("hasUsableStructuredData: content-bearing JSON-LD predicate edge cases (#81)", () => {
   const notUsable: unknown[] = [null, [], {}, { "@context": "https://schema.org" }, [{ "@context": "x" }], { "@graph": [] }];
   for (const jsonLd of notUsable) {

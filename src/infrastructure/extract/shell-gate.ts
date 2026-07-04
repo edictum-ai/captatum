@@ -56,19 +56,54 @@ export function hasUsableStructuredData(structured: StructuredData): boolean {
   return hasContentBearingAppState(structured.appState);
 }
 
+/** @type values that are page-structure METADATA, not content. A node typed ONLY as one of these
+ *  is "scaffolding" — it labels the page (name/url) but carries no body content, so it must not
+ *  satisfy the shell-gate on its own. JetBrains/Writerside ship WebPage nodes with an empty
+ *  description as routing metadata; treating those as content let a true empty shell stop at Tier-1
+ *  and return no content (#109, dual of #81). Data types (Article/Product/JobPosting/…) and nodes
+ *  with a non-@type key still count via the general rule below. */
+const SCAFFOLDING_TYPES = new Set([
+  "WebPage", "WebSite", "CollectionPage", "SearchResultsPage", "ItemPage",
+  "BreadcrumbList", "SiteNavigationElement", "AboutPage", "ContactPage", "ProfilePage",
+]);
+
+/** schema.org text properties whose non-empty value means real body content an agent can use. */
+const CONTENT_PROPERTIES = new Set(["description", "articleBody", "text", "headline", "abstract", "caption", "body"]);
+
+function nodeTypes(node: Record<string, unknown>): string[] {
+  const type = node["@type"];
+  if (typeof type === "string") return [type];
+  if (Array.isArray(type)) return type.filter((t): t is string => typeof t === "string");
+  return [];
+}
+
+/** A node typed ONLY with scaffolding @types (e.g. WebPage) — needs a content property to count. */
+function isScaffoldingOnly(node: Record<string, unknown>): boolean {
+  const types = nodeTypes(node);
+  return types.length > 0 && types.every((t) => SCAFFOLDING_TYPES.has(t));
+}
+
+function hasNonEmptyContentProp(node: Record<string, unknown>): boolean {
+  return Object.entries(node).some(
+    ([key, value]) => CONTENT_PROPERTIES.has(key) && typeof value === "string" && value.trim().length > 0,
+  );
+}
+
 /**
  * Whether JSON-LD actually carries content an agent can use WITHOUT rendering — a
  * typed node or a real data property. `null` / `[]` / `{}` / a context-only
  * `{"@context":…}` node do NOT count: those are common on client-rendered SPA shells,
  * and treating any-defined jsonLd as usable let an empty `<script type="ld+json">[]`
  * stop a true empty shell from rendering, returning no content (#81). Recurses arrays
- * and `@graph`. (Trivial JSON-LD is still harvested into `structured` for debug/output.)
+ * and `@graph`. A scaffolding-only node (WebPage/WebSite/…) counts only with a non-empty
+ * content property (#109). (Trivial JSON-LD is still harvested into `structured` for output.)
  */
 function hasContentBearingJsonLd(jsonLd: unknown): boolean {
   if (Array.isArray(jsonLd)) return jsonLd.some(hasContentBearingJsonLd);
   if (!jsonLd || typeof jsonLd !== "object") return false;
   const node = jsonLd as Record<string, unknown>;
   if (hasContentBearingJsonLd(node["@graph"])) return true;
+  if (isScaffoldingOnly(node)) return hasNonEmptyContentProp(node);
   // A real node declares a @type or carries a data property beyond @context/@id/@graph.
   return Object.keys(node).some((key) => key !== "@context" && key !== "@id" && key !== "@graph");
 }
