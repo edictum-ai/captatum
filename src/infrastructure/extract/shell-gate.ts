@@ -23,7 +23,7 @@ export function evaluateShellGate(input: {
   // A non-HTML body (text/plain, application/json, XML, image, …) is the COMPLETE intended
   // response however short — the "empty SPA shell needing JS" concept only exists for HTML.
   // Without this guard a 14-byte text/plain "404: Not Found" trips hasContent's <20-byte rule
-  // and escalates to jsRequired, cascading to contentType="spa" + gateReason="login" (#92).
+  // and escalates to jsRequired, cascading to contentType="spa" + gateReason="js-required" (#92).
   // Absent content-type keeps the current HTML-fallback behavior so SPAs served without a
   // declared type still escalate to render when they are genuinely empty shells.
   if (input.contentType && !isHtmlContentType(input.contentType)) {

@@ -138,7 +138,7 @@ test("tier none / render-unavailable with empty content is status fail", () => {
     false,
   );
   assert.equal(unavailable.status, "fail");
-  assert.equal(unavailable.access.gateReason, "login");
+  assert.equal(unavailable.access.gateReason, "js-required");
 });
 
 test("contentType handles @graph, @type arrays, full IRIs, and multi-type precedence", () => {
@@ -300,7 +300,7 @@ test("access gating: paywall / byte_cap / login", () => {
   const truncated = buildStructuredContent(base({ errors: [{ code: "max_bytes", message: "Content truncated at the byte cap" }] }), false);
   assert.deepEqual(truncated.access, { mainContentAccessible: true, gated: true, gateReason: "byte_cap" });
 
-  const login = buildStructuredContent(base({ jsRequired: true, tier: "render-blocked", resolvedVia: "render-blocked", result: "" }), false);
-  assert.deepEqual(login.access, { mainContentAccessible: false, gated: true, gateReason: "login" });
-  assert.equal(login.status, "fail");
+  const jsRequired = buildStructuredContent(base({ jsRequired: true, tier: "render-blocked", resolvedVia: "render-blocked", result: "" }), false);
+  assert.deepEqual(jsRequired.access, { mainContentAccessible: false, gated: true, gateReason: "js-required" });
+  assert.equal(jsRequired.status, "fail");
 });

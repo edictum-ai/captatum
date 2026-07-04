@@ -9,6 +9,7 @@ Current contract version: `v0`.
 ### Breaking changes
 
 - None in the v0.8.0 release.
+- **v0.9.0 (planned):** (1) `access.gateReason: "login"` is renamed to `"js-required"` — captatum never actually detected login walls; "login" was the catch-all for *render-needed* pages, now labeled honestly. (2) `allowRender` defaults to `true` (hosted auto-renders JS-shell pages; was `false`). A consumer keying on `gateReason === "login"` must switch to `"js-required"`.
 
 ## Product
 
@@ -59,7 +60,7 @@ One tool. Input (v0):
 | `transform` | no | Override the default router/model/provider: `{ model?, provider?, ... }`. |
 | `maxBytes` | no | Response byte cap (decompressed). Default 5 MB, server hard-capped. |
 | `timeoutMs` | no | Per-tier wall-clock. Default 15 s (Tier-1/2), 20 s (Tier-3). |
-| `allowRender` | no | Default **false**. If false, Tier-3 is skipped and provenance reports `render-blocked`. |
+| `allowRender` | no | Default **true**. On hosted (browser available) a JS-shell page is rendered automatically; on a no-browser runtime (local) it reports `render-unavailable`. Set `false` to opt out (Tier-3 skipped, provenance reports `render-blocked`). |
 | `debug` | no | Default **false**. When true, the MCP `structuredContent` adds heavy diagnostic fields (`attempts`, `timings`, full `structured` incl. JSON-LD `description`/`articleBody`, `redirects`, `durationMs`, `httpContentType`, `contentSha256`, `provenanceHash`, verbose `transform`). Default payload is lean (see "MCP structuredContent"). |
 
 **Default `output` is provider-conditional** — `summary` (resolved content passed through the Transform router: free-first OpenRouter, or local Ollama → a token-efficient answer to `prompt`) when a provider is configured; otherwise `raw` (clean resolved content, no LLM). This is exactly the role WebFetch's Haiku step plays, but cheaper and fed by accurate rendered/extracted content — and a zero-config call with no provider honestly returns full `raw` content instead of silently degrading to a truncated excerpt. Requesting `output: "summary"` explicitly with no provider still falls back to `raw` (`transform.provider: "none"`). Output is MCP `text` with a provenance line as the first line (HTML-comment-wrapped, always model-visible). For `summary`/`extract`, a **deterministic envelope header** (backend-generated, not LLM) follows the provenance line — `contentType`, `title`, `finalUrl`, `access` (public | gated + reason), `images` count + first URL, `transformModel` — so every client (including ones that surface `content` text but not `structuredContent`) sees the key fields; `raw` output omits it. The companion `structuredContent` is a **lean agent payload** (see "MCP structuredContent"), not the full Result — heavy fields are gated behind `debug`. Token-efficiency signals (`bytes`, `contentType`, `transform.inTokens/outTokens`) let the caller follow up.
@@ -127,7 +128,7 @@ Default (lean) `structuredContent`:
   result,                              // summary text | raw content | extracted JSON (string)
   tier, code, codeText, bytes,         // kept for existing consumers
   resolvedVia, platform, jsRequired,
-  access: { mainContentAccessible, gated, gateReason: "paywall"|"login"|"captcha"|"byte_cap"|"none" },
+  access: { mainContentAccessible, gated, gateReason: "paywall"|"js-required"|"captcha"|"byte_cap"|"none" },
   provenance: { tier, resolvedVia, code, bytes },     // convenience envelope
   warnings: [{ code, message }],       // non-fatal (tier !== "error"): advisories, render-failed-but-tier1-ok, byte-cap truncation, extract_schema_invalid
   images: ["https://…"],               // bounded absolute http(s) URLs for optional multimodal vision fetch
@@ -139,7 +140,7 @@ Default (lean) `structuredContent`:
 Rules:
 - **errors vs warnings:** fatal ⟺ `tier === "error"` (per the note above: "advisory entries never set `tier: error`"). Everything else in `Result.errors` becomes a `warning`.
 - **status:** `fail` when `tier === "error"` or no body content was returned; `partial` when content was returned but warnings exist or the summary/extract transform fell back to raw (`transform.provider === "none"`); else `pass`. A successful candidate-MODEL fallback is a `pass` (not `partial`) — the failed-primary list rides on `transform.fallbackFrom` (debug + audit only), not a warning (#82).
-- **access.gateReason:** `paywall` when JSON-LD declares `isAccessibleForFree: false`; `byte_cap` when the response was truncated at the cap; `login` when no content was returned on a page that needed JS we could not run (render-blocked/render-unavailable/`jsRequired`); else `none`.
+- **access.gateReason:** `paywall` when JSON-LD declares `isAccessibleForFree: false`; `byte_cap` when the response was truncated at the cap; `js-required` when no content was returned on a page that needed JS we could not run (render-blocked/render-unavailable/`jsRequired`); else `none`.
 - **contentType:** `json` when the response's HTTP content-type is `application/json` (or a `+json` suffix); else `pin` for pinterest.*/pin.it hosts; else from the first content-bearing JSON-LD `@type` (`JobPosting`→job, `Product`→product, Article family→article); else `og:type`; else `spa` when `jsRequired`; else `unknown`.
 - **images:** never fetched by this service — surfaced for the calling agent's optional vision fetch. Private/loopback hosts are stripped (string check, no DNS).
 - **result:** snippeted to ~2000 chars in `structuredContent` when large; the full text is always delivered as MCP `content[0].text` (the primary agent channel), so mirroring a huge body in the structured payload would only duplicate tokens. Summaries are small and pass through unchanged.
@@ -167,7 +168,7 @@ success-tier `errors` should pass `debug: true` or read `warnings`. The domain
 `Result` and its `schemaVersion: 1` are unchanged — only the presentation changed.
 
 `access.gateReason: "captcha"` is reserved in the union but not yet emitted (no
-detector); captcha/challenge pages currently fall to `"login"` or `"none"`.
+detector); captcha/challenge pages currently fall to `"js-required"` or `"none"`.
 
 ## Ports
 
@@ -221,8 +222,8 @@ detector); captcha/challenge pages currently fall to `"login"` or `"none"`.
   content via XHR/fetch after `load`; JS-only docs/demos (Docusaurus/Storybook
   in SPA mode); content behind a Cloudflare/anti-bot interstitial that needs a
   real browser; and embedded widgets rendered client-side on a third-party
-  domain (e.g. an Ashby board). Gated by `allowRender` (default false) so a bare
-  `captatum` never spawns a browser.
+  domain (e.g. an Ashby board). On hosted these render automatically (`allowRender` defaults true);
+  set `allowRender: false` to keep a bare `captatum` from spawning a browser.
 
 ## Transform (default output path)
 
@@ -305,7 +306,7 @@ transform seams; they do not require public internet or secrets.
 - `blocked-ssrf.json` — guarded-fetch rejection still returns a result-shaped
   payload with `code: 0`, `codeText: "FETCH_REJECTED"`, `tier: "error"`, and the
   original guarded-fetch error in `errors[0]`.
-- `render-disabled.json` — an empty SPA shell with default `allowRender: false`
+- `render-disabled.json` — an empty SPA shell with `allowRender: false` (the opt-out)
   returns `tier: "render-blocked"` and records the skipped render attempt.
 
 The fixture `structuredContent` field locks the **full domain `Result`** record
