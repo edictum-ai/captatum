@@ -18,6 +18,15 @@ const BLOCKED_TYPES = new Set(["image", "font", "media"]);
  *  time) stay bounded. (cerebralvalley.ai event pages: clerk.browser.js.) */
 const ESSENTIAL_RENDER_TYPES = new Set(["script", "fetch", "xhr", "document"]);
 
+/** The essential pool (script/fetch/xhr/document) gets this many× the non-essential cap.
+ *  Heavy modern docs/apps (Cursor, Jira) ship >5MB of JS/data; at a 1× cap those scripts are
+ *  aborted mid-load and the client app crashes into an error boundary ("Something went wrong")
+ *  instead of rendering content. 3× keeps total per-render egress bounded at ~4×maxBytes
+ *  (~20MB at the 5MB default) while letting the client app actually load. Image/font/media stay
+ *  always-blocked and the render stays timeoutMs-bounded, so the realistic DoS vectors remain
+ *  capped. (#110) */
+export const ESSENTIAL_BUDGET_MULTIPLIER = 3;
+
 function isEssentialRenderType(resourceType: string): boolean {
   return ESSENTIAL_RENDER_TYPES.has(resourceType);
 }
@@ -128,11 +137,12 @@ export class RenderRouteState {
       // fulfilled redirect for a navigation. Render-fidelity limit for
       // cross-origin redirects only — every hop was guard-validated, not an SSRF gap.
     }
-    // TIER3-DOS-1: each pool (essential vs non-essential) is capped at maxBytes.
-    // The response that crosses its pool's cap: NON-essential is aborted; ESSENTIAL
-    // is still fulfilled (aborting a script/fetch mid-load crashes the client app —
-    // e.g. Clerk on cerebralvalley.ai), but the pool is marked exceeded so subsequent
-    // resources in it are aborted. Total egress is thus bounded at ~2×maxBytes.
+    // TIER3-DOS-1: each pool (essential vs non-essential) is capped. The essential cap is
+    // ESSENTIAL_BUDGET_MULTIPLIER× the non-essential cap so heavy client apps (Cursor, Jira)
+    // load instead of crashing into an error boundary. The response that crosses its pool's
+    // cap: NON-essential is aborted; ESSENTIAL is still fulfilled (aborting a script/fetch
+    // mid-load crashes the client app — e.g. Clerk on cerebralvalley.ai), but the pool is
+    // marked exceeded so subsequent resources in it are aborted. Total egress ~4×maxBytes.
     const essential = isEssentialRenderType(resourceType);
     // Re-check AFTER resolve: the early check ran before this `await`, so a CONCURRENT
     // essential may have blown the pool while this request was in flight. The first
@@ -142,8 +152,9 @@ export class RenderRouteState {
     if (essential ? this.essentialBudgetExceeded : this.budgetExceeded) {
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
+    const cap = essential ? this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER : this.input.maxBytes;
     const poolBytes = essential ? this.essentialBytes : this.bytesFulfilled;
-    if (poolBytes + outcome.body.byteLength > this.input.maxBytes) {
+    if (poolBytes + outcome.body.byteLength > cap) {
       if (essential) {
         this.essentialBudgetExceeded = true; // crossing essential: fulfill (fall through)
       } else {

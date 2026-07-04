@@ -31,7 +31,7 @@ export interface PlaywrightRendererDeps {
   chromiumSandbox?: boolean;
   /** Post-load settle: networkidle cap, content-stability min dwell, and stable
    *  threshold (ms). The content-aware settle catches setTimeout/hydration content
-   *  networkidle misses. Defaults 3000 / 1500 / 400. */
+   *  networkidle misses. Defaults 5000 / 1500 / 400. */
   settleMs?: number;
   settleMinDwellMs?: number;
   settleStableMs?: number;
@@ -53,7 +53,7 @@ export class PlaywrightRenderer implements RenderPort {
     this.guard = deps.guard ?? new P1BrowserUrlGuard();
     this.cdpEndpoint = deps.cdpEndpoint;
     this.chromiumSandbox = deps.chromiumSandbox ?? true;
-    this.settleMs = deps.settleMs ?? 3000;
+    this.settleMs = deps.settleMs ?? 5000; // #110: was 3000; both waits return early when stable, so the larger cap only helps slow-hydrating SPAs not yet stable at 3000ms (total settle stays bounded by render timeoutMs).
     this.settleMinDwellMs = deps.settleMinDwellMs ?? 1500;
     this.settleStableMs = deps.settleStableMs ?? 400;
   }

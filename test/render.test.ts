@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
 import type { BrowserUrlGuard } from "../src/infrastructure/render/index.ts";
 import { PlaywrightRenderer, createRenderer } from "../src/infrastructure/render/index.ts";
+import { ESSENTIAL_BUDGET_MULTIPLIER } from "../src/infrastructure/render/route-state.ts";
 
 test("renderer lazy-loads Playwright only when render is invoked", async () => {
   const harness = new BrowserHarness();
@@ -287,20 +288,21 @@ test("render byte budget aborts non-essential types but never essential scripts/
 });
 
 test("render byte budget caps the ESSENTIAL pool too (DoS bound): crossing script fulfilled, later scripts aborted", async () => {
-  // Essentials get their own maxBytes pool so a real app's scripts load, but the pool
-  // is still bounded — the script that crosses the cap is fulfilled (aborting it
-  // mid-load crashes the app), and every essential AFTER that is aborted. This keeps
-  // a flooding SPA from consuming unbounded bytes via script/fetch.
+  // Essentials get their own pool so a real app's scripts load, but the pool is still bounded —
+  // the script that crosses the cap is fulfilled (aborting it mid-load crashes the app), and
+  // every essential AFTER that is aborted. The essential cap is ESSENTIAL_BUDGET_MULTIPLIER (3×)
+  // the non-essential cap so heavy client apps (Cursor, Jira) load instead of crashing (#110);
+  // here maxBytes=100 → essential cap 300, so two 200-byte scripts (400) cross it.
   const fetcher = new FakeFetcher({
-    "https://public.test/s1.js": fetchResult("a".repeat(60), "https://public.test/s1.js"),
-    "https://public.test/s2.js": fetchResult("b".repeat(60), "https://public.test/s2.js"),
-    "https://public.test/s3.js": fetchResult("c".repeat(60), "https://public.test/s3.js"),
-    "https://public.test/s4.js": fetchResult("d".repeat(60), "https://public.test/s4.js"),
+    "https://public.test/s1.js": fetchResult("a".repeat(200), "https://public.test/s1.js"),
+    "https://public.test/s2.js": fetchResult("b".repeat(200), "https://public.test/s2.js"),
+    "https://public.test/s3.js": fetchResult("c".repeat(200), "https://public.test/s3.js"),
+    "https://public.test/s4.js": fetchResult("d".repeat(200), "https://public.test/s4.js"),
   });
   const harness = new BrowserHarness({
     requests: [
-      request("https://public.test/s1.js", "script"), // 60 → pool 60 (< 100) fulfilled
-      request("https://public.test/s2.js", "script"), // 60 → 120 > 100, crossing essential → fulfilled, pool exceeded
+      request("https://public.test/s1.js", "script"), // 200 → pool 200 (< 300) fulfilled
+      request("https://public.test/s2.js", "script"), // 200 → 400 > 300, crossing essential → fulfilled, pool exceeded
       request("https://public.test/s3.js", "script"), // essential pool exceeded → aborted
       request("https://public.test/s4.js", "script"), // aborted
     ],
@@ -309,7 +311,7 @@ test("render byte budget caps the ESSENTIAL pool too (DoS bound): crossing scrip
     .render(renderInput(fetcher, { maxBytes: 100 }));
 
   assert.equal(harness.routes[0]?.fulfilled, true, "s1 under the essential pool fulfilled");
-  assert.equal(harness.routes[1]?.fulfilled, true, "s2 crossing the cap fulfilled (essential — aborting crashes the app)");
+  assert.equal(harness.routes[1]?.fulfilled, true, "s2 crossing the 3× cap fulfilled (essential — aborting crashes the app)");
   assert.equal(harness.routes[2]?.aborted, true, "s3 after the essential pool is blown aborted (DoS bound)");
   assert.equal(harness.routes[3]?.aborted, true, "s4 aborted");
 });
@@ -656,4 +658,18 @@ test("createRenderer degrades to render-unavailable for hosted flavor with no si
     if (prevCdp === undefined) delete process.env.CAPTATUM_BROWSER_CDP_ENDPOINT;
     else process.env.CAPTATUM_BROWSER_CDP_ENDPOINT = prevCdp;
   }
+});
+
+test("essential render pool is capped at 3× maxBytes so heavy client apps load (#110)", () => {
+  // Cursor/Jira ship >5MB of JS/data; at a 1× cap those scripts abort mid-load and the client
+  // app crashes into an error boundary. The essential pool (script/fetch/xhr/document) gets
+  // ESSENTIAL_BUDGET_MULTIPLIER× the non-essential cap; non-essential (stylesheets etc.) stays 1×.
+  assert.equal(ESSENTIAL_BUDGET_MULTIPLIER, 3);
+});
+
+test("default post-load settle is 5000ms (raised from 3000 for slow-hydrating docs SPAs) (#110)", () => {
+  // Both the networkidle wait and the content-stability dwell return EARLY once stable, so the
+  // cap only adds latency for pages not yet stable at 3000ms. Pin the default against regressions.
+  const renderer = new PlaywrightRenderer() as PlaywrightRenderer & { settleMs: number };
+  assert.equal(renderer.settleMs, 5000);
 });
