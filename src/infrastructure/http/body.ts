@@ -121,7 +121,7 @@ function isUtf8(charset: string): boolean {
  *  HTML/XHTML, or an unknown/absent type (a meta charset in the bytes strongly
  *  implies HTML). Declared non-HTML types (application/json, text/plain, …) are
  *  not prescanned. */
-function isHtmlContentType(contentType: string | undefined): boolean {
+export function isHtmlContentType(contentType: string | undefined): boolean {
   if (!contentType) return true;
   return /html|xhtml/i.test(contentType);
 }

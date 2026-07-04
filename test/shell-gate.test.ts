@@ -50,3 +50,26 @@ test("hasUsableStructuredData: content-bearing JSON-LD predicate edge cases (#81
     assert.equal(hasUsableStructuredData({ jsonLd } as StructuredData), true, `usable: ${JSON.stringify(jsonLd)}`);
   }
 });
+
+// #92: a non-HTML body is the COMPLETE response however short — it must NEVER be judged an
+// empty SPA shell needing JS. Without the content-type guard, a 14-byte text/plain
+// "404: Not Found" tripped hasContent's <20-byte rule and escalated to jsRequired, cascading
+// to contentType="spa" + gateReason="login" + tier="render-blocked" — a receipt that lies.
+
+test("shell-gate: a short text/plain body is content, not an empty SPA shell (#92)", () => {
+  const gate = extractHtml({ html: "404: Not Found", url: "https://x.test/missing", contentType: "text/plain; charset=utf-8" }).shellGate;
+  assert.equal(gate.jsRequired, false, "a text/plain body, however short, is not a render shell");
+  assert.equal(gate.reason, "content-present");
+});
+
+test("shell-gate: a short application/json body is content, not an empty SPA shell (#92)", () => {
+  const gate = extractHtml({ html: '{"ok":false}', url: "https://x.test/api", contentType: "application/json" }).shellGate;
+  assert.equal(gate.jsRequired, false);
+  assert.equal(gate.reason, "content-present");
+});
+
+test("shell-gate: ABSENT content-type still escalates a genuinely empty HTML shell (no #92 regression)", () => {
+  const gate = extractHtml({ html: '<div id="root"></div>', url: "https://spa.test/" }).shellGate;
+  assert.equal(gate.jsRequired, true, "an empty shell with no declared type still needs render");
+  assert.equal(gate.reason, "empty-spa-shell");
+});
