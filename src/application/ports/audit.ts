@@ -39,6 +39,9 @@ export interface ToolAuditEvent {
   transformCostUsd?: number;
   transformInTokens?: number;
   transformOutTokens?: number;
+  /** Failed-primary model list when the router fell back to a later candidate (#82). Operator-only
+   *  (the user-facing receipt is silent on a successful fallback); queryable in CloudWatch. */
+  transformFallbackFrom?: string;
 }
 
 export interface AuditLoggerPort {

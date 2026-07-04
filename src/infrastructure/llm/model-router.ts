@@ -3,7 +3,8 @@ import type { ClockPort } from "../../application/ports/clock.ts";
 import type { ModelPick, ModelPickOptions, ModelRouterPort, ModelScore, RouterProvider, RouterTask } from "../../application/ports/model-router.ts";
 import { TransformError, type TransformInput, type TransformPort, type TransformResult } from "../../application/ports/transformer.ts";
 import { config } from "../../config.ts";
-import { clamp, finalize } from "./finalize.ts";
+import { finalize } from "./finalize.ts";
+import { emptyHealth, recordOutcome, type ModelHealth } from "./model-health.ts";
 import { OllamaProvider } from "./ollama.ts";
 import { OpenRouterProvider } from "./openrouter.ts";
 import { buildMessages } from "./prompts.ts";
@@ -11,8 +12,6 @@ import { detectSensitiveTransformInput } from "./safety.ts";
 import { estimateTokens, MAX_OUTPUT_TOKENS_CAP, resolveOutputCap } from "./tokens.ts";
 import type { LlmGenerateResult, LlmModelCandidate, ProviderMap } from "./types.ts";
 
-const INITIAL_SCORE = 0.8;
-const EMA_ALPHA = 0.25;
 // Reserved output headroom for the context-fit gate. Equals the output-token hard cap
 // so a model admitted by fits() can always hold the requested generation (admission
 // and the cap agree — no mid-completion context overflow).
@@ -20,7 +19,9 @@ const RESERVED_OUTPUT_TOKENS = MAX_OUTPUT_TOKENS_CAP;
 
 export class ModelRouter implements ModelRouterPort {
   private readonly candidatesByKey: Map<string, LlmModelCandidate>;
-  private readonly scores = new Map<string, number>();
+  // Per-model sticky health (#82). Lives in-memory for the life of this router (one per process,
+  // built at boot) — demotion is per-instance, not shared across replicas and not persisted.
+  private readonly health = new Map<string, ModelHealth>();
 
   constructor(candidates: LlmModelCandidate[]) {
     this.candidatesByKey = new Map(candidates.map((candidate) => [candidateKey(candidate), candidate]));
@@ -29,27 +30,41 @@ export class ModelRouter implements ModelRouterPort {
   pick(task: RouterTask, inputTokens: number, options: ModelPickOptions = {}): ModelPick {
     const candidates = [...this.candidatesByKey.values()].filter((candidate) => fits(candidate, task, inputTokens, options));
     if (candidates.length === 0) return { provider: "none", reason: noneReason(options, this.candidatesByKey.size) };
+    // Effective order = configured order + sticky demotion, so a sustained-failing primary
+    // (demotion 1) sorts after a healthy fallback it would otherwise beat. The demotionOf
+    // tiebreak is load-bearing: a demoted order-0 model (eff 1) ties a healthy order-1 model
+    // (eff 1), and without this tiebreak localeCompare would put "deepseek" back before "qwen".
     const [best] = candidates.sort((left, right) =>
-      left.order - right.order || this.rank(left) - this.rank(right) || left.model.localeCompare(right.model));
+      effectiveOrder(left, this.health) - effectiveOrder(right, this.health)
+      || demotionOf(left, this.health) - demotionOf(right, this.health)
+      || staticRank(left) - staticRank(right)
+      || left.model.localeCompare(right.model));
     return { provider: best.provider, model: best.model, free: best.free };
   }
 
   feedback(score: ModelScore): void {
-    const normalized = clamp(score.valid ? score.score : Math.min(score.score, 0.2));
-    const previous = this.scores.get(score.model) ?? INITIAL_SCORE;
-    this.scores.set(score.model, previous * (1 - EMA_ALPHA) + normalized * EMA_ALPHA);
+    const h = this.health.get(score.model) ?? emptyHealth();
+    recordOutcome(h, score.outcome);
+    this.health.set(score.model, h);
   }
+}
 
-  scoreFor(model: string): number {
-    return this.scores.get(model) ?? INITIAL_SCORE;
-  }
+/** Configured order plus the sticky demotion offset (0 healthy / 1 demoted one rank). */
+function effectiveOrder(candidate: LlmModelCandidate, health: Map<string, ModelHealth>): number {
+  return candidate.order + (health.get(candidate.model)?.demotion ?? 0);
+}
 
-  private rank(candidate: LlmModelCandidate): number {
-    const feedbackPenalty = 1 - this.scoreFor(candidate.model);
-    const localPenalty = candidate.local ? 0.45 : 0;
-    const paidPenalty = candidate.free ? 0 : 0.25;
-    return localPenalty + paidPenalty + candidate.costWeight + feedbackPenalty;
-  }
+/** Sticky demotion (0/1) — the load-bearing tiebreak after effective order. */
+function demotionOf(candidate: LlmModelCandidate, health: Map<string, ModelHealth>): number {
+  return health.get(candidate.model)?.demotion ?? 0;
+}
+
+/** Principled tiebreak for equal effective orders: free before paid before local (+ cost weight).
+ *  The old rank() MINUS the dead feedback-penalty term (the EMA is gone). */
+function staticRank(candidate: LlmModelCandidate): number {
+  const localPenalty = candidate.local ? 0.45 : 0;
+  const paidPenalty = candidate.free ? 0 : 0.25;
+  return localPenalty + paidPenalty + candidate.costWeight;
 }
 
 export interface LlmTransformerOptions {
@@ -96,8 +111,9 @@ export class LlmTransformer implements TransformPort {
     };
 
     // Try candidate models in router-ranked order; on a provider error (dead model,
-    // 429 rate-limit, timeout) demote via the bandit and try the next free model.
-    // Only degrade after every candidate is exhausted.
+    // 429 rate-limit, timeout, empty completion) record a hard_fail (sticky demotion
+    // across requests) and try the next candidate. Only degrade after every candidate
+    // is exhausted.
     const tried: string[] = [];
     let lastError: Error | undefined;
     while (true) {
@@ -135,7 +151,7 @@ export class LlmTransformer implements TransformPort {
           throw new TransformError("transform_empty", `${pick.model} returned an empty completion`);
         }
       } catch (error) {
-        this.router.feedback({ model: pick.model, score: 0, valid: false });
+        this.router.feedback({ model: pick.model, outcome: "hard_fail" });
         tried.push(pick.model);
         lastError = error instanceof Error ? error : new Error(String(error));
         process.stderr.write(`captatum transform: ${pick.model} failed: ${lastError.message}\n`);
@@ -143,7 +159,7 @@ export class LlmTransformer implements TransformPort {
       }
 
       const latencyMs = elapsed(started, this.nowMs());
-      const finalized = finalize(input, generated.text, pick.model, this.router, latencyMs, generated.outTokens);
+      const finalized = finalize(input, generated.text, pick.model, this.router, generated.outTokens);
       return {
         result: finalized.result,
         info: {

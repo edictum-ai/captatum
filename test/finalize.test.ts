@@ -24,38 +24,36 @@ function input(mode: "summarize" | "extract", schema?: unknown): TransformInput 
   };
 }
 
-test("finalize scores once (valid:true) on a clean summary", () => {
+test("finalize records one 'success' outcome on a clean summary", () => {
   const router = new RecordingRouter();
-  finalize(input("summarize"), "a good summary", "m", router, 10);
+  finalize(input("summarize"), "a good summary", "m", router);
   assert.equal(router.calls.length, 1);
-  assert.equal(router.calls[0].valid, true);
+  assert.equal(router.calls[0].outcome, "success");
 });
 
-test("finalize scores once (valid:true) on a schema-valid extract", () => {
+test("finalize records one 'success' outcome on a schema-valid extract", () => {
   const router = new RecordingRouter();
-  finalize(input("extract", { type: "object", properties: { a: { type: "string" } } }), '{"a":"x"}', "m", router, 10);
+  finalize(input("extract", { type: "object", properties: { a: { type: "string" } } }), '{"a":"x"}', "m", router);
   assert.equal(router.calls.length, 1);
-  assert.equal(router.calls[0].valid, true);
+  assert.equal(router.calls[0].outcome, "success");
 });
 
-test("finalize applies the mismatch penalty exactly once — no self-canceling reward", () => {
-  // Regression guard: finalizeExtract penalizes (0.3, valid:false) on a schema
-  // mismatch; finalize must NOT then send a valid:true reward that cancels it.
+test("finalize records one 'soft' outcome on a schema mismatch — no follow-up success", () => {
+  // The mismatch path records 'soft' (NOT a hard failure — garbage-ish output is tolerated and
+  // must not feed demotion); finalize must not then also record 'success' (one outcome per attempt).
   const router = new RecordingRouter();
   const out = finalize(
     input("extract", { type: "object", properties: { a: { type: "string" } } }),
     '{"a":123}',
     "m",
     router,
-    10,
   );
   assert.ok(out.schemaIssue);
-  assert.equal(router.calls.length, 1, "expected only the penalty, no follow-up reward");
-  assert.equal(router.calls[0].valid, false);
-  assert.equal(router.calls[0].score, 0.3);
+  assert.equal(router.calls.length, 1, "expected only the soft outcome, no follow-up success");
+  assert.equal(router.calls[0].outcome, "soft");
 });
 
-test("finalize fails closed (penalty once) for an unsupported schema keyword", () => {
+test("finalize records one 'hard_fail' outcome (and fails closed) for an unsupported schema keyword", () => {
   const router = new RecordingRouter();
   assert.throws(
     () => finalize(
@@ -63,10 +61,8 @@ test("finalize fails closed (penalty once) for an unsupported schema keyword", (
       '{"a":"x"}',
       "m",
       router,
-      10,
     ),
   );
   assert.equal(router.calls.length, 1);
-  assert.equal(router.calls[0].valid, false);
-  assert.equal(router.calls[0].score, 0);
+  assert.equal(router.calls[0].outcome, "hard_fail");
 });

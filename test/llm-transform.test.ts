@@ -339,16 +339,21 @@ test("router fallback surfaces fallbackFrom on the transform info", async () => 
   assert.equal(result.result, "Real summary produced by the fallback model.");
 });
 
-test("#48 C: configured model order pins the primary pick — feedback demotion does not reorder", () => {
+test("#48 C (sticky): transient hard failures do NOT demote; sustained failure does (#82)", () => {
   const router = new ModelRouter([
     candidate("openrouter", "deepseek/deepseek-v4-flash", { order: 0 }),
     candidate("openrouter", "qwen/qwen3.6-flash", { order: 1 }),
   ]);
   assert.equal(router.pick("summarize", 10).model, "deepseek/deepseek-v4-flash");
-  // Heavy demotion of deepseek — order still wins (configured primary).
-  for (let i = 0; i < 5; i++) router.feedback({ model: "deepseek/deepseek-v4-flash", score: 0, valid: false });
-  assert.equal(router.pick("summarize", 10).model, "deepseek/deepseek-v4-flash", "order pins deepseek primary despite demotion");
-  // qwen is picked only when deepseek is excluded (tried) — the real fallback path.
+  // TRANSIENT — 2 hard fails is below the ≥3-of-5 threshold: deepseek stays primary.
+  // (This is the real #48-C intent — no jumpy demotion on transient empty-completions.)
+  for (let i = 0; i < 2; i++) router.feedback({ model: "deepseek/deepseek-v4-flash", outcome: "hard_fail" });
+  assert.equal(router.pick("summarize", 10).model, "deepseek/deepseek-v4-flash", "transient failures do not demote");
+  // SUSTAINED — 3 more hard fails (5 total) crosses the threshold: deepseek is demoted one rank
+  // (effectiveOrder 1, tied with qwen) and the demotionOf tiebreak picks qwen (0 < 1).
+  for (let i = 0; i < 3; i++) router.feedback({ model: "deepseek/deepseek-v4-flash", outcome: "hard_fail" });
+  assert.equal(router.pick("summarize", 10).model, "qwen/qwen3.6-flash", "sustained failure demotes one rank");
+  // The within-request fallback path is orthogonal and untouched: excluding deepseek still picks qwen.
   assert.equal(router.pick("summarize", 10, { exclude: ["deepseek/deepseek-v4-flash"] }).model, "qwen/qwen3.6-flash");
 });
 
@@ -383,13 +388,16 @@ test("router feedback demotes flaky free model before local fallback", () => {
   ]);
 
   assert.equal(router.pick("summarize", 10).model, "free/model");
+  // 3 hard fails == the FAIL_THRESHOLD (≥3 of last 5) → free/model demoted one rank (effectiveOrder 1),
+  // so cheap/model (effectiveOrder 0, staticRank 0.37) beats local/model (staticRank 0.45). The loop
+  // count sits right on the threshold, guarding that the rule is `>=` not `>`.
   for (let index = 0; index < 3; index += 1) {
-    router.feedback({ model: "free/model", score: 0, valid: false });
+    router.feedback({ model: "free/model", outcome: "hard_fail" });
   }
   assert.equal(router.pick("summarize", 10).model, "cheap/model");
 });
 
-test("summary budget is sent to provider and over-budget output lowers feedback", async () => {
+test("summary budget is sent to the provider; over-budget output stays a success (not a hard failure)", async () => {
   const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), {
     text: "word ".repeat(200),
     outTokens: 120,
@@ -407,7 +415,7 @@ test("summary budget is sent to provider and over-budget output lowers feedback"
 
   assert.equal(provider.calls[0]?.maxOutputTokens, 20);
   assert.equal(result.info.outTokens, 120);
-  assert.ok(router.scoreFor("free/model") < 0.8);
+  // Over-budget-but-successful is outcome 'success' (NOT a hard failure), so it does not demote (#82).
 });
 
 test("transform with no budget sends a bounded default output cap, never undefined (#3)", async () => {

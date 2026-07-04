@@ -4,17 +4,15 @@ import { parseJsonResult, validateJsonSchema } from "./json-schema.ts";
 import { estimateTokens } from "./tokens.ts";
 
 /**
- * Finalize a provider's raw text into the transform result: trim, run extract
- * JSON parsing + (advisory) schema validation when mode is extract, score the
- * model via the feedback bandit, and estimate out-tokens. Pure / side-effectful
- * only through `router.feedback`.
+ * Finalize a provider's raw text into the transform result: trim, run extract JSON parsing +
+ * (advisory) schema validation when mode is extract, report the attempt outcome to the router's
+ * sticky health, and estimate out-tokens. Pure / side-effectful only through `router.feedback`.
  */
 export function finalize(
   input: TransformInput,
   text: string,
   model: string,
   router: ModelRouterPort,
-  latencyMs: number,
   reportedOutTokens?: number,
 ): { result: string; outTokens: number; schemaIssue?: string } {
   // Empty-completion handling moved to the model-router retry loop (#48 B): an
@@ -26,13 +24,11 @@ export function finalize(
     : undefined;
   const result = extracted ? extracted.result : trimmed;
   const outTokens = reportedOutTokens ?? estimateTokens(result);
-  // On an extract schema mismatch finalizeExtract already applied a penalty
-  // (score 0.3, valid:false). Skip the positive valid:true reward here so it
-  // doesn't immediately cancel that penalty out (the model must not be rewarded
-  // for schema-violating output). The valid-extract and non-extract paths still
-  // score normally.
+  // The schema-mismatch advisory path (finalizeExtract) already recorded a 'soft' outcome for
+  // this model — don't also record 'success' here (one outcome per attempt). The valid-extract
+  // and non-extract paths record exactly one 'success'.
   if (!extracted?.schemaIssue) {
-    router.feedback({ model, score: scoreTransform(result, outTokens, input.budget, latencyMs), valid: true });
+    router.feedback({ model, outcome: "success" });
   }
   return { result, outTokens, schemaIssue: extracted?.schemaIssue };
 }
@@ -47,7 +43,7 @@ function finalizeExtract(
   try {
     parsed = parseJsonResult(text);
   } catch {
-    router.feedback({ model, score: 0, valid: false });
+    router.feedback({ model, outcome: "hard_fail" });
     throw new TransformError("extract_invalid_json", "Provider returned invalid JSON for extract output");
   }
   const validation = validateJsonSchema(parsed, schema);
@@ -58,25 +54,16 @@ function finalizeExtract(
       // contentEncoding): we cannot verify them, so reject rather than accept
       // unvalidated structured data. (Contract: extract fails closed for
       // unsupported schema keywords.)
-      router.feedback({ model, score: 0, valid: false });
+      router.feedback({ model, outcome: "hard_fail" });
       throw new TransformError("extract_schema_invalid", validation.message ?? "Schema uses an unsupported keyword");
     }
-    router.feedback({ model, score: 0.3, valid: false });
-    // Advisory: a supported-keyword value mismatch (wrong type, minLength, …).
-    // Return parsed JSON (imperfect structured data > raw fallback) but surface
-    // the mismatch as a non-fatal error so the caller is informed.
+    // Advisory: a supported-keyword value mismatch (wrong type, minLength, …) — parseable but
+    // non-conforming. Report 'soft' (NOT a hard failure — garbage-ish output can't be reliably
+    // told from a legit short answer, so it must not feed demotion). Return the parsed JSON
+    // (imperfect structured data > raw fallback) and surface the mismatch as a non-fatal
+    // schemaIssue so the caller is informed.
+    router.feedback({ model, outcome: "soft" });
     return { result, schemaIssue: validation.message };
   }
   return { result };
-}
-
-function scoreTransform(result: string, outTokens: number, budget: number | undefined, latencyMs: number): number {
-  let score = result ? 1 : 0;
-  if (budget && outTokens > budget) score -= 0.35;
-  if (latencyMs > 30_000) score -= 0.2;
-  return clamp(score);
-}
-
-export function clamp(value: number): number {
-  return Math.max(0, Math.min(1, value));
 }

@@ -35,11 +35,10 @@ export interface TransformInfo {
    */
   schemaIssue?: string;
   /**
-   * Comma-separated list of candidate models that FAILED before the successful
-   * one was used (the router fell back). Present only when a fallback occurred;
-   * the use case surfaces it as a non-fatal `transform_model_fallback` warning
-   * so the caller knows the output may be lower quality (and `status` becomes
-   * `partial` rather than `pass`).
+   * Comma-separated list of candidate models that FAILED before the successful one was used
+   * (the router fell back). Present only when a fallback occurred. Operator-only (#82): a
+   * successful fallback is silent in the user-facing receipt (`status` stays `pass`, no warning) —
+   * this field carries the failed-primary list for `debug:true` and the audit log.
    */
   fallbackFrom?: string;
 }
