@@ -24,6 +24,22 @@ import { config } from "../../config.ts";
 import { parseClientProfileMap, resolveClientProfile, type ClientProfile } from "../../application/client-profile.ts";
 
 const AUTH_JSONRPC_CODE = -32001;
+const OVERLOADED_JSONRPC_CODE = -32050; // admission overload: distinct, retryable server code (#84)
+
+/**
+ * Thrown when the process-wide admission limiter is at capacity (DOS-2). `toMcpError` surfaces it
+ * as a distinct RETRYABLE JSON-RPC error (OVERLOADED_JSONRPC_CODE + `data.retryable`) so a client
+ * can back off and retry — instead of the generic InternalError it used to collapse to. The local
+ * stdio bridge (single-user, no admission cap) never throws this. (#84)
+ */
+export class OverloadedError extends Error {
+  /** Stable marker a caller/test can assert without parsing the message. */
+  readonly retryable = true as const;
+  constructor(message = "captatum: server overloaded") {
+    super(message);
+    this.name = "OverloadedError";
+  }
+}
 
 export interface CaptatumMcpServerDeps {
   captatum: Pick<CaptatumUseCase, "execute" | "defaultOutput">;
@@ -78,8 +94,11 @@ async function callCaptatum(args: unknown, deps: CaptatumMcpServerDeps, profile:
   }
 }
 
-function toMcpError(error: unknown): McpError {
+export function toMcpError(error: unknown): McpError {
   if (error instanceof McpError) return error;
+  if (error instanceof OverloadedError) {
+    return new McpError(OVERLOADED_JSONRPC_CODE, error.message, { retryable: true });
+  }
   if (error instanceof OAuthError) {
     return new McpError(AUTH_JSONRPC_CODE, `${error.code}: ${error.message}`);
   }
