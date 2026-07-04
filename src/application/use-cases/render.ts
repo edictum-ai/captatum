@@ -66,6 +66,19 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
     output: "raw",
     fetchedAt: input.result.fetchedAt,
   });
+  // #110: a render that yields NO extractable text produced nothing — the page rendered but its
+  // JS didn't load content (blocked bundle, failed data fetch, blank app root). Don't promote it
+  // as a Tier-3 pass with empty text; reject honestly. (The signal is literally-empty text, NOT
+  // the shell-gate's jsRequired: short-but-real renders like "Lazy Iframe App" still pass the gate
+  // as jsRequired yet are legitimate Tier-3 content and must be promoted. The render use case only
+  // runs when the original page was jsRequired, so input.result.result is already < 80 chars and
+  // there is no Tier-1 advisory fallback — unlike a render EXCEPTION, which can leave the original
+  // body partially populated.)
+  if (extracted.result.trim().length === 0) {
+    input.result.attempts.push(...controlAttempts);
+    input.result.timings.renderMs = renderMs;
+    return renderRejected(input.result, { rejected: true, code: "render_empty", message: "Render produced no content (empty shell)" }, renderMs);
+  }
   const promoted = promoteRenderedResult(input.result, extracted, renderMs, controlAttempts);
   if (rendered.notice) promoted.errors.push(rendered.notice);
   return promoted;

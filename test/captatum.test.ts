@@ -267,6 +267,29 @@ test("allowRender true renders shell and returns Tier-3 provenance", async () =>
   ]);
 });
 
+test("a render that still yields an empty shell is NOT promoted to Tier-3 (#110)", async () => {
+  // The renderer ran, but the rendered HTML is STILL an empty shell (jsRequired) — the client
+  // app didn't load content (blocked bundle, failed data fetch). Don't promote it as a Tier-3
+  // pass with empty text; reject honestly with a render_empty error.
+  const shellHtml = "<div id=\"root\"></div>";
+  const renderedHtml = "<div id=\"root\"></div>"; // rendered, but still empty
+  const renderer = new FakeRenderer({ rendered: true, fetchResult: fetchResult({ html: renderedHtml }), actions: [] });
+  const extractor = new ScriptedExtractor((_input) => extraction({ text: "", jsRequired: true, shellReason: "empty-spa-shell" }));
+
+  const result = await createCaptatumUseCase({
+    fetcher: new FakeFetcher(fetchResult({ html: shellHtml })),
+    extractHtml: extractor.extract,
+    renderer,
+    clock: new FakeClock([0, 0, 5, 6, 7]),
+  }).execute({ url: "https://spa.test/", output: "raw", allowRender: true });
+
+  assert.equal(renderer.calls.length, 1, "render was attempted");
+  assert.notEqual(result.tier, 3, "empty render must NOT be promoted to Tier-3");
+  assert.equal(result.tier, "error");
+  assert.equal(result.resolvedVia, "tier3-playwright");
+  assert.ok(result.errors.some((e) => e.code === "render_empty"), "render_empty error recorded");
+});
+
 test("configured transform receives prompt, schema, budget, and transform override", async () => {
   const transformer = new FakeTransform({
     result: "Transformed summary",
