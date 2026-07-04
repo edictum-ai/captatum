@@ -233,6 +233,19 @@ test("raw output has no envelope header (text unchanged for the contract fixture
   assert.match(text, /^<!-- captatum[^\n]*-->\n/);
 });
 
+test("raw JSON bodies (application/json AND +json suffixes) stay parseable — no provenance prefix (#94 review)", () => {
+  // A +json suffix (vnd.api+json, ld+json, …) is a single parseable JSON document and must skip
+  // the prepended provenance comment, or content[0].text stops being valid JSON for raw consumers.
+  for (const ct of ["application/json", "application/json; charset=utf-8", "application/vnd.api+json", "application/ld+json"]) {
+    const body = '{"ok":true}';
+    const text = resultToMcpText(base({ output: "raw", contentType: ct, result: body }));
+    assert.equal(text, body, `raw ${ct} body must be returned without the provenance prefix`);
+  }
+  // Non-JSON raw bodies still get the provenance comment.
+  const html = resultToMcpText(base({ output: "raw", contentType: "text/html; charset=utf-8", result: "<p>hi</p>" }));
+  assert.match(html, /^<!-- captatum/);
+});
+
 test("fatal errors (tier error) surface in errors; advisories become warnings", () => {
   const rejected = base({
     tier: "error",
