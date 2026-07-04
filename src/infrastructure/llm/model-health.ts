@@ -36,10 +36,14 @@ export function emptyHealth(): ModelHealth {
 }
 
 /**
- * Fold one outcome into the model's health. Mutates `health` in place.
- * - hard_fail: push into the window, reset consecutive successes, demote one rank if sustained.
- * - success: increment consecutive successes, recover if sustained.
- * - soft: no-op (does not push, does not reset successes — garbage-ish output is tolerated).
+ * Fold one outcome into the model's health. Mutates `health` in place. Both hard_fail and success
+ * enter the window (true / false) so it genuinely reflects the last HEALTH_WINDOW attempts — a few
+ * stale failures must age out amid successes, or a model with rare intermittent errors would demote
+ * permanently (#101 review).
+ * - hard_fail: push true, reset consecutive successes, demote one rank if sustained (≥ FAIL_THRESHOLD
+ *   of the last HEALTH_WINDOW attempts).
+ * - success: push false, increment consecutive successes, recover if sustained.
+ * - soft: no-op (does not enter the window, does not reset successes — garbage-ish output is tolerated).
  */
 export function recordOutcome(health: ModelHealth, outcome: HealthOutcome): void {
   if (outcome === "soft") return;
@@ -52,6 +56,8 @@ export function recordOutcome(health: ModelHealth, outcome: HealthOutcome): void
     }
     return;
   }
+  health.recent.push(false);
+  if (health.recent.length > HEALTH_WINDOW) health.recent.shift();
   health.consecutiveSuccesses += 1;
   if (health.demotion > 0 && health.consecutiveSuccesses >= RECOVER_SUCCESSES) {
     health.demotion = 0;
