@@ -8,7 +8,7 @@ Current contract version: `v0`.
 
 ### Breaking changes
 
-- None in the v0.7.0 release.
+- None in the v0.8.0 release.
 
 ## Product
 

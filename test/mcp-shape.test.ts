@@ -201,7 +201,8 @@ test("structuredContent.result is snippeted when large; full text stays in the t
   const lean = buildStructuredContent(result, false);
   const shaped = lean.result as string;
   assert.ok(shaped.length < big.length, "large result must be snippeted in the lean payload");
-  assert.match(shaped, /truncated in the lean payload/);
+  assert.match(shaped, /snippeted in this lean payload/);
+  assert.match(shaped, /content\[0\]\.text/, "the note points to the canonical MCP text channel");
   // The full text is still delivered via the MCP text channel (content[0].text).
   assert.ok(resultToMcpText(result).includes(big));
 });

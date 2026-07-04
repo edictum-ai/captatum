@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.0] — 2026-07-04
+
+The model router becomes a **proactive, silent reliability layer**, and admission overload becomes a distinct **retryable** signal. Additive contract surface; no breaks.
+
+- **feat(router): proactive sticky demotion + silent model fallback** (#82) — the EMA "bandit" was dead code (#48-C pinned `order`-primary after it demoted on every transient empty). Now revived as **sticky** per-model health: a model demotes one rank only on **sustained** hard failure (≥3 of the last 5 attempts, recovering after 2 consecutive successes), so transient empties and soft/garbage output do **not** demote (the #48-C jumpiness, fixed). A successful model fallback is now **silent** (`status:"pass"`, no warning) — the failed-primary list rides on `transform.fallbackFrom` (visible via `debug:true` and a new `transformFallbackFrom` audit field). An all-models-fail still surfaces honestly. `ModelScore` → `{ model, outcome }`; the old EMA/scoreFor/scoreTransform deleted.
+- **fix(mcp): admission overload is a distinct retryable JSON-RPC error** (#84) — was a generic `InternalError`; now `code:-32050` (server-defined, collision-free vs the SDK enum + captatum's `-32001`) with `data:{retryable:true}`, so a client can back off and retry instead of guessing.
+- **docs:** truncation-pointer note clarified (the full text is in `content[0].text`, the canonical MCP channel — not a server cap). #83 closed (its doc half shipped in 0.6.0).
+
+Checks: `pnpm run check` + 424 unit + 50 integration fixture tests green.
+
 ## [0.7.0] — 2026-07-04
 
 Receipt trustworthiness: four correctness fixes — three of them stop the provenance receipt from actively lying to the agent. Additive contract surface (new `contentType: "json"` + `resolvedVia: "tier1-json"`/`"tier1-text"`); no breaks.
