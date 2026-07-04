@@ -19,11 +19,13 @@ export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
   const metadata = extractPageMetadata(input.html, input.url, errors);
   // A non-HTML body (text/plain, markdown, JSON, XML, …) is the COMPLETE intended response —
   // don't run it through the HTML tag-stripper / whitespace-collapser, which mangles angle-bracket
-  // data (e.g. `{"x":"<b>hi</b>"}` → `{"x":" hi "}`) and collapses markdown newlines. Use the raw
-  // decoded body verbatim. (JSON image/structured mis-extraction is gated separately at Tier-1 — #94.)
+  // data (e.g. `{"x":"<b>hi</b>"}` → `{"x":" hi "}`) and collapses markdown newlines. Return the
+  // raw decoded body UNCHANGED (no trim — leading indentation and trailing newlines are meaningful
+  // in code/markdown; the receipt promises the verbatim body). (JSON image/structured mis-extraction
+  // is gated separately at Tier-1 — #94.)
   const text = isHtmlContentType(input.contentType)
     ? extractVisibleText(input.html)
-    : input.html.trim();
+    : input.html;
   const shellGate = evaluateShellGate({
     html: input.html,
     text,
