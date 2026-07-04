@@ -1,3 +1,4 @@
+import { stripHiddenSubtrees } from "./hidden.ts";
 import { findElements } from "./html.ts";
 
 /**
@@ -11,9 +12,13 @@ import { findElements } from "./html.ts";
  * child's `</div>` — the balanced depth-counting extractor that case needs is the hard #54
  * Half B problem. Articles rarely nest, so first-close is correct here. Returns null when there
  * is no `<article>`, so the caller falls back to the full body (today's behavior) — no regression
- * for pages that use `<main>`/`<div>` only. (#93)
+ * for pages that use `<main>`/`<div>` only.
+ *
+ * Hidden subtrees are stripped FIRST so an `<article>` inside a hidden boundary (e.g. React
+ * streaming's `<div hidden id="S:1">) is never selected as main content. Returns null when there
+ * is no (visible) `<article>`. (#93)
  */
 export function selectMainContentHtml(html: string): string | null {
-  const article = findElements(html, "article")[0];
+  const article = findElements(stripHiddenSubtrees(html), "article")[0];
   return article ? article.content : null;
 }
