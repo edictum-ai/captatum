@@ -4,6 +4,7 @@ import type {
   HtmlExtraction,
   HtmlExtractionInput,
 } from "../../application/use-cases/tier1-extract.ts";
+import { isHtmlContentType } from "../http/body.ts";
 import { extractVisibleText } from "./html.ts";
 import { extractPageMetadata } from "./metadata.ts";
 import { evaluateShellGate } from "./shell-gate.ts";
@@ -16,7 +17,13 @@ export type {
 export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
   const errors = [] as ProvenanceError[];
   const metadata = extractPageMetadata(input.html, input.url, errors);
-  const text = extractVisibleText(input.html);
+  // A non-HTML body (text/plain, markdown, JSON, XML, …) is the COMPLETE intended response —
+  // don't run it through the HTML tag-stripper / whitespace-collapser, which mangles angle-bracket
+  // data (e.g. `{"x":"<b>hi</b>"}` → `{"x":" hi "}`) and collapses markdown newlines. Use the raw
+  // decoded body verbatim. (JSON image/structured mis-extraction is gated separately at Tier-1 — #94.)
+  const text = isHtmlContentType(input.contentType)
+    ? extractVisibleText(input.html)
+    : input.html.trim();
   const shellGate = evaluateShellGate({
     html: input.html,
     text,
