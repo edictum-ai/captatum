@@ -26,6 +26,10 @@ import { findElements, stripElement, stripHtmlComments } from "./html.ts";
  *      lose the head `<style>` context that `extractVisibleText` would have used) (#97 review). (#93)
  */
 export function selectMainContentHtml(html: string): string | null {
+  // Fast path: no <article> at all → nothing to select. Skips the full pre-clean on the common
+  // no-article page and — critically — on pathological inputs (the REDOS-5 <script> flood), so the
+  // cleaning runs once (in extractVisibleText) instead of twice and extractHtml stays linear.
+  if (!/<article/i.test(html)) return null;
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
   const withoutCode = ["script", "style", "noscript", "template"]
     .reduce((value, tag) => stripElement(value, tag), html);
