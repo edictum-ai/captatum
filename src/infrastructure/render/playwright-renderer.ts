@@ -97,10 +97,10 @@ export class PlaywrightRenderer implements RenderPort {
         input.timeoutMs,
       );
       // Idle-aware settle: networkidle then a content-stability dwell for setTimeout/hydration content.
-      // The networkidle cap RESERVES settleMinDwellMs for the content-stability phase — without it a
-      // never-arriving networkidle consumes the whole budget on short-timeoutMs callers (codex P2).
+      // The networkidle cap RESERVES settleMinDwellMs for the content-stability phase (codex P2); a
+      // 0 cap SKIPS the wait — Playwright timeout:0 means no-timeout, a hang risk (codex P1).
       const networkidleCap = Math.min(this.settleMs, Math.max(0, remaining() - this.settleMinDwellMs));
-      await page.waitForLoadState("networkidle", { timeout: networkidleCap }).catch(() => {});
+      if (networkidleCap > 0) await page.waitForLoadState("networkidle", { timeout: networkidleCap }).catch(() => {});
       const settleCap = Math.min(this.settleMs, remaining());
       await waitForBodyStable(page, {
         capMs: settleCap,
