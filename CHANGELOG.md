@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0] — 2026-07-04
+
+Closes the gap a cross-model benchmark (captatum vs a naive webfetch, 48+ dev pages) found: captatum was losing to a plain fetch on JS-rendered docs and on docs themes whose prose isn't in an `<article>`. Two fixes + a breaking receipt label.
+
+- **feat(render): auto-render JS-shells on hosted + honest `js-required` label** (#105) — `allowRender` now defaults to `true`: on hosted, genuine JS-shell pages (Anthropic, DevDocs, AWS, Apple) render automatically instead of returning an empty shell. The shell-gate (`jsRequired`) is still the arbiter, so SSR/static pages (~80%, the Tier-1 path) never render. Local (no browser) honestly reports `render-unavailable`. `allowRender:false` remains an opt-out (MCP + a new CLI `--no-render` flag). **Breaking:** `access.gateReason:"login"` → `"js-required"` (captatum never detected login walls; "login" was the render-needed catch-all).
+- **fix(extract): fall back to `<main>` for docs themes without `<article>`** (#103) — VitePress, GitBook, mdBook, Svelte, HashiCorp docs SSR prose into `<main>` (sidebar in a sibling `<aside>`); captatum now selects `<main>` after `<article>`, returning the docs content instead of nav chrome. `<main>` is a subset of `<body>`, so it never returns more chrome than before.
+- **Benchmark:** captatum-0.8.0 vs naive webfetch across 48 dev pages — captatum-wins 44% (app-state/JSON-LD/meta extraction), tie-content 25%, tie-chrome 31% (now mostly closed by these two fixes).
+
+Deferred: Cursor render→error-page false-positive (#106), Mintlify extraction noise, anti-bot walls (PyPI/npmjs.com), `AUTH_JSONRPC_CODE=-32001` collision (#100) + OAuth-non-client UX (#104).
+
+Checks: `pnpm run check` + 426 unit + 50 integration fixture tests green.
+
 ## [0.8.0] — 2026-07-04
 
 The model router becomes a **proactive, silent reliability layer**, and admission overload becomes a distinct **retryable** signal. Additive contract surface; no breaks.

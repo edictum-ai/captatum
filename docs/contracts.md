@@ -8,8 +8,7 @@ Current contract version: `v0`.
 
 ### Breaking changes
 
-- None in the v0.8.0 release.
-- **v0.9.0 (planned):** (1) `access.gateReason: "login"` is renamed to `"js-required"` — captatum never actually detected login walls; "login" was the catch-all for *render-needed* pages, now labeled honestly. (2) `allowRender` defaults to `true` (hosted auto-renders JS-shell pages; was `false`). A consumer keying on `gateReason === "login"` must switch to `"js-required"`.
+- **v0.9.0:** (1) `access.gateReason: "login"` is renamed to `"js-required"` — captatum never actually detected login walls; "login" was the catch-all for *render-needed* pages, now labeled honestly. (2) `allowRender` defaults to `true` (hosted auto-renders JS-shell pages; was `false`). A consumer keying on `gateReason === "login"` must switch to `"js-required"`.
 
 ## Product
 
