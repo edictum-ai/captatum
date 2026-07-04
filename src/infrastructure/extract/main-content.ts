@@ -1,47 +1,76 @@
 import { collectHiddenDisplayNoneClasses } from "./hidden-classes.ts";
 import { stripHiddenSubtrees } from "./hidden.ts";
-import { findElements, stripElement, stripHtmlComments } from "./html.ts";
+import { extractVisibleText, findElements, stripElement, stripHtmlComments } from "./html.ts";
+
+/**
+ * <main> overrides the best <article> only when it is substantially richer. Calibrated against
+ * two real anchors: the MS-Learn hub <main>/<article> ≈ 4.7× (want <main> — the <article>s are
+ * bare card tiles and <main> holds the hub intro+categories) and Anthropic/Mintlify ≈ 1.1× (want
+ * <article> — the delta is footer/nav chrome). Chrome (aside/nav/footer) is stripped from the
+ * tree before scoring, so a chrome-heavy <main> can't win on bulk alone. (#108)
+ */
+export const MAIN_OVERRIDE_FACTOR = 1.5;
+
+/**
+ * <aside>/<nav>/<footer> are chrome (sidebars, TOCs, mega-menus, page footers). They are stripped
+ * from the pre-cleaned tree BEFORE scoring so (a) a chrome-heavy <main> is measured by its real
+ * content, not its bulk, and (b) a "related posts" <article> nested in an <aside> can't win the
+ * article pick by out-lengthing the real article. Verified no existing fixture places these tags
+ * inside <main>, so the strip is fixture-safe. (#108)
+ */
+function stripChrome(html: string): string {
+  return stripElement(stripElement(stripElement(html, "aside"), "nav"), "footer");
+}
 
 /**
  * Selects the page's main-content HTML so `extractVisibleText` doesn't flatten site chrome
- * (nav / header / footer) ahead of the real body. Targets the first `<article>` — the semantic
- * "self-contained content" element, which on repo/readme pages (GitHub's `<article
- * class="markdown-body entry-content">`) and most blog/docs pages holds the actual content.
+ * (nav / header / footer) ahead of the real body. Considers the FIRST <article> and the richest
+ * <main>, returning whichever carries more visible text — with <main> winning only when it is
+ * substantially richer (MAIN_OVERRIDE_FACTOR), because <main> often wraps the <article> plus
+ * chrome that the tighter <article> scope excludes.
  *
- * `<article>` is chosen over `<div id="readme">` / `<div class="markdown-body">` deliberately:
- * divs nest, so a first-close match (findElements / findCloseTag) would cut at the innermost
- * child's `</div>` — the balanced depth-counting extractor that case needs is the hard #54
- * Half B problem. Articles rarely nest, so first-close is correct here. Returns null when there
- * is no (visible, non-inert) `<article>`, so the caller falls back to the full body (today's
- * behavior) — no regression for pages that use `<main>`/`<div>` only.
+ * Why the FIRST <article>, not the longest: document order makes the first <article> the page's
+ * primary one (GitHub README, blog post, docs section). The card-grid hub case the old "return
+ * the first <article> blindly" mishandled is rescued by the <main> override — a hub's <main>
+ * holds the real intro+categories and is far larger than any tile, so <main> wins. A longer LATER
+ * sibling <article> is usually a related/author block inside an <aside>, which stripChrome has
+ * already removed from the candidate pool.
  *
- * The page is pre-cleaned EXACTLY as `extractVisibleText` does before searching: hidden classes
- * are collected from the full page (so `<head><style>.x{display:none}</style>` rules apply), then
- * script/style/noscript/template + comments + hidden subtrees are stripped. This guarantees:
- *  (a) a literal `<article>` inside a `<script>`/`<template>`/comment isn't picked over the real
- *      article (#97 review);
- *  (b) an `<article>` inside a hidden boundary (React streaming's `<div hidden id="S:1">) isn't
- *      selected;
- *  (c) class-hidden nodes inside the article are already gone (so scoping to the article doesn't
- *      lose the head `<style>` context that `extractVisibleText` would have used) (#97 review). (#93)
+ * The page is pre-cleaned EXACTLY as `extractVisibleText` does before searching (hidden classes
+ * collected from the full page, then script/style/noscript/template + comments + hidden subtrees
+ * stripped), then chrome tags are dropped. This guarantees a literal `<article>` inside a
+ * `<script>`/`<template>`/a comment / a hidden boundary (React streaming's `<div hidden>`) or a
+ * chrome `<aside>`/`<nav>`/`<footer>` is never picked (#97 review). The scoped output feeds
+ * evaluateShellGate (index.ts), so the selection changes render escalation: scoping to a short
+ * skeleton makes the gate MORE likely to trip (correct — the page needs rendering), never less. (#93)
  */
 export function selectMainContentHtml(html: string): string | null {
-  // Fast path: no <article> AND no <main> → nothing to select. Skips the full pre-clean on the common
-  // no-main-content page and — critically — on pathological inputs (the REDOS-5 <script> flood), so the
-  // cleaning runs once (in extractVisibleText) instead of twice and extractHtml stays linear.
+  // Fast path: no <article> AND no <main> → nothing to select. Skips the full pre-clean on the
+  // common no-main-content page and — critically — on pathological inputs (the REDOS-5 <script>
+  // flood), so cleaning runs once (in extractVisibleText) instead of twice and extractHtml stays
+  // linear. Tests the RAW html (cheaper than re-testing `clean`; a substring inside a script /
+  // comment just skips the short-circuit, never a false positive).
   if (!/<article/i.test(html) && !/<main/i.test(html)) return null;
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
   const withoutCode = ["script", "style", "noscript", "template"]
     .reduce((value, tag) => stripElement(value, tag), html);
-  const clean = stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses));
-  // Prefer the first <article> (GitHub README, blog articles — #93). Then fall back to <main>:
-  // VitePress, GitBook, mdBook, Svelte, and HashiCorp docs SSR the prose into <main> with the
-  // sidebar in a sibling <aside>/<nav>, so <main> carries the content (not the nav). <main> is a
-  // subset of <body>, so selecting it never returns MORE chrome than the full body would — and
-  // <main> rarely nests, so findElements' first-close match is reliable (unlike <div> containers
-  // such as .vp-doc/.md-content, which nest and would need a balanced extractor). (#93 extension)
-  const article = findElements(clean, "article")[0];
-  if (article) return article.content;
-  const main = findElements(clean, "main")[0];
-  return main ? main.content : null;
+  const clean = stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses)));
+
+  const firstArticle = findElements(clean, "article")[0];
+  const longestMain = findElements(clean, "main").reduce<{ content: string; len: number } | undefined>(
+    (best, el) => {
+      const len = extractVisibleText(el.content).length;
+      return !best || len > best.len ? { content: el.content, len } : best;
+    },
+    undefined,
+  );
+  const articleLen = firstArticle ? extractVisibleText(firstArticle.content).length : 0;
+  const mainLen = longestMain?.len ?? 0;
+
+  if (firstArticle && longestMain) {
+    // <main> wins only when substantially richer (a tile <article> vs real content in <main>);
+    // otherwise the <article>'s tighter scope avoids footer/nav/aside chrome.
+    return mainLen >= articleLen * MAIN_OVERRIDE_FACTOR ? longestMain.content : firstArticle.content;
+  }
+  return firstArticle?.content ?? longestMain?.content ?? null;
 }
