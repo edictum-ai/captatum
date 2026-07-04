@@ -23,6 +23,12 @@ test("parseArgs: url positional + flags parsed", () => {
   assert.equal(parseArgs(["https://x.test", "https://y.test"]).url, "https://x.test"); // first positional wins
 });
 
+test("parseArgs: --no-render opts out (default allowRender is true)", () => {
+  assert.equal(parseArgs(["https://x.test/"]).allowRender, true, "default is true");
+  assert.equal(parseArgs(["https://x.test/", "--no-render"]).allowRender, false);
+  assert.equal(parseArgs(["https://x.test/", "--no-allow-render"]).allowRender, false);
+});
+
 test("captatumSkillMarkdown: claude vs codex variants", () => {
   const claude = captatumSkillMarkdown("claude");
   assert.match(claude, /^---\nname: captatum\n/);
