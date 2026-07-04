@@ -1121,18 +1121,20 @@ test("extractVisibleText still strips script/style/comments/tags on well-formed 
 
 test("extractHtml scales linearly on a <title> bare-`<` flood (REDOS-2 in metadata.ts)", () => {
   const html = (n: number): string => `<html><head><title>${"<".repeat(n)}</title></head><body>x</body></html>`;
-  // CI-independent regression guard (see stripHtmlTags test): 4x input must cost
-  // ~4x, not ~16x. Smaller sizes than the stripHtmlTags test — extractHtml does
-  // more work per character.
+  // Two guards, per stripHiddenSubtrees: an absolute budget (robust to CI load — a real O(n²)
+  // blow-up is ~30x over it) AND a sub-quadratic ratio (CI-machine-independent). The ratio alone
+  // at <8 flaked on loaded CI runners (200k/50k hit 8.3); <12 still catches a true quadratic (16x).
   const timed = (n: number): number => {
     const t = performance.now();
     extractHtml({ html: html(n), url: "https://example.test/" });
     return performance.now() - t;
   };
   timed(50_000); // JIT warmup
-  const ratio = timed(200_000) / Math.max(timed(50_000), 1);
+  const small = timed(50_000);
+  const large = timed(200_000); // 4x input (linear ≈ 4x time; quadratic ≈ 16x)
   assert.equal(typeof extractHtml({ html: html(100), url: "https://example.test/" }).title, "string");
-  assert.ok(ratio < 8, `extractHtml title 200k/50k ratio ${ratio.toFixed(1)} — likely quadratic`);
+  assert.ok(large < 2000, `extractHtml 200k title flood took ${large.toFixed(1)}ms — likely super-linear`);
+  assert.ok(large / Math.max(small, 1) < 12, `extractHtml title 200k/50k ratio ${(large / small).toFixed(1)} — likely quadratic`);
 });
 
 // --- Tier-1 extraction-fidelity coverage (charset/CSS-hidden/CDATA/SVG/app-state) ---
