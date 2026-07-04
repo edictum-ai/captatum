@@ -1,5 +1,6 @@
 import type { ShellGateEvidence } from "../../domain/shell-gate.ts";
 import type { StructuredData } from "../../domain/platform.ts";
+import { isHtmlContentType } from "../http/body.ts";
 import { findStartTags } from "./html.ts";
 
 const APP_ROOT_IDS = new Set(["__next", "app", "gatsby-focus-wrapper", "root", "svelte"]);
@@ -8,6 +9,7 @@ export function evaluateShellGate(input: {
   html: string;
   text: string;
   structured: StructuredData;
+  contentType?: string;
 }): ShellGateEvidence {
   const wordCount = input.text ? input.text.split(/\s+/).length : 0;
   const evidence = {
@@ -17,6 +19,16 @@ export function evaluateShellGate(input: {
     appRootFound: hasAppRoot(input.html),
     structuredDataFound: hasUsableStructuredData(input.structured),
   };
+
+  // A non-HTML body (text/plain, application/json, XML, image, …) is the COMPLETE intended
+  // response however short — the "empty SPA shell needing JS" concept only exists for HTML.
+  // Without this guard a 14-byte text/plain "404: Not Found" trips hasContent's <20-byte rule
+  // and escalates to jsRequired, cascading to contentType="spa" + gateReason="login" (#92).
+  // Absent content-type keeps the current HTML-fallback behavior so SPAs served without a
+  // declared type still escalate to render when they are genuinely empty shells.
+  if (input.contentType && !isHtmlContentType(input.contentType)) {
+    return { ...evidence, jsRequired: false, reason: "content-present" };
+  }
 
   if (evidence.structuredDataFound) {
     return { ...evidence, jsRequired: false, reason: "structured-data-found" };

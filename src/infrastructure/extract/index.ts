@@ -21,6 +21,7 @@ export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
     html: input.html,
     text,
     structured: metadata.structured,
+    contentType: input.contentType,
   });
 
   return {
