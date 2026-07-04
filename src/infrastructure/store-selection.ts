@@ -8,7 +8,7 @@
 // The backend choice is a pure function (testable without a DB); creation is a
 // factory that lazy-imports mysql2 only when TiDB is selected, so a SQLite-only
 // deploy never loads it.
-import { mkdirSync } from "node:fs";
+import { accessSync, constants, mkdirSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { StorePort } from "../application/ports/store.ts";
@@ -90,6 +90,14 @@ function ensureParentDir(file: string): void {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw err;
     throw new Error(unwritableStoreDirMessage(file, code ?? "UNKNOWN", safeUser(), process.cwd()));
+  }
+  // mkdirSync is a no-op when the parent already exists, so a pre-created / mounted dir with bad
+  // ownership would slip past the catch above and surface later as SQLite's generic "unable to open
+  // database file". Probe write access so that case also gets the actionable message (#85 review).
+  try {
+    accessSync(parent, constants.W_OK);
+  } catch {
+    throw new Error(unwritableStoreDirMessage(file, "EACCES", safeUser(), process.cwd()));
   }
 }
 

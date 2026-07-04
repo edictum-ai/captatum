@@ -84,3 +84,26 @@ test("createHostedStore fails with an actionable CAPTATUM_SQLITE_PATH message wh
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("createHostedStore gives the actionable message when the parent dir EXISTS but is unwritable (#85 review)", async () => {
+  // Codex P2: mkdirSync is a no-op on an existing dir, so a pre-created/mounted unwritable parent
+  // would otherwise surface as SQLite's generic "unable to open database file". The W_OK probe must
+  // catch it. root bypasses perms — skip rather than flake.
+  if (typeof process.getuid === "function" && process.getuid() === 0) return;
+  const dir = mkdtempSync(join(tmpdir(), "captatum-store-ro-existing-"));
+  const roDir = join(dir, "readonly");
+  mkdirSync(roDir);
+  chmodSync(roDir, 0o555); // EXISTS with no write — mkdir no-ops; access(W_OK) must catch it
+  try {
+    await assert.rejects(
+      createHostedStore({
+        tidb: { host: "", port: 4000, database: "x", user: "x", password: "x", sslCa: "" },
+        sqlitePath: join(roDir, "captatum.sqlite"), // parent == roDir (exists, unwritable)
+      }),
+      (err: Error) => /CAPTATUM_SQLITE_PATH/.test(err.message),
+    );
+  } finally {
+    chmodSync(roDir, 0o700);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
