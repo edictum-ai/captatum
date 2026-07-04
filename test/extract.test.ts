@@ -1529,16 +1529,20 @@ test("selectMainContentHtml: prefers the FIRST <article> when there is no <main>
   assert.equal((main ?? "").includes("Author Bio"), false, "longer later sibling article displaced the primary article");
 });
 
-test("selectMainContentHtml: returns null for empty <article>+<main> so caller recovers sibling content (#108)", () => {
-  // `0 >= 0 * 1.5` would return "" without the empty-candidate guard; "" is non-null so the
-  // caller's `?? html` would NOT fire and the real <div> content would be lost.
+test("selectMainContentHtml: empty <main> shell scopes to empty so chrome doesn't mask a needed render (#108, codex P2)", () => {
+  // Client-rendered SPA shell: an empty <main id=root> (the render target) with header/footer
+  // chrome OUTSIDE it. Scoping to the empty <main> leaves textLength 0 so the shell-gate escalates
+  // to render. Returning null (full-body fallback) would let the chrome satisfy the gate and skip
+  // the render the page actually needs.
   const html = "<html><body>"
-    + "<article></article><main></main>"
-    + "<div>Real SSR content in a sibling div that must be recovered by the fallback.</div>"
+    + "<header>Global navigation menu with many words of chrome that would satisfy the gate</header>"
+    + "<main id=\"root\"></main>"
+    + "<footer>Footer chrome Privacy Terms About Company Careers more words</footer>"
     + "</body></html>";
-  assert.equal(selectMainContentHtml(html), null);
-  const out = extractHtml({ html, url: "https://example.com/", contentType: "text/html; charset=utf-8" });
-  assert.match(out.text, /Real SSR content in a sibling div/);
+  const main = selectMainContentHtml(html);
+  assert.equal(main, "", "empty <main> shell scopes to empty (not null -> full-body chrome)");
+  const out = extractHtml({ html, url: "https://app.example.com/", contentType: "text/html; charset=utf-8" });
+  assert.equal(out.shellGate.jsRequired, true, "empty <main> shell must escalate to render, not pass as content-present");
 });
 
 test("selectMainContentHtml: CJK <article> is scored by character length, not treated as a skeleton (#108)", () => {

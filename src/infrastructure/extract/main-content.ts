@@ -67,12 +67,6 @@ export function selectMainContentHtml(html: string): string | null {
   const articleLen = firstArticle ? extractVisibleText(firstArticle.content).length : 0;
   const mainLen = longestMain?.len ?? 0;
 
-  // Empty-candidate guard: if neither <article> nor <main> has ANY visible text, return null so
-  // the caller's `?? html` recovers real content in a sibling element. Without this, `0 >= 0 *
-  // MAIN_OVERRIDE_FACTOR` is true and the empty <main>'s "" would be returned, bypassing the
-  // fallback (a non-null "" defeats `??`) and masking the real content. (#108)
-  if (articleLen === 0 && mainLen === 0) return null;
-
   if (firstArticle && longestMain) {
     // <main> wins only when substantially richer (a tile <article> vs real content in <main>);
     // otherwise the <article>'s tighter scope avoids footer/nav/aside chrome.
