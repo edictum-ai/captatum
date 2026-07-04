@@ -126,7 +126,7 @@ const RESULT_SNIPPET_CHARS = 2_000;
 function snippet(text: string): string {
   if (text.length <= RESULT_SNIPPET_CHARS) return text;
   const head = text.slice(0, RESULT_SNIPPET_CHARS).trimEnd();
-  return `${head}\n\n[… ${text.length} characters total — truncated in the lean payload; the full text is in the tool result (content[0].text).]`;
+  return `${head}\n\n[… ${text.length} characters total — snippeted in this lean payload; the full text is delivered in the tool result's content[0].text (the canonical MCP content channel).]`;
 }
 
 export type { ContentType, AccessInfo };
