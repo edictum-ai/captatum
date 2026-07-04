@@ -1437,3 +1437,19 @@ test("extractHtml scopes visible text to <article>, dropping GitHub-style nav ch
     assert.equal(out.text.includes(chrome), false, `chrome leaked into text: "${chrome}"`);
   }
 });
+
+test("extractHtml falls back to <main> when there is no <article> (VitePress/GitBook/mdBook docs) (#93 extension)", () => {
+  // Docs themes that SSR prose into <main> with the sidebar in a sibling <aside> (no <article>).
+  // <main> is a subset of <body>, so selecting it drops the header/footer/aside chrome.
+  const html = "<html><body>"
+    + "<header>Top nav: Skip to content Main Navigation Search</header>"
+    + '<main><div class="vp-doc"><h1>Getting Started</h1><p>Vite is a build tool for modern web projects.</p></div></main>'
+    + "<aside>Sidebar: Guide Config Plugins Resources</aside>"
+    + "<footer>Footer chrome</footer></body></html>";
+  const out = extractHtml({ html, url: "https://docs.test/guide/", contentType: "text/html; charset=utf-8" });
+  assert.match(out.text, /Getting Started/);
+  assert.match(out.text, /Vite is a build tool/);
+  for (const chrome of ["Top nav", "Skip to content", "Main Navigation", "Sidebar", "Guide Config Plugins", "Footer chrome"]) {
+    assert.equal(out.text.includes(chrome), false, `chrome leaked from <main> selection: "${chrome}"`);
+  }
+});
