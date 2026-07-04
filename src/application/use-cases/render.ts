@@ -46,14 +46,6 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
 
   if (!rendered.rendered) {
     input.result.attempts.push(...controlAttempts);
-    if (input.result.result && input.result.result.length > 100) {
-      input.result.timings.renderMs = renderMs;
-      input.result.errors.push({
-        code: rendered.code ?? "render_error",
-        message: `Render failed (advisory — Tier-1 content available): ${rendered.message ?? ""}`,
-      });
-      return input.result;
-    }
     return renderRejected(input.result, rendered, renderMs);
   }
 
@@ -66,15 +58,16 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
     output: "raw",
     fetchedAt: input.result.fetchedAt,
   });
-  // #110: a render that yields NO extractable text produced nothing — the page rendered but its
-  // JS didn't load content (blocked bundle, failed data fetch, blank app root). Don't promote it
-  // as a Tier-3 pass with empty text; reject honestly. (The signal is literally-empty text, NOT
-  // the shell-gate's jsRequired: short-but-real renders like "Lazy Iframe App" still pass the gate
-  // as jsRequired yet are legitimate Tier-3 content and must be promoted. The render use case only
-  // runs when the original page was jsRequired, so input.result.result is already < 80 chars and
-  // there is no Tier-1 advisory fallback — unlike a render EXCEPTION, which can leave the original
-  // body partially populated.)
-  if (extracted.result.trim().length === 0) {
+  // #110: a render that yields NO extractable text AND no usable structured data produced nothing
+  // — reject honestly instead of promoting an empty Tier-3 result. jsRequired already encodes "no
+  // usable structured data" (the shell-gate sets jsRequired=false when it finds content-bearing
+  // JSON-LD/app-state), so gating on it PRESERVES a render whose JS injected JobPosting/Product
+  // JSON-LD but no visible body text (codex P2): those promote so summary/extract can consume the
+  // structured data. Short-but-real renders ("Lazy Iframe App") stay jsRequired yet have non-empty
+  // text, so the empty-text check keeps them. (#114 removed the unreachable render-failure advisory
+  // that used the same `result.length > 100` shape — maybeRender only runs when jsRequired, which
+  // implies result < 80 chars, so that branch was dead code.)
+  if (extracted.jsRequired && extracted.result.trim().length === 0) {
     input.result.attempts.push(...controlAttempts);
     input.result.timings.renderMs = renderMs;
     return renderRejected(input.result, { rejected: true, code: "render_empty", message: "Render produced no content (empty shell)" }, renderMs);

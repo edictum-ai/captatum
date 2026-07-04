@@ -390,6 +390,7 @@ class BrowserHarness {
   cdpEndpoint?: string;
   contextOptions: Record<string, unknown> = {};
   routes: FakeRoute[] = [];
+  loadStateCalls: { state: string; timeout?: number }[] = [];
   browserClosed = false;
   downloadCanceled = false;
   websocketClosed = false;
@@ -468,7 +469,9 @@ class BrowserHarness {
       // The real renderer waits for client-side widgets after DOMContentLoaded
       // (commit 9bba8aa) and captures iframe content (commit d50a3c9).
       waitForTimeout: async (_ms: number) => {},
-      waitForLoadState: async (_state: string, _options?: { timeout?: number }) => {},
+      waitForLoadState: async (_state: string, _options?: { timeout?: number }) => {
+        this.loadStateCalls.push({ state: _state, timeout: _options?.timeout });
+      },
       mainFrame: () => this.mainFrame,
       frames: () => (extraFrame ? [this.mainFrame, extraFrame] : [this.mainFrame]),
       content: async () => this.options.content ?? "<main>rendered</main>",
@@ -672,4 +675,16 @@ test("default post-load settle is 5000ms (raised from 3000 for slow-hydrating do
   // cap only adds latency for pages not yet stable at 3000ms. Pin the default against regressions.
   const renderer = new PlaywrightRenderer() as PlaywrightRenderer & { settleMs: number };
   assert.equal(renderer.settleMs, 5000);
+});
+
+test("renderer skips networkidle (never timeout:0) when the reserved settle cap is 0 (codex P1)", async () => {
+  // With timeoutMs <= settleMinDwellMs the reserved networkidle cap is 0. Playwright treats
+  // timeout:0 as no-timeout, so passing it would hang a page that never reaches networkidle — the
+  // guard skips the wait instead. timeoutMs:100 (the renderInput default) lands networkidleCap at 0.
+  const harness = new BrowserHarness();
+  await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
+    .render(renderInput(new FakeFetcher(), { timeoutMs: 100 }));
+  const networkidle = harness.loadStateCalls.filter((c) => c.state === "networkidle");
+  assert.equal(networkidle.length, 0, "networkidle skipped when the reserved cap is 0");
+  assert.ok(harness.loadStateCalls.every((c) => (c.timeout ?? 0) > 0), "no timeout:0 passed (would disable the timeout)");
 });
