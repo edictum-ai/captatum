@@ -4,9 +4,9 @@
 
 <h1 align="center">Captatum</h1>
 
-<p align="center"><strong>Fetch the JS-rendered, structured, and dynamic pages other tools return empty.</strong></p>
+<p align="center"><strong>The web read your agent can trust.</strong></p>
 
-<p align="center"><em>Fetch the web. Keep the receipt.</em></p>
+<p align="center"><em>Fetch the web. Keep the receipt — SSRF-safe, injection-safe, and a provenance receipt on every call.</em></p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-7C5CFC.svg" /></a>
@@ -16,7 +16,7 @@
   <a href="SECURITY.md"><img alt="security" src="https://img.shields.io/badge/security-policy-7C5CFC.svg" /></a>
 </p>
 
-Captatum is one MCP tool that fetches a URL and returns the **actual content** — including the JS-rendered SPAs, structured data (JSON-LD / Open Graph), and dynamic pages that `WebFetch`, Firecrawl, and Jina return empty or blocked. It renders JS only when a page needs it, extracts structured data from raw HTML, and defaults to the clean raw content (a token-efficient `summary` when a transform provider is configured). Anti-bot challenge walls (Cloudflare/Akamai/PerimeterX) it **detects and reports as gated** rather than silently returning the challenge page — it does not bypass them (see the honest scope below). Every response also carries a **provenance receipt** (tier, final URL, whether JS was required, transform model/tokens) so the agent knows how a result was produced. It's an [MCP server](https://modelcontextprotocol.io); it works standalone and is part of the [Edictum](https://github.com/edictum-ai) ecosystem.
+Captatum is one MCP tool that fetches a URL and returns the **actual content** — clean, token-efficient, and with a **provenance receipt** on every response (tier, final URL, whether JS was required, transform model/tokens) so an agent knows exactly how each result was produced. Every request is **SSRF-guarded**, and fetched content is treated as **untrusted data, never instructions**. It renders JS only when a page needs it and extracts structured data (JSON-LD / Open Graph) from raw HTML — so it returns content from the JS-rendered SPAs and structured pages that `WebFetch`, Firecrawl, and Jina return empty or blocked. Anti-bot challenge walls (Cloudflare/Akamai/PerimeterX) it **detects and reports as gated** rather than silently returning the challenge page — it does not bypass them (see the honest scope below). It's an [MCP server](https://modelcontextprotocol.io); it works standalone and is part of the [Edictum](https://github.com/edictum-ai) ecosystem.
 
 > **Heads-up before the first call.** The default output is **provider-conditional**: `summary` when a transform provider (`OPENROUTER_API_KEY` or `OLLAMA_BASE_URL`) is configured (e.g. the hosted server), otherwise `raw` — the full clean content, no LLM. So a zero-config first call just works (raw); set a provider and it becomes a token-efficient summary. Request `output: "summary"`/`"raw"`/`"extract"` explicitly to override. See [Quick start](#quick-start-local-stdio).
 
@@ -24,31 +24,31 @@ Captatum is one MCP tool that fetches a URL and returns the **actual content** �
 
 ## Why Captatum
 
-The wedge is **coverage**: captatum fetches pages other tools can't. `WebFetch` does a static GET + Turndown (it drops `<script>` JSON-LD/app-state and runs no JS); Firecrawl and Jina render but strip structured data and charge at scale. Captatum combines raw-HTML structured extraction, a gated real-browser render, and an HTTP anti-bot fetch (TLS/JA3 fingerprint) — so it returns content where the others return an empty shell. **Anti-bot challenge walls over HTTPS (Cloudflare/Akamai/PerimeterX) it cannot bypass — it detects them and reports `gateReason: captcha` instead of returning the challenge page as content.**
+The wedge is **trustworthy reads**. Captatum returns clean content from the JS-rendered and structured pages other tools miss — and every response is SSRF-guarded, treats fetched content as untrusted data, and carries a **provenance receipt** (tier, final URL, whether JS ran, transform model/tokens) so an agent knows *exactly* how each result was produced. `WebFetch` does a static GET + Turndown (drops `<script>` JSON-LD/app-state, runs no JS, no receipt); Firecrawl and Jina render but strip structured data and give you no receipt. **Anti-bot challenge walls over HTTPS (Cloudflare/Akamai/PerimeterX) captatum cannot bypass — it detects them and reports `gateReason: captcha` instead of returning the challenge page as content** (see the honest scope below).
 
 > **Proof — a real client-rendered SPA (`excalidraw.com`):** a plain fetch gets only the shell — `Excalidraw Whiteboard try { function setTheme…` — no app content. Captatum with `allowRender: true` returns the **actual rendered UI**: *"Pick a tool & Start drawing!… Canvas actions 100%… Exit zen mode."* And for a posting on `explore.jobs.netflix.net`, Captatum extracts the full job description from the page's `JobPosting` JSON-LD — the structured data `WebFetch`'s Turndown throws away.
 
-| | JS render | Anti-bot TLS fingerprint | Structured extract | Default output | Provenance receipt | Self-host |
-| --- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Captatum** | gated `allowRender` | plain-HTTP only¹ | JSON-LD/OG/meta/app-state | token-efficient summary | ✅ every call | ✅ (SQLite, no DB) |
-| `WebFetch` (Claude) | ❌ | ❌ | ❌ (Turndown) | Haiku summary | ❌ | — |
-| Firecrawl | ✅ | partial | ✅ | markdown/html | partial | commercial |
-| Jina Reader | ✅ | partial | light | markdown | ❌ | commercial |
+| | JS render | Structured extract | Default output | Provenance receipt | Self-host |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| **Captatum** | gated `allowRender` | JSON-LD/OG/meta/app-state | token-efficient summary | ✅ every call | ✅ (SQLite, no DB) |
+| `WebFetch` (Claude) | ❌ | ❌ (Turndown) | Haiku summary | ❌ | — |
+| Firecrawl | ✅ | ✅ | markdown/html | partial | commercial |
+| Jina Reader | ✅ | light | markdown | ❌ | commercial |
 
-¹ **Honest scope:** the `wreq-js` TLS/JA3+JA4 fingerprint is active for **plain HTTP only**; HTTPS uses a checked-IP Node path (no fingerprint) to preserve rebinding-proof SSRF. So Captatum does **not** bypass Cloudflare/Akamai/PerimeterX challenge walls over HTTPS — instead it **detects them and reports `access.gated` + `gateReason: captcha` + the provider** rather than silently returning the challenge page ([#41](https://github.com/edictum-ai/captatum/issues/41), shipped as honest detection). A browser-bypass was researched and found **not viable** for a self-hosted tool (the datacenter-IP ASN wall + the OSS-stealth treadmill) — see `docs/specs/issue-41-design.md`. See [Security: scope and limits](#security-scope-and-limits).
+**Honest scope — anti-bot:** the `wreq-js` TLS/JA3+JA4 fingerprint is active for **plain HTTP only**; HTTPS uses a checked-IP Node path (no fingerprint) to preserve rebinding-proof SSRF. So Captatum does **not** bypass Cloudflare/Akamai/PerimeterX challenge walls over HTTPS — instead it **detects them and reports `access.gated` + `gateReason: captcha` + the provider** rather than silently returning the challenge page ([#41](https://github.com/edictum-ai/captatum/issues/41), shipped as honest detection). A browser-bypass was researched and found **not viable** for a self-hosted tool (the datacenter-IP ASN wall + the OSS-stealth treadmill) — see `docs/specs/issue-41-design.md`. See [Security: scope and limits](#security-scope-and-limits).
 
 **Not for:** Captatum is the best tool for the **hard single-URL fetch + structured extract** (a job description, a dynamic doc, a product page). It is *not* a batch crawler at scale, a search engine, or a PDF/office parser. Bounded, single-call roster fetches *are* supported: pass a Greenhouse/Lever/Ashby career-board URL and Captatum returns every open role as clean structured JSON via the ATS's public list API ([#42](https://github.com/edictum-ai/captatum/issues/42)).
 
 ## Features
 
+- **Provenance first-class** — every response carries `tier`, `finalUrl`, `redirects[]`, `jsRequired`, `platform`, a lean `transform` (provider/model/free/in/out tokens), and `attempts[]`, so an agent (or an audit) sees exactly how each result was produced.
+- **SSRF-safe egress** — every outbound request (Tier-1, Tier-2, every redirect hop, every Tier-3 browser subresource) routes through one hardened `FetcherPort`: DNS-rebinding-proof, exhaustive IANA private-IP blocking.
+- **Prompt-injection control** — fetched content is untrusted data, never instructions (per-call nonce fence; applies to `summary`/`extract`).
 - **Adaptive 3-tier pipeline** — only the work each page needs.
-  - **Tier 1 (default)** — `wreq-js` fetch (HTTP TLS/JA3 fingerprint; HTTPS uses the checked-IP Node path — see the honest scope) + raw-HTML structured extraction (JSON-LD, Open Graph, Twitter, meta, canonical, app-state, images). Resolves most pages with no browser.
+  - **Tier 1 (default)** — `wreq-js` fetch + raw-HTML structured extraction (JSON-LD, Open Graph, Twitter, meta, canonical, app-state, images). Resolves most pages with no browser. (The `wreq-js` TLS/JA3 fingerprint is active for plain HTTP only; HTTPS uses a checked-IP Node path — see the honest scope.)
   - **Tier 2 (optional)** — platform-adapter short-circuit: ATS list-all-jobs (Greenhouse/Lever/Ashby career-board URL → every open role as clean structured JSON via the public board API, no HTML crawling).
   - **Tier 3 (gated)** — Playwright Chromium render, lazy, only for empty SPA shells. Gated behind `allowRender` (**default `false`**) so a bare call never spawns a browser.
 - **Honest default output** — `output: raw` (the default when no transform provider is configured) returns clean content with no LLM; `output: summary` (the default when a provider is configured) routes through a free-model router (OpenRouter) or local Ollama; `output: extract` returns schema-validated JSON.
-- **Provenance first-class** — every response carries `tier`, `finalUrl`, `redirects[]`, `jsRequired`, `platform`, a lean `transform` (provider/model/free/in/out tokens), and `attempts[]`.
-- **SSRF-safe egress** — every outbound request (Tier-1, Tier-2, every redirect hop, every Tier-3 browser subresource) routes through one hardened `FetcherPort`: DNS-rebinding-proof, exhaustive IANA private-IP blocking.
-- **Prompt-injection control** — fetched content is untrusted data, never instructions (per-call nonce fence; applies to `summary`/`extract`).
 - **Hidden-config-aware extraction** — DOM a browser wouldn't render (`display:none`, `hidden`) is dropped, so config blobs hidden in markup never masquerade as page content.
 
 ## Prerequisites
