@@ -90,21 +90,39 @@ function hasNonEmptyContentProp(node: Record<string, unknown>): boolean {
   );
 }
 
+/** schema.org properties that link a page-wrapper (WebPage/…) to its primary inline content
+ *  entity. A URL string here is a reference, not content — only inline objects are followed. */
+const NESTED_CONTENT_LINKS = ["mainEntity", "mainEntityOfPage", "about", "subject", "hasPart"];
+/** Cap on chained scaffolding-wrapper descent (mainEntity → …) — guards isPartOf/hasPart cycles. */
+const MAX_NESTED_DEPTH = 4;
+
+function hasNestedContent(node: Record<string, unknown>, depth: number): boolean {
+  if (depth >= MAX_NESTED_DEPTH) return false;
+  return NESTED_CONTENT_LINKS.some((key) => {
+    const value = node[key];
+    return value !== undefined && value !== null && typeof value === "object"
+      && hasContentBearingJsonLd(value as Record<string, unknown>, depth + 1);
+  });
+}
+
 /**
  * Whether JSON-LD actually carries content an agent can use WITHOUT rendering — a
  * typed node or a real data property. `null` / `[]` / `{}` / a context-only
  * `{"@context":…}` node do NOT count: those are common on client-rendered SPA shells,
  * and treating any-defined jsonLd as usable let an empty `<script type="ld+json">[]`
  * stop a true empty shell from rendering, returning no content (#81). Recurses arrays
- * and `@graph`. A scaffolding-only node (WebPage/WebSite/…) counts only with a non-empty
- * content property (#109). (Trivial JSON-LD is still harvested into `structured` for output.)
+ * and `@graph`. A scaffolding-only node (WebPage/WebSite/…) counts with a non-empty content
+ * property OR a content-bearing nested entity (mainEntity/about/…) (#109). (Trivial JSON-LD is
+ * still harvested into `structured` for output.)
  */
-function hasContentBearingJsonLd(jsonLd: unknown): boolean {
-  if (Array.isArray(jsonLd)) return jsonLd.some(hasContentBearingJsonLd);
+function hasContentBearingJsonLd(jsonLd: unknown, depth = 0): boolean {
+  if (Array.isArray(jsonLd)) return jsonLd.some((n) => hasContentBearingJsonLd(n, depth));
   if (!jsonLd || typeof jsonLd !== "object") return false;
   const node = jsonLd as Record<string, unknown>;
-  if (hasContentBearingJsonLd(node["@graph"])) return true;
-  if (isScaffoldingOnly(node)) return hasNonEmptyContentProp(node);
+  if (hasContentBearingJsonLd(node["@graph"], depth)) return true;
+  if (isScaffoldingOnly(node)) {
+    return hasNonEmptyContentProp(node) || hasNestedContent(node, depth);
+  }
   // A real node declares a @type or carries a data property beyond @context/@id/@graph.
   return Object.keys(node).some((key) => key !== "@context" && key !== "@id" && key !== "@graph");
 }

@@ -67,6 +67,7 @@ test("hasUsableStructuredData: scaffolding-only nodes need a non-empty content p
     { "@type": "WebSite", name: "X Help", url: "https://x.test/" },
     { "@type": "BreadcrumbList", itemListElement: [{ "@type": "ListItem", name: "Home" }] },
     { "@type": ["WebPage"], name: "x" },
+    { "@type": "WebPage", mainEntityOfPage: "https://x.test/a" }, // URL reference, not inline content
   ];
   for (const jsonLd of notUsable) {
     assert.equal(hasUsableStructuredData({ jsonLd } as StructuredData), false, `scaffolding not usable: ${JSON.stringify(jsonLd)}`);
@@ -76,10 +77,20 @@ test("hasUsableStructuredData: scaffolding-only nodes need a non-empty content p
     { "@type": "https://schema.org/WebPage", description: "Real summary." }, // full-IRI WITH content
     { "@type": ["WebPage", "Article"], headline: "x" },
     { "@type": "JobPosting", title: "Eng" },
+    { "@type": "WebPage", mainEntity: { "@type": "Article", articleBody: "real content" } }, // nested (codex P2 #3)
+    { "@type": "WebPage", about: { "@type": "JobPosting", title: "Eng" } }, // nested via 'about'
   ];
   for (const jsonLd of usable) {
     assert.equal(hasUsableStructuredData({ jsonLd } as StructuredData), true, `usable: ${JSON.stringify(jsonLd)}`);
   }
+});
+
+test("hasUsableStructuredData: a deep scaffolding-only chain does not overflow / does not satisfy (#109 cycle guard)", () => {
+  // 10 nested WebPage→mainEntity→WebPage… with no real content at the bottom: must not crash
+  // (depth-capped) and must not be content-bearing.
+  let node: Record<string, unknown> = { "@type": "Article", description: "" }; // bottom (Article, but empty)
+  for (let i = 0; i < 10; i++) node = { "@type": "WebPage", mainEntity: node };
+  assert.equal(hasUsableStructuredData({ jsonLd: node } as StructuredData), false, "deep scaffolding chain is not content-bearing");
 });
 
 test("shell-gate: scaffolding WebPage as a full IRI with empty description does not satisfy (#109, codex P2)", () => {
