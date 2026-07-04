@@ -29,6 +29,7 @@ Fetch flags:
   --budget <n>                       Max tokens for the summary.
   --allow-render                     Render JS-shell pages in a real browser (default; a
                                      no-browser runtime reports render-unavailable).
+  --no-render                        Opt out of Tier-3 render (JS shells return render-blocked).
   --debug                            Append diagnostics (tier, attempts, model/tokens).
   --max-bytes <n>                    Fetch byte cap.
   --timeout-ms <n>                   Fetch timeout (ms).
@@ -61,6 +62,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     else if (a === "--timeout-ms") out.timeoutMs = Number(argv[++i]);
     else if (a === "--debug") out.debug = true;
     else if (a === "--allow-render" || a === "--allowRender") out.allowRender = true;
+    else if (a === "--no-render" || a === "--no-allow-render") out.allowRender = false;
     else if (!a.startsWith("-") && out.url === undefined) out.url = a;
   }
   return out;
