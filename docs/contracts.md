@@ -8,7 +8,7 @@ Current contract version: `v0`.
 
 ### Breaking changes
 
-- None in the v0.6.0 release.
+- None in the v0.7.0 release.
 
 ## Product
 
@@ -85,7 +85,7 @@ Result {
   output: "summary" | "raw" | "extract",
   platform: { adapterId, label, detectedFrom },   // adapterId: "generic" (Tier-1) or a platform id e.g. "greenhouse"/"lever"/"ashby" (Tier-2)
   jsRequired: boolean,
-  resolvedVia: string,                            // e.g. "tier1-jsonld", "tier3-playwright"
+  resolvedVia: string,                            // e.g. "tier1-jsonld", "tier1-json", "tier1-text", "tier3-playwright"
   attempts: [{ step, tier, outcome, status?, durationMs, bytes?, reason? }],
   contentType,
   title,                                          // when derivable
@@ -123,7 +123,7 @@ Default (lean) `structuredContent`:
   ok: boolean,                         // status !== "fail"
   status: "pass" | "partial" | "fail",
   url, finalUrl, title, output,
-  contentType: "article" | "job" | "pin" | "product" | "spa" | "unknown",   // classified from JSON-LD @type / og:type / host / jsRequired (distinct from the raw HTTP contentType)
+  contentType: "article" | "job" | "json" | "pin" | "product" | "spa" | "unknown",   // classified from the raw HTTP content-type (json), JSON-LD @type / og:type / host / jsRequired
   result,                              // summary text | raw content | extracted JSON (string)
   tier, code, codeText, bytes,         // kept for existing consumers
   resolvedVia, platform, jsRequired,
@@ -140,7 +140,7 @@ Rules:
 - **errors vs warnings:** fatal ⟺ `tier === "error"` (per the note above: "advisory entries never set `tier: error`"). Everything else in `Result.errors` becomes a `warning`.
 - **status:** `fail` when `tier === "error"` or no body content was returned; `partial` when content was returned but warnings exist or the summary/extract transform fell back to raw (`transform.provider === "none"`); else `pass`.
 - **access.gateReason:** `paywall` when JSON-LD declares `isAccessibleForFree: false`; `byte_cap` when the response was truncated at the cap; `login` when no content was returned on a page that needed JS we could not run (render-blocked/render-unavailable/`jsRequired`); else `none`.
-- **contentType:** `pin` for pinterest.*/pin.it hosts; else from the first content-bearing JSON-LD `@type` (`JobPosting`→job, `Product`→product, Article family→article); else `og:type`; else `spa` when `jsRequired`; else `unknown`.
+- **contentType:** `json` when the response's HTTP content-type is `application/json` (or a `+json` suffix); else `pin` for pinterest.*/pin.it hosts; else from the first content-bearing JSON-LD `@type` (`JobPosting`→job, `Product`→product, Article family→article); else `og:type`; else `spa` when `jsRequired`; else `unknown`.
 - **images:** never fetched by this service — surfaced for the calling agent's optional vision fetch. Private/loopback hosts are stripped (string check, no DNS).
 - **result:** snippeted to ~2000 chars in `structuredContent` when large; the full text is always delivered as MCP `content[0].text` (the primary agent channel), so mirroring a huge body in the structured payload would only duplicate tokens. Summaries are small and pass through unchanged.
 
