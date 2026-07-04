@@ -62,6 +62,7 @@ test("shell-gate: WebPage JSON-LD WITH a real description still resolves at Tier
 test("hasUsableStructuredData: scaffolding-only nodes need a non-empty content property (#109)", () => {
   const notUsable: unknown[] = [
     { "@type": "WebPage", name: "X", description: "" },
+    { "@type": "https://schema.org/WebPage", name: "X", description: "" }, // full-IRI form (codex P2)
     { "@type": "WebSite", name: "X Help", url: "https://x.test/" },
     { "@type": "BreadcrumbList", itemListElement: [{ "@type": "ListItem", name: "Home" }] },
     { "@type": ["WebPage"], name: "x" },
@@ -71,12 +72,24 @@ test("hasUsableStructuredData: scaffolding-only nodes need a non-empty content p
   }
   const usable: unknown[] = [
     { "@type": "WebPage", description: "Real summary." },
+    { "@type": "https://schema.org/WebPage", description: "Real summary." }, // full-IRI WITH content
     { "@type": ["WebPage", "Article"], headline: "x" },
     { "@type": "JobPosting", title: "Eng" },
   ];
   for (const jsonLd of usable) {
     assert.equal(hasUsableStructuredData({ jsonLd } as StructuredData), true, `usable: ${JSON.stringify(jsonLd)}`);
   }
+});
+
+test("shell-gate: scaffolding WebPage as a full IRI with empty description does not satisfy (#109, codex P2)", () => {
+  // @type may be a full IRI (https://schema.org/WebPage); shortSchemaType normalizes it so the
+  // scaffolding check still applies. Without normalization the IRI misses the set and falls through.
+  const shell = '<html><body><div id="root"></div>'
+    + '<script type="application/ld+json">{"@context":"https://schema.org","@type":"https://schema.org/WebPage","name":"X","description":""}</script>'
+    + '</body></html>';
+  const gate = extractHtml({ html: shell, url: "https://x.test/p" }).shellGate;
+  assert.equal(gate.jsRequired, true, "full-IRI WebPage (empty description) must not satisfy the gate");
+  assert.equal(gate.reason, "empty-spa-shell");
 });
 
 test("hasUsableStructuredData: content-bearing JSON-LD predicate edge cases (#81)", () => {

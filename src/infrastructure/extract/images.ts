@@ -106,8 +106,10 @@ function isImageObject(node: Record<string, unknown>): boolean {
   return types.some((t) => shortSchemaType(t) === "imageobject");
 }
 
-/** Normalize a schema.org @type to its short lowercase form (e.g. "imageobject"). */
-function shortSchemaType(value: string): string {
+/** Normalize a schema.org @type to its short lowercase form (e.g. "imageobject").
+ *  Strips a leading schema.org IRI prefix and any trailing path segment, so both "WebPage"
+ *  and "https://schema.org/WebPage" normalize to "webpage". Shared with the shell-gate. */
+export function shortSchemaType(value: string): string {
   const lower = value.toLowerCase().replace(/^https?:\/\/schema\.org\//, "");
   return lower.includes("/") ? lower.slice(lower.lastIndexOf("/") + 1) : lower;
 }

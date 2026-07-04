@@ -2,6 +2,7 @@ import type { ShellGateEvidence } from "../../domain/shell-gate.ts";
 import type { StructuredData } from "../../domain/platform.ts";
 import { isHtmlContentType } from "../http/body.ts";
 import { findStartTags } from "./html.ts";
+import { shortSchemaType } from "./images.ts";
 
 const APP_ROOT_IDS = new Set(["__next", "app", "gatsby-focus-wrapper", "root", "svelte"]);
 
@@ -61,10 +62,11 @@ export function hasUsableStructuredData(structured: StructuredData): boolean {
  *  satisfy the shell-gate on its own. JetBrains/Writerside ship WebPage nodes with an empty
  *  description as routing metadata; treating those as content let a true empty shell stop at Tier-1
  *  and return no content (#109, dual of #81). Data types (Article/Product/JobPosting/…) and nodes
- *  with a non-@type key still count via the general rule below. */
+ *  with a non-@type key still count via the general rule below. Lowercased to match
+ *  shortSchemaType, which also flattens full-IRI forms like https://schema.org/WebPage. */
 const SCAFFOLDING_TYPES = new Set([
-  "WebPage", "WebSite", "CollectionPage", "SearchResultsPage", "ItemPage",
-  "BreadcrumbList", "SiteNavigationElement", "AboutPage", "ContactPage", "ProfilePage",
+  "webpage", "website", "collectionpage", "searchresultspage", "itempage",
+  "breadcrumblist", "sitenavigationelement", "aboutpage", "contactpage", "profilepage",
 ]);
 
 /** schema.org text properties whose non-empty value means real body content an agent can use. */
@@ -72,9 +74,8 @@ const CONTENT_PROPERTIES = new Set(["description", "articleBody", "text", "headl
 
 function nodeTypes(node: Record<string, unknown>): string[] {
   const type = node["@type"];
-  if (typeof type === "string") return [type];
-  if (Array.isArray(type)) return type.filter((t): t is string => typeof t === "string");
-  return [];
+  const raw = typeof type === "string" ? [type] : Array.isArray(type) ? type.filter((t): t is string => typeof t === "string") : [];
+  return raw.map(shortSchemaType);
 }
 
 /** A node typed ONLY with scaffolding @types (e.g. WebPage) — needs a content property to count. */
