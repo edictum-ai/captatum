@@ -6,7 +6,7 @@ import type { FetcherResult } from "../src/application/ports/fetcher.ts";
 import { extractTier1FromFetchResult, preferredTitle } from "../src/application/use-cases/tier1-extract.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { extractVisibleText, findElements, stripHtmlComments, stripHtmlTags } from "../src/infrastructure/extract/html.ts";
-import { selectMainContentHtml } from "../src/infrastructure/extract/main-content.ts";
+import { MAIN_OVERRIDE_FACTOR, selectMainContentHtml } from "../src/infrastructure/extract/main-content.ts";
 import { decodeHtmlEntities } from "../src/infrastructure/extract/entities.ts";
 import { stripHiddenSubtrees } from "../src/infrastructure/extract/hidden.ts";
 import { collectHiddenDisplayNoneClasses } from "../src/infrastructure/extract/hidden-classes.ts";
@@ -1452,4 +1452,115 @@ test("extractHtml falls back to <main> when there is no <article> (VitePress/Git
   for (const chrome of ["Top nav", "Skip to content", "Main Navigation", "Sidebar", "Guide Config Plugins", "Footer chrome"]) {
     assert.equal(out.text.includes(chrome), false, `chrome leaked from <main> selection: "${chrome}"`);
   }
+});
+
+// #108: selectMainContentHtml scores <article>/<main> by visible-text length instead of blindly
+// returning the first <article>. <main> wins only when substantially richer (MAIN_OVERRIDE_FACTOR);
+// chrome (aside/nav/footer) is stripped first. The old code returned the FIRST <article> — a 4-word
+// card tile on hub pages (MS-Learn) — ignoring a far richer <main>.
+
+test("selectMainContentHtml: <main> wins over card-grid <article> tiles when substantially richer (#108)", () => {
+  assert.equal(MAIN_OVERRIDE_FACTOR, 1.5);
+  const html = "<html><body><header>Microsoft Learn Global navigation</header>"
+    + "<main>"
+    + "<h1>Azure Storage documentation</h1>"
+    + "<p>Find quickstarts, tutorials, and samples to learn about Azure Storage service options.</p>"
+    + "<section>"
+    + "<article><h3>Introduction to Azure Storage</h3><p>Overview of storage options.</p></article>"
+    + "<article><h3>Storage account overview</h3><p>Learn about storage account types.</p></article>"
+    + "<article><h3>Blob storage</h3><p>Object storage for unstructured data.</p></article>"
+    + "</section>"
+    + "</main><footer>Microsoft Learn footer Privacy cookies Terms</footer></body></html>";
+  const out = extractHtml({ html, url: "https://learn.microsoft.com/en-us/azure/storage/", contentType: "text/html; charset=utf-8" });
+  // The hub intro (only in <main>, not in any tile) is present → <main> was selected, not a tile.
+  assert.match(out.text, /Azure Storage documentation/);
+  assert.match(out.text, /Find quickstarts/);
+  // Header/footer chrome (outside <main>) is absent.
+  for (const chrome of ["Microsoft Learn Global navigation", "Microsoft Learn footer", "Privacy cookies"]) {
+    assert.equal(out.text.includes(chrome), false, `chrome leaked: "${chrome}"`);
+  }
+});
+
+test("selectMainContentHtml: <article> wins when <main> only adds footer/nav chrome (#108)", () => {
+  assert.equal(MAIN_OVERRIDE_FACTOR, 1.5);
+  // Mintlify/Anthropic shape: <main> wraps the real <article> plus a global footer; the footer is
+  // chrome, so <main> is only ~1.0× the article → the <article>'s tighter scope must win.
+  const articleBody = "<h1>Building effective agents</h1>"
+    + "<p>Agents skip process. This is a long enough article body to exceed the empty-candidate guard.</p>";
+  const html = "<html><body>"
+    + `<main><article>${articleBody}</article>`
+    + "<footer>Platform Docs Solutions AI agents Company Careers Privacy policy Terms of service</footer>"
+    + "</main></body></html>";
+  const out = extractHtml({ html, url: "https://docs.anthropic.com/", contentType: "text/html; charset=utf-8" });
+  assert.match(out.text, /Building effective agents/);
+  for (const chrome of ["Platform Docs", "Careers", "Privacy policy", "Terms of service"]) {
+    assert.equal(out.text.includes(chrome), false, `footer chrome leaked: "${chrome}"`);
+  }
+});
+
+test("selectMainContentHtml: strips <aside>/<nav>/<footer> chrome from <main> before comparing (#108)", () => {
+  // A <main> wrapping a clean <article> plus a heavy <aside> related-link farm must keep the
+  // <article>; without the chrome-strip, main would be ~3× the article and override at factor 1.5.
+  const html = "<html><body><main>"
+    + "<article><h1>Real Post</h1><p>This is the real post body with enough prose to be meaningful here.</p></article>"
+    + "<aside><h3>Related Posts</h3><ul>"
+    + "<li><a href=\"/a\">Related article one with a longish title</a></li>"
+    + "<li><a href=\"/b\">Related article two with another longish title</a></li>"
+    + "<li><a href=\"/c\">Related article three with yet another long title</a></li>"
+    + "</ul></aside>"
+    + "</main></body></html>";
+  const out = extractHtml({ html, url: "https://blog.example.com/post", contentType: "text/html; charset=utf-8" });
+  assert.match(out.text, /Real Post/);
+  for (const chrome of ["Related Posts", "Related article one", "Related article two", "Related article three"]) {
+    assert.equal(out.text.includes(chrome), false, `aside chrome leaked: "${chrome}"`);
+  }
+});
+
+test("selectMainContentHtml: prefers the FIRST <article> when there is no <main> (#108 conservative tie-break)", () => {
+  // No <main>: keep #93 first-article behavior. A later, longer sibling <article> (a related/
+  // author block) must NOT displace the page's primary (first) article. (Chrome-stripping means
+  // a related block in an <aside> is already gone; this pins the bare-sibling decision too.)
+  const html = "<html><body>"
+    + "<article><h1>The Primary Article</h1><p>This is the main post the reader came for.</p></article>"
+    + "<article><h3>Author Bio</h3><p>A longer author biography block with many more words than the primary post body above, included as a sibling article.</p></article>"
+    + "</body></html>";
+  const main = selectMainContentHtml(html);
+  assert.match(main ?? "", /The Primary Article/);
+  assert.equal((main ?? "").includes("Author Bio"), false, "longer later sibling article displaced the primary article");
+});
+
+test("selectMainContentHtml: returns null for empty <article>+<main> so caller recovers sibling content (#108)", () => {
+  // `0 >= 0 * 1.5` would return "" without the empty-candidate guard; "" is non-null so the
+  // caller's `?? html` would NOT fire and the real <div> content would be lost.
+  const html = "<html><body>"
+    + "<article></article><main></main>"
+    + "<div>Real SSR content in a sibling div that must be recovered by the fallback.</div>"
+    + "</body></html>";
+  assert.equal(selectMainContentHtml(html), null);
+  const out = extractHtml({ html, url: "https://example.com/", contentType: "text/html; charset=utf-8" });
+  assert.match(out.text, /Real SSR content in a sibling div/);
+});
+
+test("selectMainContentHtml: CJK <article> is scored by character length, not treated as a skeleton (#108)", () => {
+  // No whitespace tokenization in CJK → a word-count skeleton filter would see "1 word" and drop
+  // the whole article. Character-length scoring is script-agnostic and keeps it.
+  const html = "<html><body>"
+    + "<article><h1>存储简介</h1>"
+    + "<p>Azure 存储是 Microsoft 提供的云存储解决方案。"
+    + "它提供高度可用的、安全的、持久的存储。</p></article>"
+    + "</body></html>";
+  const main = selectMainContentHtml(html);
+  assert.ok(main, "CJK article must be selected (not null)");
+  const out = extractHtml({ html, url: "https://learn.microsoft.com/zh-cn/", contentType: "text/html; charset=utf-8" });
+  assert.match(out.text, /存储简介/);
+  assert.match(out.text, /Azure 存储/);
+});
+
+test("selectMainContentHtml: skeleton page with no <article>/<main> stays null (shell-gate handles it) (#108)", () => {
+  // Scoping never suppresses a needed render: a JS shell with no <article>/<main> takes the fast
+  // path (null), the full body feeds evaluateShellGate, and the terse skeleton trips jsRequired.
+  const html = "<html><body><div id=\"root\"><div class=\"skeleton\">Loading content...</div></div></body></html>";
+  assert.equal(selectMainContentHtml(html), null);
+  const out = extractHtml({ html, url: "https://app.example.com/", contentType: "text/html; charset=utf-8" });
+  assert.equal(out.shellGate.jsRequired, true);
 });
