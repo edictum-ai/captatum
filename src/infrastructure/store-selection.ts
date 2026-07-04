@@ -9,7 +9,8 @@
 // factory that lazy-imports mysql2 only when TiDB is selected, so a SQLite-only
 // deploy never loads it.
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { userInfo } from "node:os";
+import { dirname, resolve } from "node:path";
 import type { StorePort } from "../application/ports/store.ts";
 import { openSqliteStore } from "./sqlite/index.ts";
 
@@ -62,7 +63,40 @@ export async function createHostedStore(options: HostedStoreOptions): Promise<Ho
   return { store: openSqliteStore(options.sqlitePath), backend };
 }
 
+/**
+ * Self-diagnosing message for the unwritable-SQLite-dir boot failure (#85). Under the hosted
+ * image's USER node the container's /app is root-owned, so the default ./data/captatum.sqlite path
+ * is not writable and mkdirSync throws a cryptic EACCES. This turns it into a message that names
+ * the resolved dir + the CAPTATUM_SQLITE_PATH fix. Exported so the wording is unit-tested.
+ */
+export function unwritableStoreDirMessage(file: string, code: string, user: string, cwd: string): string {
+  const absParent = dirname(resolve(cwd, file));
+  return (
+    `SQLite store dir is not writable: cannot create ${absParent} (from CAPTATUM_SQLITE_PATH=${file}; ` +
+    `running as ${user}, cwd ${cwd}, os error ${code}). Under the hosted image's USER node the ` +
+    `container's /app is root-owned and not writable — set CAPTATUM_SQLITE_PATH to a writable ` +
+    `mounted volume (e.g. /data/captatum.sqlite).`
+  );
+}
+
 function ensureParentDir(file: string): void {
   const parent = dirname(file);
-  if (parent && parent !== ".") mkdirSync(parent, { recursive: true });
+  if (!parent || parent === ".") return;
+  try {
+    mkdirSync(parent, { recursive: true });
+  } catch (err) {
+    // Re-wrap only the "not writable" family so a misconfigured path (ENOTDIR, EEXIST, …)
+    // surfaces unchanged instead of being masked as a permissions problem.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw err;
+    throw new Error(unwritableStoreDirMessage(file, code ?? "UNKNOWN", safeUser(), process.cwd()));
+  }
+}
+
+function safeUser(): string {
+  try {
+    return userInfo().username || "unknown";
+  } catch {
+    return "unknown";
+  }
 }
