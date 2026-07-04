@@ -16,16 +16,15 @@ export type {
 
 export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
   const errors = [] as ProvenanceError[];
-  const metadata = extractPageMetadata(input.html, input.url, errors);
-  // A non-HTML body (text/plain, markdown, JSON, XML, …) is the COMPLETE intended response —
-  // don't run it through the HTML tag-stripper / whitespace-collapser, which mangles angle-bracket
-  // data (e.g. `{"x":"<b>hi</b>"}` → `{"x":" hi "}`) and collapses markdown newlines. Return the
-  // raw decoded body UNCHANGED (no trim — leading indentation and trailing newlines are meaningful
-  // in code/markdown; the receipt promises the verbatim body). (JSON image/structured mis-extraction
-  // is gated separately at Tier-1 — #94.)
-  const text = isHtmlContentType(input.contentType)
-    ? extractVisibleText(input.html)
-    : input.html;
+  const html = isHtmlContentType(input.contentType);
+  // Non-HTML bodies (text/plain, markdown, JSON, XML, …) carry no HTML metadata, and running the
+  // HTML scanners on them fabricates results — e.g. extractImages misparses a JSON string value
+  // containing a badge URL as an <img> tag (registry.npmjs.org/%22…svg%22). Skip extractPageMetadata
+  // for non-HTML: structured/title are empty, and the raw decoded body is returned as `text` (#94).
+  const metadata = html
+    ? extractPageMetadata(input.html, input.url, errors)
+    : { title: undefined as string | undefined, structured: {} as StructuredData };
+  const text = html ? extractVisibleText(input.html) : input.html;
   const shellGate = evaluateShellGate({
     html: input.html,
     text,

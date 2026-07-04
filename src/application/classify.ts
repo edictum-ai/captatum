@@ -7,7 +7,7 @@ import type { Result } from "../domain/result.ts";
  * — the domain Result shape is untouched.
  */
 
-export type ContentType = "article" | "job" | "pin" | "product" | "spa" | "unknown";
+export type ContentType = "article" | "job" | "json" | "pin" | "product" | "spa" | "unknown";
 
 export interface AccessInfo {
   mainContentAccessible: boolean;
@@ -30,7 +30,20 @@ export function hasContent(result: Result): boolean {
   return realTier && result.result.trim().length > 0;
 }
 
+/** application-local mirror of infrastructure/http/body.ts isJsonContentType (kept here to avoid
+ *  an application → concrete-infra import; tiny + stable). True for application/json and +json. */
+function isJsonContentType(contentType: string | undefined): boolean {
+  if (!contentType) return false;
+  const primary = contentType.split(";")[0].trim().toLowerCase();
+  return primary === "application/json" || primary.endsWith("+json");
+}
+
 export function classifyContentType(result: Result): ContentType {
+  // A declared JSON response is JSON, full stop — before any HTML/structured/host heuristic
+  // (which would label it "unknown" and imply an HTML read). Inlined here (not imported from
+  // infrastructure/http/body.ts) to keep this application module free of a concrete-infra import.
+  if (isJsonContentType(result.contentType)) return "json";
+
   // Explicit schema.org / og:type declarations are authoritative and win over
   // the host heuristic — a Pinterest careers page with a JobPosting is "job".
   const jsonLdType = bestContentType(primaryTypes(result.structured?.jsonLd));

@@ -2,7 +2,7 @@ import { STATUS_CODES } from "node:http";
 import type { FetcherResult } from "../ports/fetcher.ts";
 import type { Output } from "../../domain/tier.ts";
 import { sha256Hex, type ProvenanceError, type Result } from "../../domain/result.ts";
-import { decodeBody } from "../../infrastructure/http/body.ts";
+import { decodeBody, isHtmlContentType, isJsonContentType } from "../../infrastructure/http/body.ts";
 import type { StructuredData } from "../../domain/platform.ts";
 import type { ShellGateEvidence } from "../../domain/shell-gate.ts";
 import { buildPayload, candidateNodes, isContentNode } from "./tier1-payload.ts";
@@ -70,7 +70,7 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
     output,
     platform: { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" },
     jsRequired: extraction.shellGate.jsRequired,
-    resolvedVia: resolvedVia(extraction),
+    resolvedVia: resolvedVia(extraction, input.fetchResult.contentType),
     attempts: [{
       step: 1,
       tier: 1,
@@ -157,7 +157,11 @@ function contentTitleOfNode(node: Record<string, unknown> | null): string | unde
   return undefined;
 }
 
-function resolvedVia(extraction: HtmlExtraction): string {
+function resolvedVia(extraction: HtmlExtraction, contentType?: string): string {
+  // A non-HTML body is returned raw (no HTML extraction) — label it by content family, not "tier1-html".
+  if (!isHtmlContentType(contentType)) {
+    return isJsonContentType(contentType) ? "tier1-json" : "tier1-text";
+  }
   if (extraction.shellGate.reason === "empty-spa-shell") return "tier1-shell-gate";
   if (extraction.structured.jsonLd !== undefined) return "tier1-jsonld";
   if (extraction.structured.appState !== undefined) return "tier1-app-state";

@@ -126,6 +126,14 @@ export function isHtmlContentType(contentType: string | undefined): boolean {
   return /html|xhtml/i.test(contentType);
 }
 
+/** True for `application/json` and `+json` suffixes (e.g. application/vnd.api+json).
+ *  Used to route API responses away from the HTML extractor (#94). */
+export function isJsonContentType(contentType: string | undefined): boolean {
+  if (!contentType) return false;
+  const primary = contentType.split(";")[0].trim().toLowerCase();
+  return primary === "application/json" || primary.endsWith("+json");
+}
+
 /** WHATWG-ish charset prescan: inspect the first 1024 bytes (as an ASCII view
  *  where each byte < 128 maps to its char and bytes ≥ 128 become '_') for a
  *  `<meta charset=…>` (HTML5) or `<meta http-equiv=Content-Type

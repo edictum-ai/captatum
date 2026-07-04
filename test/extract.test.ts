@@ -10,6 +10,8 @@ import { decodeHtmlEntities } from "../src/infrastructure/extract/entities.ts";
 import { stripHiddenSubtrees } from "../src/infrastructure/extract/hidden.ts";
 import { collectHiddenDisplayNoneClasses } from "../src/infrastructure/extract/hidden-classes.ts";
 import { extractAppState } from "../src/infrastructure/extract/app-state.ts";
+import { isJsonContentType } from "../src/infrastructure/http/body.ts";
+import { classifyContentType } from "../src/application/classify.ts";
 
 const FIXTURE_DIR = join(process.cwd(), "test", "fixtures", "extract");
 
@@ -1034,7 +1036,7 @@ function fixture(name: string): string {
   return readFileSync(join(FIXTURE_DIR, name), "utf8");
 }
 
-function fetchResult(finalUrl: string, html: string): FetcherResult {
+function fetchResult(finalUrl: string, html: string, contentType: string = "text/html; charset=utf-8"): FetcherResult {
   return {
     status: 200,
     finalUrl,
@@ -1045,7 +1047,7 @@ function fetchResult(finalUrl: string, html: string): FetcherResult {
         controller.close();
       },
     }),
-    contentType: "text/html; charset=utf-8",
+    contentType,
     bytes: Buffer.byteLength(html),
   };
 }
@@ -1361,4 +1363,50 @@ test("decodeHtmlEntities honors case-sensitive named entities (&Eacute; ≠ &eac
   assert.equal(decodeHtmlEntities("&dagger; &Dagger;"), "† ‡");
   // a fully-uppercased lowercase entity still decodes leniently (&AMP; → &).
   assert.equal(decodeHtmlEntities("&AMP;"), "&");
+});
+
+// #94: a JSON API response must be returned raw — NOT run through the HTML scanners, which
+// fabricated image URLs (registry.npmjs.org/%22…svg%22) by misparsing JSON string values as
+// <img>/<source> tags. It must also be labeled contentType "json" and resolvedVia "tier1-json".
+
+test("extractTier1: JSON response is raw, no fabricated images, contentType json, resolvedVia tier1-json (#94)", async () => {
+  const json = JSON.stringify({
+    description: '![badge](https://img.shields.io/x.svg) <img src="https://example.test/a.png">',
+    versions: { "0.6.0": { dist: { tarball: "https://registry.test/x.tgz" } } },
+  });
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://registry.test/pkg",
+    fetchResult: fetchResult("https://registry.test/pkg", json, "application/json; charset=utf-8"),
+    extractHtml,
+    durationMs: 10,
+  });
+  assert.equal(result.result, json, "raw JSON returned verbatim, no HTML stripping");
+  assert.equal(result.resolvedVia, "tier1-json");
+  assert.equal(result.jsRequired, false);
+  assert.equal(result.structured, undefined, "no HTML structured data fabricated from JSON");
+  assert.equal(result.contentType, "application/json; charset=utf-8");
+  assert.equal(classifyContentType(result), "json");
+});
+
+test("extractTier1: a text/plain response resolves via tier1-text with the raw body (#94)", async () => {
+  const body = "404: Not Found";
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://x.test/missing",
+    fetchResult: fetchResult("https://x.test/missing", body, "text/plain; charset=utf-8"),
+    extractHtml,
+    durationMs: 10,
+  });
+  assert.equal(result.result, body);
+  assert.equal(result.resolvedVia, "tier1-text");
+  assert.equal(result.structured, undefined);
+  assert.equal(result.jsRequired, false);
+});
+
+test("isJsonContentType: application/json + +json suffixes, not text/html/absent (#94)", () => {
+  assert.equal(isJsonContentType("application/json"), true);
+  assert.equal(isJsonContentType("application/json; charset=utf-8"), true);
+  assert.equal(isJsonContentType("application/vnd.api+json"), true);
+  assert.equal(isJsonContentType("text/plain"), false);
+  assert.equal(isJsonContentType("text/html"), false);
+  assert.equal(isJsonContentType(undefined), false);
 });
