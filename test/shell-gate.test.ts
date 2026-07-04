@@ -63,6 +63,7 @@ test("hasUsableStructuredData: scaffolding-only nodes need a non-empty content p
   const notUsable: unknown[] = [
     { "@type": "WebPage", name: "X", description: "" },
     { "@type": "https://schema.org/WebPage", name: "X", description: "" }, // full-IRI form (codex P2)
+    { "@type": "https://schema.org/WebPage/", name: "X", description: "" }, // trailing-slash IRI (codex P2 #2)
     { "@type": "WebSite", name: "X Help", url: "https://x.test/" },
     { "@type": "BreadcrumbList", itemListElement: [{ "@type": "ListItem", name: "Home" }] },
     { "@type": ["WebPage"], name: "x" },
@@ -89,6 +90,17 @@ test("shell-gate: scaffolding WebPage as a full IRI with empty description does 
     + '</body></html>';
   const gate = extractHtml({ html: shell, url: "https://x.test/p" }).shellGate;
   assert.equal(gate.jsRequired, true, "full-IRI WebPage (empty description) must not satisfy the gate");
+  assert.equal(gate.reason, "empty-spa-shell");
+});
+
+test("shell-gate: scaffolding WebPage as a trailing-slash IRI with empty description does not satisfy (#109, codex P2)", () => {
+  // A trailing slash (https://schema.org/WebPage/) made shortSchemaType return "" — missing the
+  // scaffolding set. Trailing slashes are now stripped before the last-segment logic.
+  const shell = '<html><body><div id="root"></div>'
+    + '<script type="application/ld+json">{"@context":"https://schema.org","@type":"https://schema.org/WebPage/","name":"X","description":""}</script>'
+    + '</body></html>';
+  const gate = extractHtml({ html: shell, url: "https://x.test/p" }).shellGate;
+  assert.equal(gate.jsRequired, true, "trailing-slash IRI WebPage (empty description) must not satisfy the gate");
   assert.equal(gate.reason, "empty-spa-shell");
 });
 
