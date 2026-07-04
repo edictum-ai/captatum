@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { chooseStoreBackend, createHostedStore } from "../src/infrastructure/store-selection.ts";
+import {
+  chooseStoreBackend,
+  createHostedStore,
+  unwritableStoreDirMessage,
+} from "../src/infrastructure/store-selection.ts";
 
 test("chooseStoreBackend selects sqlite unless TIDB_HOST is set", () => {
   assert.equal(chooseStoreBackend(""), "sqlite");
@@ -48,4 +52,35 @@ test("createHostedStore rejects the TiDB backend without TIDB_SSL_CA (SQLSTORE-1
     }),
     /TIDB_SSL_CA/,
   );
+});
+
+test("unwritableStoreDirMessage is self-diagnosing: resolved dir + user + cwd + CAPTATUM_SQLITE_PATH fix (#85)", () => {
+  const msg = unwritableStoreDirMessage("./data/captatum.sqlite", "EACCES", "node", "/app");
+  assert.match(msg, /\/app\/data/); // resolved absolute parent
+  assert.match(msg, /CAPTATUM_SQLITE_PATH=\.\/data\/captatum\.sqlite/);
+  assert.match(msg, /\bnode\b/); // running-as user
+  assert.match(msg, /\bcwd \/app\b/);
+  assert.match(msg, /EACCES/);
+  assert.match(msg, /\/data\/captatum\.sqlite/); // the suggested writable-volume fix
+});
+
+test("createHostedStore fails with an actionable CAPTATUM_SQLITE_PATH message when the parent dir is unwritable (#85)", async () => {
+  // root bypasses UNIX perms, so the forced EACCES wouldn't fire — skip rather than flake.
+  if (typeof process.getuid === "function" && process.getuid() === 0) return;
+  const dir = mkdtempSync(join(tmpdir(), "captatum-store-ro-"));
+  const roDir = join(dir, "readonly");
+  mkdirSync(roDir);
+  chmodSync(roDir, 0o555); // no write → mkdirSync of a child throws EACCES
+  try {
+    await assert.rejects(
+      createHostedStore({
+        tidb: { host: "", port: 4000, database: "x", user: "x", password: "x", sslCa: "" },
+        sqlitePath: join(roDir, "child", "captatum.sqlite"),
+      }),
+      (err: Error) => /CAPTATUM_SQLITE_PATH/.test(err.message),
+    );
+  } finally {
+    chmodSync(roDir, 0o700);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
