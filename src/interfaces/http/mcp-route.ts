@@ -5,7 +5,7 @@ import type { ClockPort } from "../../application/ports/clock.ts";
 import type { RequestAuthorizer } from "../../application/use-cases/request-auth.ts";
 import type { CaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import { config } from "../../config.ts";
-import { createCaptatumMcpServer } from "../mcp/server.ts";
+import { createCaptatumMcpServer, OverloadedError } from "../mcp/server.ts";
 import { sendMcpAuthError } from "./errors.ts";
 
 export interface McpRouteDeps {
@@ -30,7 +30,8 @@ export async function registerMcpRoute(app: FastifyInstance, deps: McpRouteDeps)
  * (DOS-2). Sized for the hosted task (2 vCPU / 4 GiB): each in-flight
  * fetch/render/transform holds a socket + bounded memory, so 8 concurrent keeps
  * headroom without letting one tenant starve the rest. Over-cap calls throw
- * "overloaded" (see withAdmission), surfaced to the MCP client as a tool error.
+ * OverloadedError (see withAdmission) → a distinct RETRYABLE JSON-RPC error the
+ * client backs off and retries (NOT a generic InternalError). (#84)
  */
 const MAX_CONCURRENT_MCP = 8;
 
@@ -75,8 +76,9 @@ async function handleMcpPost(
   });
   // DOS-2: cap concurrent captatum EXECUTIONS (not POSTs) — a JSON-RPC batch
   // is one POST but dispatches many tools/call, so the limiter must wrap each
-  // execute. An over-cap call throws "overloaded" (surfaced to the client as a
-  // tool error; it retries) rather than bypassing the cap.
+  // execute. An over-cap call throws OverloadedError, surfaced to the client as
+  // a distinct RETRYABLE JSON-RPC error (data.retryable) the CLIENT backs off
+  // and retries — not the generic InternalError it used to collapse to. (#84)
   const mcp = createCaptatumMcpServer({
     captatum: withAdmission(deps.captatum, mcpAdmission),
     auth,
@@ -95,14 +97,14 @@ async function handleMcpPost(
 }
 
 /** Wraps a CaptatumUseCase so each `execute()` acquires/releases an admission slot. */
-function withAdmission(
+export function withAdmission(
   inner: Pick<CaptatumUseCase, "execute" | "defaultOutput">,
   limiter: AdmissionLimiter,
 ): Pick<CaptatumUseCase, "execute" | "defaultOutput"> {
   return {
     execute: async (...args: Parameters<CaptatumUseCase["execute"]>) => {
       if (!limiter.tryAcquire()) {
-        throw new Error("captatum: server overloaded — too many concurrent captatum calls");
+        throw new OverloadedError("captatum: server overloaded — too many concurrent captatum calls");
       }
       try {
         return await inner.execute(...args);

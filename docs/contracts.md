@@ -339,6 +339,8 @@ All HTTP/JSON-RPC errors:
 { "jsonrpc":"2.0", "error": { "code": -32001, "message": "..." }, "id": null }  // auth-failed JSON-RPC
 ```
 
+Admission overload is a distinct, **retryable** JSON-RPC error, separate from `InternalError`. When the hosted server is at concurrent-execution capacity (DOS-2 admission cap) it emits `{ "jsonrpc":"2.0", "id":<id>, "error":{ "code": -32050, "message":"captatum: server overloaded — retry later", "data":{ "retryable": true } } }`. `-32050` is a server-error-range value, reserved and distinct from the auth-failed `-32001`. `data.retryable: true` is the stable contract field. Clients SHOULD treat this as an expected transient condition — back off and retry the same call (ideally with jitter) — NOT as an `InternalError`/bug. The local stdio bridge (single-user, no admission cap) never emits it. There is no `Retry-After` header (Streamable HTTP carries errors inside the JSON-RPC body, not as HTTP 4xx/5xx). (#84)
+
 Stable `code` values; `message` may change. Auth failure sets `WWW-Authenticate`.
 Tool input validation failures use the same HTTP error wrapper and include
 `invalid_input` for malformed tool payloads before any outbound work begins.
