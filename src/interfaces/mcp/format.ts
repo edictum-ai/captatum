@@ -1,5 +1,6 @@
 import type { AttemptTrace, Result } from "../../domain/result.ts";
 import { classifyAccess, classifyContentType } from "../../application/classify.ts";
+import { isJsonContentType } from "../../infrastructure/http/body.ts";
 import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
 
 /** Max attempt lines emitted in the debug text block (MCP debug + CLI --debug). */
@@ -65,7 +66,10 @@ export function debugTextBlock(result: Result): string {
 }
 
 function isJsonBody(result: Result): boolean {
-  return result.contentType.toLowerCase().startsWith("application/json");
+  // Same predicate as the Tier-1 JSON route (infrastructure/http/body.ts): a +json suffix
+  // (application/vnd.api+json, application/ld+json, …) is also a single parseable JSON document
+  // and must skip the prepended provenance comment, or content[0].text stops being valid JSON.
+  return isJsonContentType(result.contentType);
 }
 
 /**
