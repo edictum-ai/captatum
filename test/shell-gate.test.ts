@@ -88,3 +88,12 @@ test("extractHtml preserves newlines in text/markdown bodies (#92 review, covers
   const out = extractHtml({ html: md, url: "https://x.test/readme.md", contentType: "text/markdown" });
   assert.equal(out.text, md, "markdown newlines must be preserved, not collapsed");
 });
+
+test("extractHtml preserves edge whitespace verbatim in non-HTML bodies (#92 review)", () => {
+  // Leading indentation and trailing newlines are meaningful in code/markdown — the raw body must
+  // be returned unchanged, not trimmed.
+  const body = "    indented first line\nbody\n  \n";
+  const out = extractHtml({ html: body, url: "https://x.test/snippet.txt", contentType: "text/plain" });
+  assert.equal(out.text, body, "non-HTML edge whitespace must be preserved verbatim");
+  assert.equal(out.shellGate.jsRequired, false);
+});
