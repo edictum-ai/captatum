@@ -8,13 +8,15 @@ Current contract version: `v0`.
 
 ### Breaking changes
 
-- None in the v0.4.0 release.
+- None in the v0.6.0 release.
 
 ## Product
 
-captatum is a general-purpose MCP fetch tool for AI agents: fetch **any** URL (rendering JS when needed) and return **token-efficient** content plus **provenance** describing how the result was produced. The goal is to give agents what Claude Code's built-in `WebFetch` gives them — a concise answer about a page — but **token-efficient**, with the ability to return **raw** content, and actually working on JS-rendered pages. The **default output is provider-conditional**: `summary` (via the free-model router) when a transform provider is configured, otherwise `raw` (full clean content, no LLM) — so a zero-config call returns real content instead of silently degrading to a truncated excerpt.
+Captatum is the web read an agent can trust: one MCP tool that fetches **any** URL and returns clean, **token-efficient** content plus a **provenance receipt** on every response (tier, final URL, whether JS was required, transform model/tokens) so an agent knows exactly how each result was produced. Every request is **SSRF-guarded**, and fetched content is treated as **untrusted data, never instructions**. The wedge is **trustworthy reads** — clean content from the JS-rendered SPAs and structured pages other tools return empty or blocked.
 
-Why it beats `WebFetch`: `WebFetch` is a static GET + Turndown (which drops `<script>` JSON-LD and app state) + a Haiku summary, with no JS execution. captatum uses anti-bot TLS-fingerprinted fetch (`wreq-js`), renders JS when a page needs it, extracts structured data from **raw** HTML, defaults to `raw` (or `summary` when a provider is configured — free models via OpenRouter, or local Ollama), can return any output on demand, and reports provenance on every response.
+The **default output is provider-conditional**: `summary` (via the free-model router — OpenRouter/Ollama) when a transform provider is configured (e.g. the hosted server), otherwise `raw` (full clean content, no LLM) — so a zero-config call returns real content instead of silently degrading to a truncated excerpt. `output: "raw"` returns clean resolved content + parsed structured data; `output: "extract"` returns JSON shaped to a caller schema.
+
+Unlike `WebFetch` (static GET + Turndown, which drops `<script>` JSON-LD/app-state and runs no JS) and render-only services (Firecrawl/Jina strip structured data and give no receipt), captatum uses anti-bot TLS-fingerprinted fetch (`wreq-js`), renders JS only when a page needs it, extracts structured data (JSON-LD / Open Graph / meta) from raw HTML, and reports provenance on every response. Anti-bot challenge walls (Cloudflare/Akamai/PerimeterX) over HTTPS it **detects and reports as gated** (`gateReason: captcha`); it does **not** bypass them.
 
 ## Protocol
 

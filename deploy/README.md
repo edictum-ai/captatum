@@ -44,7 +44,7 @@ Set the deploy-specific values:
   `https://claude.ai,https://chat.openai.com`). Never `*`.
 - `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS` — the public host/origin(s) clients
   reach (inbound DNS-rebinding protection).
-- `CAPTATUM_SQLITE_PATH` — defaults to `/data/captatum.sqlite` (the volume mount).
+- `CAPTATUM_SQLITE_PATH` — the SQLite store path. The code default is `./data/captatum.sqlite` (resolved against the container's CWD `/app`); set this to `/data/captatum.sqlite` on a mounted volume, as the templates below do — `/app` is root-owned under `USER node`, so the default path is **not writable** there and boot fails with `EACCES` (#85).
 
 ## 2. Cloudflare (Access + Tunnel)
 
