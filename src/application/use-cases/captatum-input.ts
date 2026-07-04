@@ -48,7 +48,7 @@ export const DEFAULT_CAPTATUM_DEFAULTS: CaptatumDefaults = {
   renderTimeoutMs: 20_000,
   renderTimeoutMsHardCap: 60_000,
   maxHops: 5,
-  allowRender: false,
+  allowRender: true,
   prompt: DEFAULT_PROMPT,
   defaultOutput: "raw",
 };

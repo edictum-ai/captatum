@@ -110,7 +110,7 @@ test("tools/list advertises a strict captatum input schema", async () => {
   assert.equal(tool.inputSchema.additionalProperties, false);
   // Discoverability: the tool description advertises every output mode + provenance
   // + allowRender so clients learn the full surface from tools/list alone.
-  for (const phrase of ["summary", "'raw'", "'extract'", "allowRender: true", "provenance"]) {
+  for (const phrase of ["summary", "'raw'", "'extract'", "allowRender: false", "provenance"]) {
     assert.ok(tool.description.includes(phrase), `tool description missing "${phrase}"`);
   }
   await ctx.app.close();

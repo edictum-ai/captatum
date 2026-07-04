@@ -300,7 +300,7 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     // The static HTML carries SSR content; client hydration REPLACES the DOM. So a
     // Tier-3 render returns different text than the Tier-1 static extract — a real
     // pattern where render ≠ Tier-1 (not a bug, but worth pinning).
-    const tier1 = await captatum.execute({ url: `${server.url}/hydration-replaces-ssr`, ...RAW });
+    const tier1 = await captatum.execute({ url: `${server.url}/hydration-replaces-ssr`, ...RAW, allowRender: false });
     assert.match(tier1.result, /SSR Content Visible Before Hydration/);
     const rendered = await captatum.execute({ url: `${server.url}/hydration-replaces-ssr`, ...RAW, ...RENDER });
     assert.equal(rendered.tier, 3);
@@ -393,9 +393,9 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
   });
 
   test("truly-empty-page: an empty page is a render-blocked shell, no crash [behavior]", { skip: skipReason, timeout: 30_000 }, async () => {
-    const r = await captatum.execute({ url: `${server.url}/truly-empty-page`, ...RAW });
-    // An empty page is a shell the gate flags for render; without allowRender it comes
-    // back render-blocked (not an error, not phantom content).
+    const r = await captatum.execute({ url: `${server.url}/truly-empty-page`, ...RAW, allowRender: false });
+    // An empty page is a shell the gate flags for render; with allowRender:false (the opt-out) it
+    // comes back render-blocked (not an error, not phantom content).
     assert.equal(r.tier, "render-blocked");
     assert.equal(r.result.trim(), "", "no content extracted from a truly empty page");
   });
@@ -461,10 +461,10 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
   });
 
   test("terse-error-shell: a terse 'Loading…' placeholder escalates to render, not content [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
-    const r = await captatum.execute({ url: `${server.url}/terse-error-shell`, ...RAW });
-    // A one-word placeholder doesn't pass the shell-gate's content threshold, so the
-    // page is flagged for render (render-blocked without allowRender) — it is NOT
-    // mistaken for real content (contrast skeleton-screen, whose bulkier filler passes).
+    const r = await captatum.execute({ url: `${server.url}/terse-error-shell`, ...RAW, allowRender: false });
+    // A one-word placeholder doesn't pass the shell-gate's content threshold, so the page is
+    // flagged for render; with allowRender:false (the opt-out) it is render-blocked — NOT mistaken
+    // for real content (contrast skeleton-screen, whose bulkier filler passes).
     assert.equal(r.tier, "render-blocked");
     assert.match(r.result, /Loading\.\.\./);
   });

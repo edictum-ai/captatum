@@ -12,7 +12,7 @@ export type ContentType = "article" | "job" | "json" | "pin" | "product" | "spa"
 export interface AccessInfo {
   mainContentAccessible: boolean;
   gated: boolean;
-  gateReason: "paywall" | "login" | "captcha" | "byte_cap" | "none";
+  gateReason: "paywall" | "js-required" | "captcha" | "byte_cap" | "none";
   /** The anti-bot vendor when gateReason is "captcha" (#41 Half A). */
   challengeProvider?: string;
 }
@@ -112,7 +112,7 @@ export function classifyAccess(result: Result): AccessInfo {
   // Empty content on a page that needed JS we could not run: likely gated
   // behind a login wall / client-rendered gate.
   if (!mainContentAccessible && needsRender(result)) {
-    return { mainContentAccessible, gated: true, gateReason: "login" };
+    return { mainContentAccessible, gated: true, gateReason: "js-required" };
   }
   return { mainContentAccessible, gated: false, gateReason: "none" };
 }

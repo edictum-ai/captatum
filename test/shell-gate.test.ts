@@ -54,7 +54,7 @@ test("hasUsableStructuredData: content-bearing JSON-LD predicate edge cases (#81
 // #92: a non-HTML body is the COMPLETE response however short — it must NEVER be judged an
 // empty SPA shell needing JS. Without the content-type guard, a 14-byte text/plain
 // "404: Not Found" tripped hasContent's <20-byte rule and escalated to jsRequired, cascading
-// to contentType="spa" + gateReason="login" + tier="render-blocked" — a receipt that lies.
+// to contentType="spa" + gateReason="js-required" + tier="render-blocked" — a receipt that lies.
 
 test("shell-gate: a short text/plain body is content, not an empty SPA shell (#92)", () => {
   const gate = extractHtml({ html: "404: Not Found", url: "https://x.test/missing", contentType: "text/plain; charset=utf-8" }).shellGate;

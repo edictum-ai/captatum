@@ -198,7 +198,7 @@ test("summary requested with no transformer degrades to raw with unconfigured pr
   assert.equal(result.timings.transformMs, 0);
 });
 
-test("allowRender defaults false and render port is not called on shell gate", async () => {
+test("allowRender defaults true (a shell gate triggers a render); explicit false opts out → render-blocked", async () => {
   const renderer = new FakeRenderer();
   const result = await createCaptatumUseCase({
     fetcher: new FakeFetcher(fetchResult({ html: "<div id=\"root\"></div>" })),
@@ -209,7 +209,7 @@ test("allowRender defaults false and render port is not called on shell gate", a
     })).extract,
     renderer,
     clock: new FakeClock([0, 0, 5, 6, 6]),
-  }).execute({ url: "https://spa.test/", output: "raw" });
+  }).execute({ url: "https://spa.test/", output: "raw", allowRender: false });
 
   assert.equal(renderer.calls.length, 0);
   assert.equal(result.tier, "render-blocked");
