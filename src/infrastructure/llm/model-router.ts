@@ -12,6 +12,7 @@ import { detectSensitiveTransformInput } from "./safety.ts";
 import { estimateTokens, MAX_OUTPUT_TOKENS_CAP, resolveOutputCap } from "./tokens.ts";
 import type { LlmGenerateResult, LlmModelCandidate, ProviderMap } from "./types.ts";
 import { demotionOf, effectiveOrder, staticRank } from "./router-ranking.ts";
+import { candidateKey, fits, noneReason, overrideProvider, rawFallback, splitList } from "./router-helpers.ts";
 
 /** Bound on escalation attempts per transform (#125) — caps latency/cost on a page that won't fit even at the largest model's max (then surfaces an honest `transform_truncated`). */
 const MAX_TRANSFORM_ATTEMPTS = 5;
@@ -199,44 +200,6 @@ export async function createDefaultLlmTransformer(): Promise<LlmTransformer> {
   await openRouter.discover();
   const providers = { openrouter: openRouter, ollama };
   return new LlmTransformer({ router: new ModelRouter([...openRouter.candidates(), ...ollama.candidates()]), providers });
-}
-
-function fits(candidate: LlmModelCandidate, task: RouterTask, inputTokens: number, options: ModelPickOptions): boolean {
-  if (options.provider && candidate.provider !== options.provider) return false;
-  if (options.model && candidate.model !== options.model) return false;
-  if (options.exclude && options.exclude.includes(candidate.model)) return false;
-  if (options.localOnly && !candidate.local) return false;
-  if (task === "extract" && !candidate.supportsJson) return false;
-  // Reserve what will be requested (passed cap clamped to the model max), not the bare
-  // model max, so a long page with a small/default budget isn't rejected for headroom
-  // it won't use (codex P2 #125). Falls back to the model max for direct pick callers.
-  const reserve = options.reserveOutputTokens !== undefined ? Math.min(options.reserveOutputTokens, candidate.maxOutputTokens) : candidate.maxOutputTokens;
-  return candidate.contextTokens >= inputTokens + reserve;
-}
-
-function noneReason(options: ModelPickOptions, configuredCount: number): string {
-  if (options.localOnly) return "sensitive_content_no_local_provider";
-  if (options.provider) return "provider_unconfigured";
-  if (options.model) return "model_unavailable";
-  return configuredCount === 0 ? "unconfigured" : "no_model_fit";
-}
-
-function overrideProvider(value: unknown): Exclude<RouterProvider, "none"> | "unsupported" | undefined {
-  if (value === undefined) return undefined;
-  if (value === "openrouter" || value === "ollama") return value;
-  return "unsupported";
-}
-
-function rawFallback(result: string, reason: string): TransformResult {
-  return { result, info: { provider: "none", reason } };
-}
-
-function candidateKey(candidate: LlmModelCandidate): string {
-  return `${candidate.provider}:${candidate.model}`;
-}
-
-function splitList(value: string): string[] {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
 function elapsed(startMs: number, endMs: number): number {
