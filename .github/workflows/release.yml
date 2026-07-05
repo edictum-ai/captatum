@@ -6,6 +6,10 @@ name: release
 # everything publishes only if it passes. On a dry-run (workflow_dispatch) the
 # images are built but not pushed.
 #
+# Images are multi-arch (linux/amd64 + linux/arm64) so the arm64 Mac mini k3s
+# deploy pulls ghcr.io/edictum-ai/captatum:latest natively instead of building
+# locally. arm64 is cross-built via QEMU on the amd64 runner (see setup-qemu).
+#
 # All actions are pinned by commit SHA (supply-chain hardening); versions + dates
 # are recorded in docs/dependency-ledger.md. The npm job requires a Trusted
 # Publisher configured on npmjs.com (org: edictum-ai, repo: captatum, workflow:
@@ -41,6 +45,21 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      # Multi-arch: QEMU registers binfmt handlers so buildx cross-builds arm64 on
+      # the amd64 runner. Both base images (node:24-bookworm-slim,
+      # mcr.microsoft.com/playwright:v1.61.0-noble) ship multi-arch manifest lists
+      # (verified — both carry linux/amd64 + linux/arm64), so FROM resolves arm64.
+      # (Native ubuntu-24.04-arm runners are a future optimization if QEMU build
+      # time becomes a concern; these images are light — the gateway does no native
+      # compile and the sidecar only COPYs a script onto the playwright base.)
+      - uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0 (2026-05-27, 39d)
+        with:
+          # Pin the binfmt image by digest — the action's default is
+          # tonistiigi/binfmt:latest (mutable), and this step runs BEFORE the
+          # packages:write build, so a repushed/compromised :latest could affect
+          # the build/GHCR token despite the action SHA pin. Digest == the
+          # `qemu-v10.2.3` tag == `:latest` as of 2026-06-08 (27d, 15-day gate OK).
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
@@ -69,6 +88,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta-gateway.outputs.tags }}
           labels: ${{ steps.meta-gateway.outputs.labels }}
@@ -77,6 +97,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile.browser
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta-browser.outputs.tags }}
           labels: ${{ steps.meta-browser.outputs.labels }}
