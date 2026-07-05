@@ -162,4 +162,4 @@ linux/amd64 + linux/arm64), so `FROM` resolves arm64 without a digest change.
 GitHub Actions used in `release.yml` (all pinned by commit SHA; recheck against
 the 15-day rule before bumping):
 
-- `docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3` — v4.1.0 (`2026-05-27`, 39d when pinned `2026-07-05`). QEMU binfmt for arm64 cross-build.
+- `docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3` — v4.1.0 (`2026-05-27`, 39d when pinned `2026-07-05`). QEMU binfmt for arm64 cross-build. **The binfmt image is also digest-pinned** (`image:` input) — the action's default is `tonistiigi/binfmt:latest` (mutable), which would run before the `packages:write` build; pinned to `tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0` (== `qemu-v10.2.3` tag, `2026-06-08`, 27d — past the gate).
