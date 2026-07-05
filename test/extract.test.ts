@@ -849,31 +849,39 @@ test("stripHiddenSubtrees drops display:none / hidden subtrees (single pass, O(n
   assert.equal(stripHiddenSubtrees("<p>visible</p>"), "<p>visible</p>");
 });
 
-test("stripHiddenSubtrees keeps React streaming-SSR boundary content (<div hidden id=\"S:N\"> + $RC/$RX swap)", () => {
-  // Real React 18+ streaming: the server ships a boundary's real content INSIDE a
-  // `hidden` div, plus a `$RC`/`$RX` swap script that removes `hidden` after hydration.
-  // This IS real page content the browser reveals — NOT a hidden config blob. Regression
-  // (Anthropic/Next.js docs): the article body lived in the hidden boundary, so stripping
-  // it left only cookie/consent text → a false-positive Tier-1 "success" + no escalation.
+test("stripHiddenSubtrees keeps React streaming-SSR boundary content (only a matching $RC reveals it)", () => {
+  // Real React 18+ streaming: the server ships a boundary's real content INSIDE a `hidden` div,
+  // then a `$RC("B:N","S:N")` completion call removes `hidden` after hydration. This IS real page
+  // content the browser reveals — NOT a hidden config blob. Regression (Anthropic/Next.js docs):
+  // the article body lived in the hidden boundary, so stripping it left only cookie/consent text.
+  // ONLY a `$RC` that TARGETS the boundary id reveals it — `$RS`/`$RX`/`$RT` do not (a `$RS`-only
+  // page would otherwise expose a boundary the browser still hides — #118 codex P1).
   const rc = '<div hidden id="S:1"><article><h1>The Real Article</h1><p>body</p></article></div>'
-    + '<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute("hidden")}</script>';
+    + '<script>$RC=function(a,b){var e=document.getElementById(b);if(e)e.removeAttribute("hidden")};$RC("B:1","S:1")</script>';
   const kept = stripHiddenSubtrees(rc);
-  assert.match(kept, /The Real Article/, "React boundary content is KEPT (browser reveals it)");
+  assert.match(kept, /The Real Article/, "a boundary targeted by a $RC call is KEPT (browser reveals it)");
   assert.match(kept, /<article/, "the article element is preserved");
-  // $RX (error-boundary completion) is the same idiom.
-  assert.match(stripHiddenSubtrees('<div hidden id="S:2"><p>Recovered</p></div><script>$RX("S:2")</script>'), /Recovered/);
-  // Multiple boundaries all un-hidden.
-  const multi = stripHiddenSubtrees('<div hidden id="S:0">A</div><div hidden id="S:1">B</div><script>$RC("S:0")</script>');
+
+  // $RX (error-boundary completion) does NOT reveal the boundary — the fallback is shown, not the
+  // hidden real content; $RS (segment move) does not either. Both stay stripped (#118 codex P1).
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="S:2"><p>OriginalHidden</p></div><script>$RX("S:2","E:2")</script>'), /OriginalHidden/);
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="S:3"><p>PendingSegment</p></div><script>$RS("S:3","P:3")</script>'), /PendingSegment/);
+
+  // A boundary is revealed only when a $RC call names ITS id. S:0 + S:1 both have calls → both kept.
+  const multi = stripHiddenSubtrees('<div hidden id="S:0">A</div><div hidden id="S:1">B</div><script>$RC("B:0","S:0");$RC("B:1","S:1")</script>');
   assert.match(multi, /A/);
   assert.match(multi, /B/);
+  // S:2 has NO matching $RC → it stays hidden even when siblings are revealed (a partial stream).
+  const partial = stripHiddenSubtrees('<div hidden id="S:0">A</div><div hidden id="S:2">PENDING</div><script>$RC("B:0","S:0")</script>');
+  assert.match(partial, /A/);
+  assert.doesNotMatch(partial, /PENDING/, "a boundary with no matching $RC stays hidden (partial stream)");
 
-  // DUAL SIGNAL: without a swap marker in the document, a `hidden id="S:N"` div is NOT
-  // un-hidden — a non-React page that happens to use that id convention stays hidden.
+  // DUAL SIGNAL: without any $RC call in the document, a `hidden id="S:N"` div is NOT un-hidden.
   assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="S:1">SECRET</div><p>after</p>'), /SECRET/);
 
   // Inline `display:none` on a React boundary still wins (an author who explicitly hid it).
   assert.doesNotMatch(
-    stripHiddenSubtrees('<div hidden id="S:1" style="display:none">STILL HIDDEN</div><script>$RC("S:1")</script>'),
+    stripHiddenSubtrees('<div hidden id="S:1" style="display:none">STILL HIDDEN</div><script>$RC("B:1","S:1")</script>'),
     /STILL HIDDEN/,
   );
 
@@ -881,19 +889,19 @@ test("stripHiddenSubtrees keeps React streaming-SSR boundary content (<div hidde
   // invisible even after $RC removes the `hidden` attribute, so the boundary exemption must not
   // skip the class check (#118 codex P2). hiddenClasses is collected from <style> upstream.
   assert.doesNotMatch(
-    stripHiddenSubtrees('<div hidden id="S:1" class="hide">CLASS_HIDDEN</div><script>$RC("S:1")</script>', new Set(["hide"])),
+    stripHiddenSubtrees('<div hidden id="S:1" class="hide">CLASS_HIDDEN</div><script>$RC("B:1","S:1")</script>', new Set(["hide"])),
     /CLASS_HIDDEN/,
   );
 
   // vscdn/Netflix config blob (`style="display:none"`, NOT a React boundary) stays hidden
-  // even when a React swap marker is present elsewhere in the document.
+  // even when a React $RC call is present elsewhere in the document.
   assert.doesNotMatch(
-    stripHiddenSubtrees('<code style="display:none">THEME_OPTIONS_SECRET</code><script>$RC("S:0")</script>'),
+    stripHiddenSubtrees('<code style="display:none">THEME_OPTIONS_SECRET</code><script>$RC("B:0","S:0")</script>'),
     /THEME_OPTIONS_SECRET/,
   );
 
-  // An id that is NOT a React boundary marker (not S:N) stays hidden even with a swap marker.
-  assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="sidebar">SECRET</div><script>$RC("S:0")</script>'), /SECRET/);
+  // An id that is NOT a React boundary marker (not S:N) stays hidden even with a $RC call.
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="sidebar">SECRET</div><script>$RC("B:0","S:0")</script>'), /SECRET/);
 });
 
 test("stripHiddenSubtrees stays linear on a flood of hidden elements (per-subtree toLowerCase DoS)", () => {
@@ -1593,8 +1601,9 @@ test("selectMainContentHtml: a substantially richer sibling <article> overrides 
     + "The real streamed article is substantially richer than the skeleton placeholder, so the "
     + "sibling-override factor lets it win the article pick instead of locking in the loading text. "
     + "This mirrors docs.anthropic.com where the boundary article is roughly sixteen times richer.</p>";
-  // The $RC swap script makes reactStreaming true (the page is React streaming-SSR).
-  const swap = "<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute('hidden')}</script>";
+  // A `$RC` call makes revealedIds non-empty (the page is React streaming-SSR) so the React-gated
+  // sibling-override can fire.
+  const swap = "<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute('hidden')};$RC('S:1')</script>";
   const html = "<html><body>" + swap + "<article>" + skeleton + "</article><article>" + realBody + "</article></body></html>";
   const main = selectMainContentHtml(html);
   assert.match(main ?? "", /Real Streamed Content/);
@@ -1620,7 +1629,7 @@ test("extractHtml: a nested React boundary inside the scoped <article> is preser
   // streaming flag must be threaded from the FULL page — otherwise extractVisibleText recomputes
   // false from the fragment and strips the nested boundary, silently omitting its streamed body.
   const html = "<html><body>"
-    + "<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute('hidden')}</script>"
+    + "<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute('hidden')};$RC('B:5','S:5')</script>"
     + "<article><p>Visible intro paragraph with enough words to satisfy the shell gate alone.</p>"
     + "<div hidden id=\"S:5\"><p>Nested streamed body that must NOT be silently omitted.</p></div>"
     + "</article></body></html>";

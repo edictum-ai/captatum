@@ -28,27 +28,29 @@ const VOID_ELEMENTS = new Set([
   "link", "meta", "param", "source", "track", "wbr",
 ]);
 
-/** React 18+ streaming-SSR Suspense boundary: the server streams the boundary's real
- *  content INSIDE a `<div hidden id="S:N">`, then a `$RC`/`$RX` swap script removes the
+/** React 18+ streaming-SSR Suspense boundary: the server streams the boundary's real content
+ *  INSIDE a `<div hidden id="S:N">`, then a `$RC("...","S:N")` completion call removes the
  *  `hidden` attribute after hydration so the browser reveals it. Unlike a vscdn
  *  `<code style="display:none">` config blob, this IS real page content the user sees —
- *  stripping it drops the article body (Anthropic/Next.js docs return only cookie text
- *  because the article lives in the hidden boundary). The element-level id is the strong
- *  signal (React-specific); the document-level swap marker confirms streaming is active,
- *  so a non-React page that happens to use `id="S:1"` on a genuinely hidden div is not
- *  affected. Inline `display:none` still wins (an author who explicitly hid a boundary
- *  keeps it hidden). */
-const REACT_BOUNDARY_ID = /^S:\d+$/;
-const REACT_SWAP_MARKER = /\$r[cxst]/i; // $RC/$RX/$RS/$RT swap markers (case-insensitive)
+ *  stripping it drops the article body (Anthropic/Next.js docs return only cookie text because
+ *  the article lives in the hidden boundary). ONLY `$RC` reveals a boundary — `$RS` (segment
+ *  move), `$RX` (error fallback), and `$RT` (form replay) do not — so the reveal is tied to a
+ *  matching `$RC` target id, not a document-level flag (#118 codex P1: a `$RS`-only page would
+ *  otherwise expose a boundary the browser still hides). Inline `display:none` + display:none
+ *  classes still win (an author who explicitly hid a boundary keeps it hidden). */
+const REACT_REVEAL_CALL = /\$RC\s*\([^)]*\)/g; // a `$RC("...","S:N")` completion call (not $RS/$RX/$RT)
 
-/** True when the document carries a React streaming-SSR swap marker ($RC/$RX/$RS/$RT) —
- *  the dual-signal confirmation that `<div hidden id="S:N">` boundaries are React Suspense
- *  boundaries (real server-streamed content the browser reveals after hydration). The caller
- *  in `extractVisibleText` computes this from the ORIGINAL html and passes it in, because the
- *  markers live inside `<script>` tags that are stripped BEFORE `stripHiddenSubtrees` runs —
- *  computing it from the already-script-stripped input would always read false. */
-export function hasReactStreamingSwap(html: string): boolean {
-  return REACT_SWAP_MARKER.test(html);
+/** The set of React Suspense boundary ids (`S:N`) that a `$RC(...)` call in the document
+ *  completes — i.e. the boundaries React reveals after hydration. Computed from the ORIGINAL
+ *  html by the caller: the `$RC` calls live in `<script>` tags stripped before stripHiddenSubtrees,
+ *  and only the id a `$RC` TARGETS is revealed (a pending boundary with no matching `$RC` stays
+ *  hidden). */
+export function revealedReactBoundaryIds(html: string): Set<string> {
+  const ids = new Set<string>();
+  for (const call of html.matchAll(REACT_REVEAL_CALL)) {
+    for (const ref of call[0].matchAll(/\bS:\d+\b/g)) ids.add(ref[0]);
+  }
+  return ids;
 }
 
 interface StackFrame {
@@ -60,7 +62,7 @@ interface StackFrame {
 export function stripHiddenSubtrees(
   html: string,
   hiddenClasses: Set<string> = new Set(),
-  reactStreaming: boolean = hasReactStreamingSwap(html),
+  revealedIds: Set<string> = revealedReactBoundaryIds(html),
 ): string {
   const lower = html.toLowerCase();
   const len = html.length;
@@ -105,7 +107,7 @@ export function stripHiddenSubtrees(
     if (!tag) { if (!suppressed) out += "<"; i += 1; continue; }
     const advance = Math.max(tag.end, i + 1);
     if (VOID_ELEMENTS.has(tag.name)) {
-      if (!suppressed) out += isHidden(tag.attrs, hiddenClasses, reactStreaming) ? " " : html.slice(i, advance);
+      if (!suppressed) out += isHidden(tag.attrs, hiddenClasses, revealedIds) ? " " : html.slice(i, advance);
       i = advance;
       continue;
     }
@@ -119,11 +121,11 @@ export function stripHiddenSubtrees(
       tag.raw.endsWith("/>") &&
       (tag.name === "svg" || tag.name === "math" || stack.some((f) => f.name === "svg" || f.name === "math"))
     ) {
-      if (!suppressed) out += isHidden(tag.attrs, hiddenClasses, reactStreaming) ? " " : html.slice(i, advance);
+      if (!suppressed) out += isHidden(tag.attrs, hiddenClasses, revealedIds) ? " " : html.slice(i, advance);
       i = advance;
       continue;
     }
-    const startsHidden = !suppressed && isHidden(tag.attrs, hiddenClasses, reactStreaming);
+    const startsHidden = !suppressed && isHidden(tag.attrs, hiddenClasses, revealedIds);
     stack.push({ name: tag.name, suppressor: startsHidden });
     if (startsHidden) {
       suppressed = true;
@@ -147,7 +149,7 @@ export function stripHiddenSubtrees(
  *  `display="none"` attribute covers SVG `<g display="none">`/`<text display="none">`
  *  (HTML elements don't use a `display` attribute, so this is SVG-specific and not
  *  cancellable by a descendant, unlike `visibility:hidden`). */
-function isHidden(attrs: AttributeMap, hiddenClasses: Set<string>, reactStreaming: boolean): boolean {
+function isHidden(attrs: AttributeMap, hiddenClasses: Set<string>, revealedIds: Set<string>): boolean {
   if (typeof attrs.style === "string") {
     const disp = inlineDisplayValue(attrs.style);
     if (disp !== undefined) return disp === "none";
@@ -157,12 +159,11 @@ function isHidden(attrs: AttributeMap, hiddenClasses: Set<string>, reactStreamin
   // exemption must NOT skip the class check (#118 codex P2).
   if (hasHiddenClass(attrs, hiddenClasses)) return true;
   if (attrs.hidden !== undefined) {
-    // React streaming-SSR boundary (`div hidden id="S:N"`): real server-streamed content the
-    // browser reveals via the $RC/$RX swap — see REACT_BOUNDARY_ID above. Reached only when no
-    // inline display:none + no display:none class authorized a hide first.
-    if (reactStreaming && typeof attrs.id === "string" && REACT_BOUNDARY_ID.test(attrs.id)) {
-      return false;
-    }
+    // A React Suspense boundary completed by a `$RC("...","S:N")` call — real server-streamed
+    // content React reveals after hydration. Only an id a `$RC` CALL completes is un-hidden
+    // (not $RS/$RX/$RT), and only when no inline display:none + no display:none class hid it
+    // first. #118 codex P1.
+    if (typeof attrs.id === "string" && revealedIds.has(attrs.id)) return false;
     return true;
   }
   if (typeof attrs.display === "string" && attrs.display.trim().toLowerCase() === "none") return true;

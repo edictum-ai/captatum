@@ -1,6 +1,6 @@
 import { collapseWhitespace, decodeHtmlEntities, normalizeFragmentedNumbers } from "./entities.ts";
 import { collectHiddenDisplayNoneClasses } from "./hidden-classes.ts";
-import { hasReactStreamingSwap, stripHiddenSubtrees } from "./hidden.ts";
+import { revealedReactBoundaryIds, stripHiddenSubtrees } from "./hidden.ts";
 import { inlineSvgText } from "./svg-text.ts";
 
 export interface HtmlTag {
@@ -65,9 +65,9 @@ export function findElements(html: string, tagName: string): HtmlElement[] {
   return elements;
 }
 
-export function extractVisibleText(html: string, reactStreaming: boolean = hasReactStreamingSwap(html)): string {
+export function extractVisibleText(html: string, revealedIds: Set<string> = revealedReactBoundaryIds(html)): string {
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
-  // reactStreaming is caller-supplied (from the full page): a scoped fragment loses the $RC marker (#118 codex P1).
+  // revealedIds is caller-supplied (from the full page): a scoped fragment loses the $RC call (#118 codex P1).
   const body = extractBodyHtml(html) ?? stripElement(html, "head");
   // `svg` is NOT stripped here — inlineSvgText (next) preserves its `<text>` chart
   // data before the wrapper is removed. stripHiddenSubtrees also drops class-based
@@ -78,7 +78,7 @@ export function extractVisibleText(html: string, reactStreaming: boolean = hasRe
   // `<!--`/bare-`<`/`<script>` floods. stripHiddenSubtrees runs BEFORE inlineSvgText
   // so a hidden svg (`<svg hidden>`/display:none/hidden class) is dropped together
   // with its `<text>` instead of leaking the labels into visible text.
-  const text = stripHtmlTags(stripHtmlComments(inlineSvgText(stripHiddenSubtrees(withoutCode, hiddenClasses, reactStreaming))));
+  const text = stripHtmlTags(stripHtmlComments(inlineSvgText(stripHiddenSubtrees(withoutCode, hiddenClasses, revealedIds))));
   return normalizeFragmentedNumbers(collapseWhitespace(decodeHtmlEntities(text)));
 }
 

@@ -1,5 +1,5 @@
 import { collectHiddenDisplayNoneClasses } from "./hidden-classes.ts";
-import { hasReactStreamingSwap, stripHiddenSubtrees } from "./hidden.ts";
+import { revealedReactBoundaryIds, stripHiddenSubtrees } from "./hidden.ts";
 import { extractVisibleText, findElements, stripElement, stripHtmlComments } from "./html.ts";
 
 /**
@@ -57,7 +57,7 @@ function stripChrome(html: string): string {
  * evaluateShellGate (index.ts), so the selection changes render escalation: scoping to a short
  * skeleton makes the gate MORE likely to trip (correct — the page needs rendering), never less. (#93)
  */
-export function selectMainContentHtml(html: string, reactStreaming: boolean = hasReactStreamingSwap(html)): string | null {
+export function selectMainContentHtml(html: string, revealedIds: Set<string> = revealedReactBoundaryIds(html)): string | null {
   // Fast path: no <article> AND no <main> → nothing to select. Skips the full pre-clean on the
   // common no-main-content page and — critically — on pathological inputs (the REDOS-5 <script>
   // flood), so cleaning runs once (in extractVisibleText) instead of twice and extractHtml stays
@@ -65,21 +65,21 @@ export function selectMainContentHtml(html: string, reactStreaming: boolean = ha
   // comment just skips the short-circuit, never a false positive).
   if (!/<article/i.test(html) && !/<main/i.test(html)) return null;
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
-  // reactStreaming comes from the caller (the full page) so a scoped fragment's missing $RC
-  // marker does not under-detect streaming. A React `<div hidden id="S:N">` boundary is real
-  // server-streamed content the browser reveals, so the article inside one IS a candidate (a
-  // genuinely `display:none`-hidden article is still excluded — #97 safety preserved for non-React).
+  // revealedIds comes from the caller (the full page) so a scoped fragment's missing $RC call
+  // does not under-detect streaming. A React `<div hidden id="S:N">` boundary completed by a
+  // `$RC` is real server-streamed content the browser reveals, so the article inside one IS a
+  // candidate (a genuinely `display:none`-hidden article is still excluded — #97 safety).
   const withoutCode = ["script", "style", "noscript", "template"]
     .reduce((value, tag) => stripElement(value, tag), html);
-  const clean = stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses, reactStreaming)));
+  const clean = stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses, revealedIds)));
 
   // Score every <article> by visible-text length. The FIRST is the page's primary (document
   // order), but a SUBSTANTIALLY richer sibling overrides it — a React loading skeleton is a short
   // placeholder shipped first; the real streamed article is a far larger later sibling. Scoring
-  // threads reactStreaming so a boundary-bearing fragment is measured with its streamed content.
+  // threads revealedIds so a boundary-bearing fragment is measured with its streamed content.
   const articles = findElements(clean, "article").map<{ content: string; len: number }>((el) => ({
     content: el.content,
-    len: extractVisibleText(el.content, reactStreaming).length,
+    len: extractVisibleText(el.content, revealedIds).length,
   }));
   const firstArticle = articles[0];
   const richestArticle = articles.reduce<{ content: string; len: number } | undefined>(
@@ -88,17 +88,16 @@ export function selectMainContentHtml(html: string, reactStreaming: boolean = ha
   );
   const longestMain = findElements(clean, "main").reduce<{ content: string; len: number } | undefined>(
     (best, el) => {
-      const len = extractVisibleText(el.content, reactStreaming).length;
+      const len = extractVisibleText(el.content, revealedIds).length;
       return !best || len > best.len ? { content: el.content, len } : best;
     },
     undefined,
   );
-  // First <article> wins by default. A substantially richer sibling overrides it ONLY on a
-  // React streaming page (reactStreaming), where a short loading-skeleton <article> ships
-  // first and the real streamed article is a far-richer later sibling. Gated to React so a
-  // non-React page's first-article tie-break (#108) is never displaced by a longer sibling
-  // (author block, index teaser, …) — only the React skeleton idiom triggers the override.
-  const selectedArticle = reactStreaming && richestArticle && firstArticle && richestArticle.len >= firstArticle.len * SIBLING_ARTICLE_OVERRIDE_FACTOR
+  // First <article> wins by default. A substantially richer sibling overrides it ONLY on a React
+  // streaming page (revealedIds non-empty), where a short loading-skeleton <article> ships first
+  // and the real streamed article is a far-richer later sibling. Gated to React so a non-React
+  // page's first-article tie-break (#108) is never displaced by a longer sibling.
+  const selectedArticle = revealedIds.size > 0 && richestArticle && firstArticle && richestArticle.len >= firstArticle.len * SIBLING_ARTICLE_OVERRIDE_FACTOR
     ? richestArticle
     : firstArticle;
   const articleLen = selectedArticle?.len ?? 0;
