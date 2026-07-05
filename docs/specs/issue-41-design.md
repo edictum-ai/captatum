@@ -3,7 +3,7 @@
 > **DECISION (2026-06-30): #41 ships as "Half A" — honest DETECTION only.** Half B
 > (actually bypassing Cloudflare managed challenges via a browser-fetch fallback,
 > described below as the historical design) was researched and is **NOT VIABLE** for
-> captatum: (1) the datacenter-ASN wall — captatum runs on Fargate and Cloudflare
+> captatum: (1) the datacenter-ASN wall — captatum runs in a datacenter and Cloudflare
 > auto-flags the AWS ASN before the handshake, so no browser stack helps; (2) the
 > OSS stealth ecosystem is abandoned/broken (FlareSolverr broke in a day, etc.);
 > (3) the only OSS tool that clears it (nodriver) is Python/AGPL, un-adoptable; (4)

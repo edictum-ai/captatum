@@ -3,9 +3,9 @@
 captatum ships a generic, **infra-agnostic** container image. The hosted
 flavor runs as a stateless service behind a reverse tunnel (e.g. Cloudflare
 Tunnel) with a MySQL-compatible store (e.g. TiDB) for OAuth state. The actual
-deployment configuration — cloud account, VPC, ECR registry, DB host, tunnel
-token, hostnames, secrets — lives in the **private infrastructure repository**,
-not here. This public repo intentionally contains no infra internals.
+deployment configuration — registry, network, DB host, tunnel token, hostnames,
+secrets — lives in the **private infrastructure repository**, not here. This
+public repo intentionally contains no infra internals.
 
 ## Image
 
@@ -37,63 +37,26 @@ secret manager — never baked into the image.
 - **Self-contained local binary**: `bun build --compile` → one executable, no
   auth, single-user. No deployment needed.
 
-## Hosted deploy runbook
+## Hosted topology
 
-The hosted flavor runs as an ECS/Fargate task with **three** containers: the
-gateway (`captatum`), a `cloudflared` tunnel, and a **browser sidecar** (long-lived
-Chromium over CDP — Tier-3 render, isolated blast radius). Infra lives in the
-private `personal-memory-infra` repo (OpenTofu).
+The hosted flavor runs as a pod with **three** containers:
+- **gateway** (`captatum`) — the MCP + fetch service (`node --no-warnings src/server.ts`).
+- a **reverse-tunnel** sidecar (e.g. `cloudflared`) — exposes the gateway without an inbound port.
+- a **browser sidecar** — long-lived Chromium over CDP for Tier-3 render, isolated to its own blast radius (no OAuth keys, no store, no env).
 
-### One command (gated)
+The concrete deployment (registry, orchestrator manifest, tunnel token, hostname, secrets) is declared in the **private infrastructure repository** and applied with whatever that repo uses. This public repo ships only the image and the runtime configuration above.
 
-```bash
-aws sso login --profile personal-arnold   # if the SSO session expired
-scripts/deploy.sh                          # gateway tag = main HEAD
-```
+## Deploy shape
 
-`scripts/deploy.sh` **hard-aborts on any failure**. It runs these gates in order,
-each of which must pass or the whole deploy stops with a message:
+Whatever orchestrator you run, a hosted release is roughly:
 
-0. clean working tree on `main`
-1. typecheck + 250-line limit + `node --test test/*.test.ts` green
-2. **fresh ECR login** (the token is short-lived — re-logged every run)
-3. build + push the gateway image, then **verify it is present in ECR** before continuing
-4. `tofu apply` (gateway tag + pinned `browser_image_tag` + `desired_count=1`)
-5. **wait for the NEW task-definition revision's task to reach `RUNNING`** — aborts and prints the `stoppedReason` on `STOPPED` (catches CannotPullContainerError, etc.)
-6. live probe `POST /mcp` → expect `401` (alive + auth-gating)
+1. Build + push the gateway image (and, when `Dockerfile.browser` / `scripts/browser-sidecar.sh` change, the browser image) to your registry. `release.yml` publishes multi-arch images to GHCR on a tagged release.
+2. Bump the image tag in your workload manifest and apply it.
+3. Wait for the new pod to become **Ready** (readiness probe is `GET /healthz`).
+4. Live-probe `POST /mcp` → expect `401` (alive + auth-gating).
 
-Override the tags with args/env: `scripts/deploy.sh <gateway-tag>` or
-`BROWSER_TAG=<tag> scripts/deploy.sh` (only bump the sidecar tag when
-`Dockerfile.browser` / `scripts/browser-sidecar.sh` change; its Chromium major
-must match the gateway's `playwright` pin).
+## Gotchas (independent of where you host)
 
-### Gotchas that bit us (and the gate that now prevents each)
-
-- **ECR login token expired mid-deploy → push `denied`, then `tofu apply` ran against a missing image.** Gate 2 re-logs in every run; gate 3 blocks the apply until the image is confirmed in ECR.
-- **Applied before the image landed.** Gate 3 verifies presence first; gate 5 confirms a task actually runs.
-- **Committed before the full test run.** Gate 1 fails the deploy on any test failure.
-- **Watcher caught the *old* task RUNNING.** Gate 5 filters by the *new* task-definition ARN, not "newest task."
-- **Always pass `-var captatum_desired_count=1`** (default is 0 = paused) — the script does this.
-- **Tier-3 needs the sidecar.** If `CAPTATUM_BROWSER_CDP_ENDPOINT` is unset or the browser container isn't running, the gateway falls back to Tier-1 (no crash). After deploy, confirm a Tier-3 render through the connector.
-
-### Manual fallback (if you can't use the script)
-
-```bash
-export AWS_PROFILE=personal-arnold
-TAG=$(git rev-parse --short HEAD)
-aws ecr get-login-password --region eu-central-1 --profile personal-arnold \
-  | docker login --username AWS --password-stdin 291807115868.dkr.ecr.eu-central-1.amazonaws.com
-docker buildx build --platform linux/arm64 \
-  -t 291807115868.dkr.ecr.eu-central-1.amazonaws.com/personal-memory-prod-captatum:$TAG --push .
-# CONFIRM it landed before applying:
-until aws ecr list-images --repository-name personal-memory-prod-captatum \
-    --region eu-central-1 --profile personal-arnold --output text | grep -q "$TAG"; do sleep 10; done
-cd "$HOME/project/personal-memory/personal-memory-infra/opentofu/envs/prod"
-tofu apply -var captatum_desired_count=1 -var captatum_image_tag=$TAG \
-           -var captatum_browser_image_tag=6f3b58c -auto-approve
-aws ecs update-service --cluster personal-memory-prod-captatum \
-  --service personal-memory-prod-captatum --force-new-deployment \
-  --profile personal-arnold
-# then wait for the new task def's task to be RUNNING (not STOPPED) before walking away
-```
-
+- **Apply only after the image is pullable.** Confirm the tag exists in the registry before you bump the manifest, or the pod stays in `ImagePullBackOff`.
+- **Tier-3 needs the sidecar.** If `CAPTATUM_BROWSER_CDP_ENDPOINT` is unset or the browser container isn't running, the gateway falls back to Tier-1 (no crash). After deploy, confirm a Tier-3 render end-to-end.
+- **The browser image's Chromium major must match the gateway's `playwright` pin** — only bump the sidecar tag when `Dockerfile.browser` / `scripts/browser-sidecar.sh` change.

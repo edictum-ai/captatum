@@ -121,13 +121,12 @@ keys (from `scripts/gen-oauth-keys.ts`), Cloudflare Access (`CF_ACCESS_*`), and
 `MCP_ALLOWED_HOSTS`/`MCP_ALLOWED_ORIGINS`. `docker compose` reads `../.env` relative to
 `deploy/`. The SQLite store + browser sidecar need no extra config (defaults).
 
-### Cutover from the AWS deployment
+### Cutover from an existing managed deployment
 
-The inbound trust boundary is identical (Cloudflare Tunnel + Access on `/oauth/authorize*`),
-so cutover is: (1) stand up the Mac mini stack; (2) repoint the tunnel/DNS hostname from
-the Fargate cloudflared to the Mac mini; (3) verify `/healthz` + a challenge site
-(`curl -sI https://www.npmjs.com/package/react` → 200). Connectors (claude.ai/ChatGFT)
-keep the same URL — no client-side change. Existing OAuth tokens re-issue on first
-reconnect (one-time; the Mac mini's SQLite is a fresh store). Keep the AWS stack as a
-cold fallback until the residential deploy is proven stable.
+The inbound trust boundary is identical (tunnel + Access on `/oauth/authorize*`),
+so cutover is: (1) stand up this host's stack; (2) repoint the tunnel/DNS hostname
+from the previous deployment to this host; (3) verify `/healthz` + a challenge site
+(`curl -sI https://www.npmjs.com/package/react` → 200). Connectors keep the same URL —
+no client-side change. Existing OAuth tokens re-issue on first reconnect (one-time; a
+fresh store starts empty).
 
