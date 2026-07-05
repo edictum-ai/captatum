@@ -382,13 +382,13 @@ test("#48 B: an empty completion from the primary falls back to the next model w
 });
 
 test("#125: truncation escalates the budget until the model finishes cleanly", async () => {
-  // The model truncates (finish_reason=length) below 200 output tokens, finishes
-  // cleanly at/above. The transformer must escalate the budget + retry until complete.
+  // No explicit budget (default applies). The model truncates below 30K output, finishes
+  // cleanly at/above. The transformer escalates the budget + retries until complete.
   const provider: LlmProvider = {
     id: "openrouter",
     candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
     async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
-      const truncated = (input.maxOutputTokens ?? 0) < 200;
+      const truncated = (input.maxOutputTokens ?? 0) < 30_000;
       return { text: truncated ? "partial" : "complete summary", truncated };
     },
   };
@@ -397,7 +397,7 @@ test("#125: truncation escalates the budget until the model finishes cleanly", a
     providers: { openrouter: provider },
   });
   const result = await transformer.transform({
-    mode: "summarize", output: "summary", content: "page", prompt: "p", budget: 50,
+    mode: "summarize", output: "summary", content: "page", prompt: "p",
   });
   assert.equal(result.result, "complete summary");
   assert.equal(result.info.truncated ?? false, false, "no truncation advisory once the model finishes");
@@ -444,6 +444,22 @@ test("#125 codex P2: truncation escalates across candidates to the higher-cap fa
   assert.equal(result.result, "complete at 65K");
   assert.equal(result.info.truncated ?? false, false);
   assert.match(result.info.fallbackFrom ?? "", /deepseek/, "deepseek was tried + truncated first");
+});
+
+test("#125 codex P2: an explicit caller budget is a hard ceiling — truncation does not escalate past it", async () => {
+  // budget:50 truncates; the model could complete at a higher cap, but the caller set an
+  // explicit max-output budget, so escalation must NOT exceed it. Return the truncated result.
+  const calls: LlmGenerateInput[] = [];
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> { calls.push(input); return { text: "partial", truncated: true }; },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p", budget: 50 });
+  assert.equal(result.info.truncated, true);
+  assert.equal(calls.length, 1, "no escalation retry beyond the explicit budget");
+  assert.equal(calls[0]?.maxOutputTokens, 50, "the caller's explicit budget is honored");
 });
 
 test("#125 codex P2: fits() reserves the requested cap, not the model max (long page fits at default budget)", () => {

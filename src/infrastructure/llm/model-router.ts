@@ -92,14 +92,11 @@ export class LlmTransformer implements TransformPort {
       localOnly: sensitive.sensitive,
     };
 
-    // Try candidate models in router-ranked order. On a provider ERROR (dead model,
-    // 429, timeout, empty completion) record a hard_fail (sticky demotion) + try the
-    // next. On TRUNCATION (`finish_reason=length`, non-empty text) the completion is
-    // usable but cut off — ESCALATE the budget (#125): retry the same model at a
-    // higher cap, and if the model is maxed, fall to the next candidate (which may
-    // have a higher cap, e.g. deepseek 16K -> qwen 65K). The best (longest) truncated
-    // result is kept so a still-truncated final attempt surfaces honestly as
-    // `info.truncated` instead of being thrown away.
+    // Candidate loop (#125). On a provider ERROR (throw/empty) push the model to `tried` +
+    // try the next. On TRUNCATION (finish_reason=length, non-empty) keep the longest result +
+    // ESCALATE the budget — but ONLY for an omitted/default budget (an explicit caller budget
+    // is a hard ceiling, never exceeded — codex P2). Bounded by remaining context + an attempt
+    // cap; the best surfaces honestly as info.truncated instead of being thrown away.
     const tried: string[] = [];
     let lastError: Error | undefined;
     let best: TransformResult | undefined;
@@ -167,6 +164,7 @@ export class LlmTransformer implements TransformPort {
       };
       if (!generated.truncated) return result; // complete
       if (!best || result.result.length > best.result.length) best = result; // keep longest truncation
+      if (typeof input.budget === "number" && input.budget > 0) return best; // explicit caller budget is a hard ceiling — do not escalate past it (codex P2 #125)
       // Escalate to the model's full cap, bounded by remaining context so a long page isn't rejected for a model MAX the context can't hold (codex P2 #125).
       const ceiling = Math.min(modelMax, (pick.contextTokens ?? MAX_OUTPUT_TOKENS_CAP) - inTokens);
       if (cap < ceiling) budgetFloor = ceiling; // more headroom — retry same model at the ceiling
