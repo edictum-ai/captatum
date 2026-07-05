@@ -530,9 +530,11 @@ test("#125 codex P2: escalation is bounded by remaining context, not the bare mo
   assert.equal(result.info.truncated ?? false, false);
 });
 
-test("#125 codex P2: attempt-cap exhaustion with all-failing models throws transform_provider_failed (no silent raw)", async () => {
-  // 6 models, all hard-fail. The 5-attempt cap exits the loop before pick-none fires;
-  // without the fix this returns a silent raw fallback. It must throw the accumulated failure.
+test("#131 P2-A / #125: every candidate hard-failing throws transform_provider_failed (candidate exhaustion, no silent raw)", async () => {
+  // 6 models, all hard-fail. Candidate exhaustion (every model pushed to `tried`) fires
+  // pick-none → throw the accumulated failure. Pre-#131 this exited via the shared 5-attempt
+  // cap; #131 P2-A made hard-fail fallback traverse all candidates, so the exit is now
+  // candidate exhaustion. The outcome is unchanged: throw, never a silent raw fallback.
   const models = Array.from({ length: 6 }, (_, i) => candidate("openrouter", `m${i}/model-${i}`, { order: i }));
   const provider: LlmProvider = {
     id: "openrouter",
@@ -544,6 +546,26 @@ test("#125 codex P2: attempt-cap exhaustion with all-failing models throws trans
     () => transformer.transform({ mode: "summarize", output: "summary", content: "x", prompt: "p" }),
     (e: unknown) => e instanceof TransformError && e.code === "transform_provider_failed",
   );
+});
+
+test("#131 P2-A: hard-fail fallback traverses all candidates — a healthy 6th model is reached after 5 failures", async () => {
+  // Pre-#131 the shared 5-attempt cap exited the loop after the first 5 hard-fails and threw
+  // transform_provider_failed, never reaching a healthy 6th candidate. Post-fix, hard-fail
+  // fallback is bounded by candidate exhaustion (not attempts), so m5 is reached and succeeds.
+  const models = Array.from({ length: 6 }, (_, i) => candidate("openrouter", `m${i}/model-${i}`, { order: i }));
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => models,
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      if (input.model === "m5/model-5") return { text: "healthy sixth model summary" };
+      throw new Error("upstream down");
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p" });
+  assert.equal(result.info.model, "m5/model-5");
+  assert.equal(result.result, "healthy sixth model summary");
+  assert.match(result.info.fallbackFrom ?? "", /m0.*m1.*m2.*m3.*m4/, "all five failing models were tried first");
 });
 
 test("router feedback demotes flaky free model before local fallback", () => {

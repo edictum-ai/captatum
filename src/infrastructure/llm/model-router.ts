@@ -93,17 +93,22 @@ export class LlmTransformer implements TransformPort {
       localOnly: sensitive.sensitive,
     };
 
-    // Candidate loop (#125). On a provider ERROR (throw/empty) push the model to `tried` +
-    // try the next. On TRUNCATION (finish_reason=length, non-empty) keep the longest result +
-    // ESCALATE the budget — but ONLY for an omitted/default budget (an explicit caller budget
-    // is a hard ceiling, never exceeded — codex P2). Bounded by remaining context + an attempt
-    // cap; the best surfaces honestly as info.truncated instead of being thrown away.
+    // Candidate loop (#125, refined #131 P2-A). Two independent termination rails:
+    //  - hard-fail fallback (provider throw / empty completion) and truncation-next-candidate
+    //    both push to `tried`, so they self-terminate via candidate exhaustion — pick returns
+    //    "none" once every candidate is excluded. Pre-#125 hard-fail traversed the whole list;
+    //    #131 restores that by no longer sharing one attempt counter across fallback + escalation.
+    //  - truncation-budget escalation retries the SAME model at a higher cap (no `tried` push), so
+    //    it is bounded SEPARATELY by `escalations` (< MAX_TRANSFORM_ATTEMPTS) — a latency/cost
+    //    guard that surfaces an honest `transform_truncated` instead of looping.
+    // An explicit caller budget is a hard ceiling, never exceeded; escalation is also bounded by
+    // remaining context. The best truncated result surfaces as info.truncated, never thrown away.
     const tried: string[] = [];
     let lastError: Error | undefined;
     let best: TransformResult | undefined;
     let budgetFloor = input.budget; // grows on truncation
-    let attempts = 0;
-    while (attempts++ < MAX_TRANSFORM_ATTEMPTS) {
+    let escalations = 0; // truncation-budget retries only — hard-fail fallback is candidate-bound
+    for (;;) {
       // Reserve what this attempt will request so a long page is not rejected for a model MAX it won't use (codex P2 #125).
       const pick = this.router.pick(input.mode, inTokens, { ...baseOptions, exclude: tried, reserveOutputTokens: budgetFloor ?? this.maxOutputTokensDefault });
       if (pick.provider === "none" || !pick.model) {
@@ -172,8 +177,11 @@ export class LlmTransformer implements TransformPort {
         if (typeof input.budget === "number" && input.budget > 0) return best; // explicit caller budget is a hard ceiling — do not escalate past it (codex P2 #125)
         // Escalate to the model's full cap, bounded by remaining context so a long page isn't rejected for a model MAX the context can't hold (codex P2 #125).
         const ceiling = Math.min(modelMax, (pick.contextTokens ?? MAX_OUTPUT_TOKENS_CAP) - inTokens);
-        if (cap < ceiling) budgetFloor = ceiling; // more headroom — retry same model at the ceiling
-        else tried.push(pick.model); // model maxed or context-bound — next candidate (higher cap)
+        if (cap < ceiling) {
+          if (escalations >= MAX_TRANSFORM_ATTEMPTS) return best; // escalation cap — surface truncated advisory instead of looping
+          escalations += 1;
+          budgetFloor = ceiling; // more headroom — retry same model at the ceiling
+        } else tried.push(pick.model); // model maxed or context-bound — next candidate (higher cap)
         continue;
       }
 
@@ -193,12 +201,6 @@ export class LlmTransformer implements TransformPort {
         },
       };
     }
-    // Attempt cap exhausted. If a truncated `best` exists, surface it (+ truncated advisory);
-    // if every attempt hard-failed, throw the accumulated failure so the use-case surfaces
-    // transform_provider_failed rather than a silent raw fallback (codex P2 #125).
-    if (best) return best;
-    if (tried.length > 0) throw new TransformError("transform_provider_failed", errorMessage(lastError, `All ${tried.length} candidate model(s) failed`));
-    return rawFallback(input.content, "transform_unavailable");
   }
 
   private nowMs(): number {
