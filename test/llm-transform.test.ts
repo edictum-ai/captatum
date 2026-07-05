@@ -845,6 +845,7 @@ test("detectSensitiveTransformInput: a loopback SOURCE url is still flagged + in
   assert.equal(detectSensitiveTransformInput({ content: "plain body", sourceUrl: "http://localhost:8000/x" }).sensitive, true);
   assert.equal(detectSensitiveTransformInput({ content: "internal api http://10.0.0.5/api" }).sensitive, true);
   assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]:8000/api" }).sensitive, true, "bracketed unique-local IPv6 is internal, not loopback");
+  assert.equal(detectSensitiveTransformInput({ content: "see [http://10.0.0.5]" }).sensitive, true, "a prose trailing ']' is trimmed so the internal host is still flagged (codex P2)");
 });
 
 test("noneReason: zero candidates reports 'unconfigured' even when the sensitive gate fired (#127 0.11.3)", () => {

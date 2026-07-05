@@ -134,7 +134,12 @@ export function detectSensitiveTransformInput(input: {
     // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup example —
     // resolves to the READER's machine, not a leaked internal endpoint) must not be flagged.
     // RFC1918 / 169.254.169.254 / .corp / .internal / signed-URL keys are still flagged here.
-    const reason = signedUrlReason(match[0], CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(match[0], true);
+    // Trim a trailing ']' that is prose (e.g. "http://10.0.0.5]" in "[see http://10.0.0.5]")
+    // — not the closing bracket of a bracketed IPv6 literal (which has an opening '[') — so
+    // new URL() doesn't throw and the internal link is still scanned (codex P2 on #134).
+    let url = match[0];
+    if (!url.includes("[")) url = url.replace(/\]+$/, "");
+    const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(url, true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
   return { sensitive: false };
