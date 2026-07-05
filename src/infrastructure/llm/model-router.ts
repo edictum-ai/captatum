@@ -147,8 +147,38 @@ export class LlmTransformer implements TransformPort {
       }
 
       const latencyMs = elapsed(started, this.nowMs());
+      // Truncation is checked BEFORE finalize (#131 P2-B): a length-capped extract is incomplete
+      // JSON, and finalize() would parse+throw extract_invalid_json before this branch could run.
+      // The model is healthy (it responded, just hit the cap) — record success so it is not
+      // demoted — keep the raw text as best, and escalate. finalize (which parses extract JSON)
+      // runs only on a complete completion.
+      if (generated.truncated) {
+        this.router.feedback({ model: pick.model, outcome: "success" });
+        const truncatedResult: TransformResult = {
+          result: generated.text,
+          info: {
+            provider: pick.provider,
+            model: pick.model,
+            free: pick.free,
+            inTokens: generated.inTokens ?? inTokens,
+            outTokens: generated.outTokens ?? estimateTokens(generated.text),
+            latencyMs,
+            costUsd: generated.costUsd,
+            ...(tried.length > 0 ? { fallbackFrom: tried.join(", ") } : {}),
+            truncated: true,
+          },
+        };
+        if (!best || truncatedResult.result.length > best.result.length) best = truncatedResult; // keep longest truncation
+        if (typeof input.budget === "number" && input.budget > 0) return best; // explicit caller budget is a hard ceiling — do not escalate past it (codex P2 #125)
+        // Escalate to the model's full cap, bounded by remaining context so a long page isn't rejected for a model MAX the context can't hold (codex P2 #125).
+        const ceiling = Math.min(modelMax, (pick.contextTokens ?? MAX_OUTPUT_TOKENS_CAP) - inTokens);
+        if (cap < ceiling) budgetFloor = ceiling; // more headroom — retry same model at the ceiling
+        else tried.push(pick.model); // model maxed or context-bound — next candidate (higher cap)
+        continue;
+      }
+
       const finalized = finalize(input, generated.text, pick.model, this.router, generated.outTokens);
-      const result: TransformResult = {
+      return {
         result: finalized.result,
         info: {
           provider: pick.provider,
@@ -160,16 +190,8 @@ export class LlmTransformer implements TransformPort {
           costUsd: generated.costUsd,
           ...(finalized.schemaIssue ? { schemaIssue: finalized.schemaIssue } : {}),
           ...(tried.length > 0 ? { fallbackFrom: tried.join(", ") } : {}),
-          ...(generated.truncated ? { truncated: true } : {}),
         },
       };
-      if (!generated.truncated) return result; // complete
-      if (!best || result.result.length > best.result.length) best = result; // keep longest truncation
-      if (typeof input.budget === "number" && input.budget > 0) return best; // explicit caller budget is a hard ceiling — do not escalate past it (codex P2 #125)
-      // Escalate to the model's full cap, bounded by remaining context so a long page isn't rejected for a model MAX the context can't hold (codex P2 #125).
-      const ceiling = Math.min(modelMax, (pick.contextTokens ?? MAX_OUTPUT_TOKENS_CAP) - inTokens);
-      if (cap < ceiling) budgetFloor = ceiling; // more headroom — retry same model at the ceiling
-      else tried.push(pick.model); // model maxed or context-bound — next candidate (higher cap)
     }
     // Attempt cap exhausted. If a truncated `best` exists, surface it (+ truncated advisory);
     // if every attempt hard-failed, throw the accumulated failure so the use-case surfaces

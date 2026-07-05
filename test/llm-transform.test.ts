@@ -267,6 +267,47 @@ test("output extract invalid JSON returns structured error and keeps fetch prove
   assert.deepEqual(result.errors, [{ code: "extract_invalid_json", message: "Provider returned invalid JSON for extract output" }]);
 });
 
+test("#131 P2-B: a truncated extract escalates and completes instead of throwing extract_invalid_json", async () => {
+  // extract mode: the model truncates below the escalated cap (returning incomplete JSON), then
+  // completes on the retry. Pre-fix the first truncated attempt was finalized first and threw
+  // extract_invalid_json (parseJsonResult on incomplete JSON) before the truncation branch ran.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      const truncated = (input.maxOutputTokens ?? 0) < 30_000;
+      return truncated
+        ? { text: '{"title":"parti', truncated: true }
+        : { text: '{"title":"Complete"}' };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const schema = { type: "object", required: ["title"], properties: { title: { type: "string" } } };
+  const result = await transformer.transform({ mode: "extract", output: "extract", content: "page", prompt: "p", schema });
+  assert.equal(result.result, JSON.stringify({ title: "Complete" }, null, 2));
+  assert.equal(result.info.truncated ?? false, false, "completed after escalation — no truncation advisory");
+});
+
+test("#131 P2-B: an extract that never completes surfaces truncated (never throws extract_invalid_json)", async () => {
+  // The model always truncates, so the incomplete JSON is never parseable. Pre-fix this threw
+  // extract_invalid_json; post-fix the cap escalates then surfaces the longest raw text as
+  // truncated:true (the use case maps that to transform_truncated), never throwing.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
+    async generate(): Promise<LlmGenerateResult> {
+      return { text: '{"title":"parti', truncated: true };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({
+    mode: "extract", output: "extract", content: "page", prompt: "p",
+    schema: { type: "object", properties: { title: { type: "string" } } },
+  });
+  assert.equal(result.info.truncated, true);
+  assert.equal(result.result, '{"title":"parti', "raw incomplete JSON kept as best, not parsed");
+});
+
 
 test("provider exception returns raw without erasing original fetch provenance", async () => {
   const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), new Error("upstream broke"));
