@@ -4,6 +4,7 @@ import type { ClockPort } from "../src/application/ports/clock.ts";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
 import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts";
 import type { HtmlExtraction, HtmlExtractionInput } from "../src/application/use-cases/tier1-extract.ts";
+import { TransformError } from "../src/application/ports/transformer.ts";
 import { validateJsonSchema } from "../src/infrastructure/llm/json-schema.ts";
 import { LlmTransformer, ModelRouter } from "../src/infrastructure/llm/model-router.ts";
 import { detectSensitiveTransformInput } from "../src/infrastructure/llm/safety.ts";
@@ -451,6 +452,41 @@ test("#125 codex P2: fits() reserves the requested cap, not the model max (long 
   const router = new ModelRouter([candidate("openrouter", "qwen/qwen3.6-flash", { contextTokens: 128_000, maxOutputTokens: 65_536 })]);
   assert.equal(router.pick("summarize", 100_000, { reserveOutputTokens: 8_000 }).model, "qwen/qwen3.6-flash", "8K reserve fits a 100K-input page");
   assert.equal(router.pick("summarize", 100_000).provider, "none", "no reserve falls back to the 65K model max, which 100K input does not fit");
+});
+
+test("#125 codex P2: escalation is bounded by remaining context, not the bare model max", async () => {
+  // qwen: 128K context, 65K max output. A ~90K-token input leaves ~38K output headroom.
+  // The page needs 20K (fits in 38K but not the 8K default). Jumping to the 65K model max
+  // would reject qwen on retry (90K+65K > 128K); bounding by remaining context retries at
+  // ~38K and completes.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "qwen/qwen3.6-flash", { contextTokens: 128_000, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      const ok = (input.maxOutputTokens ?? 0) >= 20_000;
+      return { text: ok ? "complete" : "partial", truncated: !ok };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "x".repeat(360_000), prompt: "p" });
+  assert.equal(result.result, "complete");
+  assert.equal(result.info.truncated ?? false, false);
+});
+
+test("#125 codex P2: attempt-cap exhaustion with all-failing models throws transform_provider_failed (no silent raw)", async () => {
+  // 6 models, all hard-fail. The 5-attempt cap exits the loop before pick-none fires;
+  // without the fix this returns a silent raw fallback. It must throw the accumulated failure.
+  const models = Array.from({ length: 6 }, (_, i) => candidate("openrouter", `m${i}/model-${i}`, { order: i }));
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => models,
+    async generate(): Promise<LlmGenerateResult> { throw new Error("upstream down"); },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  await assert.rejects(
+    () => transformer.transform({ mode: "summarize", output: "summary", content: "x", prompt: "p" }),
+    (e: unknown) => e instanceof TransformError && e.code === "transform_provider_failed",
+  );
 });
 
 test("router feedback demotes flaky free model before local fallback", () => {

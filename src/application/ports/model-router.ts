@@ -30,6 +30,10 @@ export interface ModelPick {
    *  the budget to this so generation is bounded by what the model can actually
    *  produce (#125). Absent when provider is "none". */
   maxOutputTokens?: number;
+  /** The picked model's context window (tokens). Bounds truncation escalation by the
+   *  remaining context (context − input) so a long page isn't rejected for a model MAX
+   *  the context can't hold (#125). Absent when provider is "none". */
+  contextTokens?: number;
   /** Populated when provider is "none" (degrade to raw). */
   reason?: string;
 }

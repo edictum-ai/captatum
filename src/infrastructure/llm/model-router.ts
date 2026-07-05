@@ -13,10 +13,7 @@ import { estimateTokens, MAX_OUTPUT_TOKENS_CAP, resolveOutputCap } from "./token
 import type { LlmGenerateResult, LlmModelCandidate, ProviderMap } from "./types.ts";
 import { demotionOf, effectiveOrder, staticRank } from "./router-ranking.ts";
 
-/** Bound on escalation attempts per transform (#125). Worst case is a few: a model
- *  truncates, the budget doubles up to its max, then the next candidate (higher cap)
- *  is tried. Caps latency/cost on a page that won't fit even at the largest model's
- *  max — the result then surfaces an honest `transform_truncated` advisory. */
+/** Bound on escalation attempts per transform (#125) — caps latency/cost on a page that won't fit even at the largest model's max (then surfaces an honest `transform_truncated`). */
 const MAX_TRANSFORM_ATTEMPTS = 5;
 
 export class ModelRouter implements ModelRouterPort {
@@ -41,7 +38,7 @@ export class ModelRouter implements ModelRouterPort {
       || demotionOf(left, this.health) - demotionOf(right, this.health)
       || staticRank(left) - staticRank(right)
       || left.model.localeCompare(right.model));
-    return { provider: best.provider, model: best.model, free: best.free, maxOutputTokens: best.maxOutputTokens };
+    return { provider: best.provider, model: best.model, free: best.free, maxOutputTokens: best.maxOutputTokens, contextTokens: best.contextTokens };
   }
 
   feedback(score: ModelScore): void {
@@ -170,10 +167,17 @@ export class LlmTransformer implements TransformPort {
       };
       if (!generated.truncated) return result; // complete
       if (!best || result.result.length > best.result.length) best = result; // keep longest truncation
-      if (cap < modelMax) budgetFloor = modelMax; // jump to the model's full cap (max_tokens is a ceiling, not a target — the model stops at `stop`, so no over-generation cost); skips redundant intermediate caps so a higher-cap fallback (qwen 65K) is reached within the attempt budget (codex P2)
-      else tried.push(pick.model); // model maxed -> next candidate (higher cap)
+      // Escalate to the model's full cap, bounded by remaining context so a long page isn't rejected for a model MAX the context can't hold (codex P2 #125).
+      const ceiling = Math.min(modelMax, (pick.contextTokens ?? MAX_OUTPUT_TOKENS_CAP) - inTokens);
+      if (cap < ceiling) budgetFloor = ceiling; // more headroom — retry same model at the ceiling
+      else tried.push(pick.model); // model maxed or context-bound — next candidate (higher cap)
     }
-    return best ?? rawFallback(input.content, "transform_unavailable");
+    // Attempt cap exhausted. If a truncated `best` exists, surface it (+ truncated advisory);
+    // if every attempt hard-failed, throw the accumulated failure so the use-case surfaces
+    // transform_provider_failed rather than a silent raw fallback (codex P2 #125).
+    if (best) return best;
+    if (tried.length > 0) throw new TransformError("transform_provider_failed", errorMessage(lastError, `All ${tried.length} candidate model(s) failed`));
+    return rawFallback(input.content, "transform_unavailable");
   }
 
   private nowMs(): number {
