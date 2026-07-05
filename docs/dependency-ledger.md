@@ -140,11 +140,26 @@ documenting any `pnpm audit --prod` finding.
 
 The Tier-3 sidecar runs Chromium in its own container; the gateway connects over
 CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`). The sidecar image MUST ship a Chromium
-whose major version matches the gateway's `playwright` pin above (`1.60.0` →
-Chromium 133), or the CDP connection can break.
+whose major version matches the gateway's `playwright` pin above (`1.61.0` →
+Chromium 149), or the CDP connection can break.
 
-- Image: `mcr.microsoft.com/playwright:v1.60.0-noble` (matches the npm pin; reuse
+- Image: `mcr.microsoft.com/playwright:v1.61.0-noble` (matches the npm pin; reuse
   Microsoft's signed Playwright image rather than building Chromium from source).
 - Re-check the image tag's publish date against the 15-day rule before pinning a
   newer one; record it here. `--no-sandbox` runs inside this container only
   (container-isolated) — never in-process with the gateway (see threat-model.md).
+
+## Multi-arch GHCR images (release.yml)
+
+Both images (gateway `Dockerfile` + sidecar `Dockerfile.browser`) build
+**linux/amd64 + linux/arm64** so the arm64 Mac mini k3s deploy pulls
+`ghcr.io/edictum-ai/captatum:latest` natively instead of building locally. arm64
+is cross-built via QEMU (`docker/setup-qemu-action`) on the amd64 runner. Both
+base images (`node:24.17.0-bookworm-slim`, `mcr.microsoft.com/playwright:v1.61.0-noble`)
+are pinned by digest to **multi-arch manifest lists** (verified: both carry
+linux/amd64 + linux/arm64), so `FROM` resolves arm64 without a digest change.
+
+GitHub Actions used in `release.yml` (all pinned by commit SHA; recheck against
+the 15-day rule before bumping):
+
+- `docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3` — v4.1.0 (`2026-05-27`, 39d when pinned `2026-07-05`). QEMU binfmt for arm64 cross-build.
