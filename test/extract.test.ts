@@ -849,6 +849,61 @@ test("stripHiddenSubtrees drops display:none / hidden subtrees (single pass, O(n
   assert.equal(stripHiddenSubtrees("<p>visible</p>"), "<p>visible</p>");
 });
 
+test("stripHiddenSubtrees keeps React streaming-SSR boundary content (only a matching $RC reveals it)", () => {
+  // Real React 18+ streaming: the server ships a boundary's real content INSIDE a `hidden` div,
+  // then a `$RC("B:N","S:N")` completion call removes `hidden` after hydration. This IS real page
+  // content the browser reveals — NOT a hidden config blob. Regression (Anthropic/Next.js docs):
+  // the article body lived in the hidden boundary, so stripping it left only cookie/consent text.
+  // ONLY a `$RC` that TARGETS the boundary id reveals it — `$RS`/`$RX`/`$RT` do not (a `$RS`-only
+  // page would otherwise expose a boundary the browser still hides — #118 codex P1).
+  const rc = '<div hidden id="S:1"><article><h1>The Real Article</h1><p>body</p></article></div>'
+    + '<script>$RC=function(a,b){var e=document.getElementById(b);if(e)e.removeAttribute("hidden")};$RC("B:1","S:1")</script>';
+  const kept = stripHiddenSubtrees(rc);
+  assert.match(kept, /The Real Article/, "a boundary targeted by a $RC call is KEPT (browser reveals it)");
+  assert.match(kept, /<article/, "the article element is preserved");
+
+  // $RX (error-boundary completion) does NOT reveal the boundary — the fallback is shown, not the
+  // hidden real content; $RS (segment move) does not either. Both stay stripped (#118 codex P1).
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="S:2"><p>OriginalHidden</p></div><script>$RX("S:2","E:2")</script>'), /OriginalHidden/);
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="S:3"><p>PendingSegment</p></div><script>$RS("S:3","P:3")</script>'), /PendingSegment/);
+
+  // A boundary is revealed only when a $RC call names ITS id. S:0 + S:1 both have calls → both kept.
+  const multi = stripHiddenSubtrees('<div hidden id="S:0">A</div><div hidden id="S:1">B</div><script>$RC("B:0","S:0");$RC("B:1","S:1")</script>');
+  assert.match(multi, /A/);
+  assert.match(multi, /B/);
+  // S:2 has NO matching $RC → it stays hidden even when siblings are revealed (a partial stream).
+  const partial = stripHiddenSubtrees('<div hidden id="S:0">A</div><div hidden id="S:2">PENDING</div><script>$RC("B:0","S:0")</script>');
+  assert.match(partial, /A/);
+  assert.doesNotMatch(partial, /PENDING/, "a boundary with no matching $RC stays hidden (partial stream)");
+
+  // DUAL SIGNAL: without any $RC call in the document, a `hidden id="S:N"` div is NOT un-hidden.
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="S:1">SECRET</div><p>after</p>'), /SECRET/);
+
+  // Inline `display:none` on a React boundary still wins (an author who explicitly hid it).
+  assert.doesNotMatch(
+    stripHiddenSubtrees('<div hidden id="S:1" style="display:none">STILL HIDDEN</div><script>$RC("B:1","S:1")</script>'),
+    /STILL HIDDEN/,
+  );
+
+  // A display:none CLASS on a React boundary still hides it — the browser's CSS keeps the element
+  // invisible even after $RC removes the `hidden` attribute, so the boundary exemption must not
+  // skip the class check (#118 codex P2). hiddenClasses is collected from <style> upstream.
+  assert.doesNotMatch(
+    stripHiddenSubtrees('<div hidden id="S:1" class="hide">CLASS_HIDDEN</div><script>$RC("B:1","S:1")</script>', new Set(["hide"])),
+    /CLASS_HIDDEN/,
+  );
+
+  // vscdn/Netflix config blob (`style="display:none"`, NOT a React boundary) stays hidden
+  // even when a React $RC call is present elsewhere in the document.
+  assert.doesNotMatch(
+    stripHiddenSubtrees('<code style="display:none">THEME_OPTIONS_SECRET</code><script>$RC("B:0","S:0")</script>'),
+    /THEME_OPTIONS_SECRET/,
+  );
+
+  // An id that is NOT a React boundary marker (not S:N) stays hidden even with a $RC call.
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="sidebar">SECRET</div><script>$RC("B:0","S:0")</script>'), /SECRET/);
+});
+
 test("stripHiddenSubtrees stays linear on a flood of hidden elements (per-subtree toLowerCase DoS)", () => {
   // Regression: an earlier version called html.toLowerCase() once per hidden subtree,
   // making `<span hidden>x</span>` floods O(n²) (~3.3s at 672k chars; ~7s at 1.5M).
@@ -1527,6 +1582,72 @@ test("selectMainContentHtml: prefers the FIRST <article> when there is no <main>
   const main = selectMainContentHtml(html);
   assert.match(main ?? "", /The Primary Article/);
   assert.equal((main ?? "").includes("Author Bio"), false, "longer later sibling article displaced the primary article");
+});
+
+test("selectMainContentHtml: a substantially richer sibling <article> overrides a loading skeleton on React pages (#118)", () => {
+  // React streaming-SSR ships a short loading-skeleton <article> FIRST and the real streamed
+  // article as a later, far-richer sibling (docs.anthropic.com: skeleton ~175 chars vs real
+  // ~2901 chars, ~16x). First-article-wins would lock in the skeleton and return only "Loading..."
+  // text; SIBLING_ARTICLE_OVERRIDE_FACTOR (5x) lets the real article win. The override is GATED to
+  // React (the $RC swap marker makes reactStreaming true) so a non-React page's #108 first-article
+  // tie-break is never displaced by a longer sibling. The modestly-longer author-bio sibling in the
+  // test below (~2.4x) also stays under the 5x threshold, so #108 holds two ways.
+  const skeleton = "<p>" + "Loading... ".repeat(5) + "</p>"; // ~55 chars, a minimal Suspense fallback
+  const realBody = "<h1>Real Streamed Content</h1>"
+    + "<p>This is the actual article body that React streams inside a Suspense boundary and reveals "
+    + "after hydration. It carries the page's real prose — many sentences of genuine content that the "
+    + "browser unveils once the boundary completes, far more than the loading placeholder above. "
+    + "Captatum recognizes the streaming idiom at Tier-1 so this content is extracted without a render. "
+    + "The real streamed article is substantially richer than the skeleton placeholder, so the "
+    + "sibling-override factor lets it win the article pick instead of locking in the loading text. "
+    + "This mirrors docs.anthropic.com where the boundary article is roughly sixteen times richer.</p>";
+  // A `$RC` call makes revealedIds non-empty (the page is React streaming-SSR) so the React-gated
+  // sibling-override can fire.
+  const swap = "<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute('hidden')};$RC('S:1')</script>";
+  const html = "<html><body>" + swap + "<article>" + skeleton + "</article><article>" + realBody + "</article></body></html>";
+  const main = selectMainContentHtml(html);
+  assert.match(main ?? "", /Real Streamed Content/);
+  assert.equal((main ?? "").includes("Loading..."), false, "the substantially richer real article must override the skeleton on a React page");
+});
+
+test("selectMainContentHtml: a richer sibling does NOT override the primary on a non-React page (#108 tie-break, codex P2)", () => {
+  // The sibling override is gated to React streaming. On a plain (non-React) page, a much-longer
+  // later sibling — a related article, author block, or index teaser outside aside/nav/footer —
+  // must NOT displace the page's primary (first) article, even when >5x richer. (Without the
+  // reactStreaming gate, this regresses #108's first-article tie-break for every non-React page.)
+  const primary = "<article><h1>Primary Post</h1><p>The main post.</p></article>";
+  const longSibling = "<article><h3>Related</h3><p>" + "A very long related-article teaser. ".repeat(20) + "</p></article>";
+  const html = "<html><body>" + primary + longSibling + "</body></html>"; // no $RC marker -> not React
+  const main = selectMainContentHtml(html);
+  assert.match(main ?? "", /Primary Post/);
+  assert.equal((main ?? "").includes("Related"), false, "a non-React page's longer sibling must not displace the primary article");
+});
+
+test("selectMainContentHtml: a substantial primary is NOT displaced by a richer sibling even on a React page (#118 codex P2)", () => {
+  // The override requires the FIRST article be skeleton-short. A React page that merely has a
+  // `$RC` boundary elsewhere (e.g. a header widget) but a SUBSTANTIAL primary first <article>
+  // followed by a much-longer sibling must keep the primary — only a short skeleton is overridden.
+  const primary = "<article><h1>Primary Post</h1><p>" + "This is the real primary article body with substantial prose. ".repeat(40) + "</p></article>";
+  const longSibling = "<article><h3>Related</h3><p>" + "A much longer related block. ".repeat(300) + "</p></article>";
+  // React streaming is active (a $RC call) but the boundary is unrelated to the articles.
+  const html = "<html><body><script>$RC('B:9','S:9')</script>" + primary + longSibling + "</body></html>";
+  const main = selectMainContentHtml(html);
+  assert.match(main ?? "", /Primary Post/);
+  assert.equal((main ?? "").includes("Related"), false, "a substantial primary is not displaced even on a React page");
+});
+
+test("extractHtml: a nested React boundary inside the scoped <article> is preserved (#118 codex P1)", () => {
+  // The $RC swap script is OUTSIDE the article; the article contains a NESTED React boundary.
+  // Scoping to the article loses the $RC marker (a script, stripped/outside scope), so the
+  // streaming flag must be threaded from the FULL page — otherwise extractVisibleText recomputes
+  // false from the fragment and strips the nested boundary, silently omitting its streamed body.
+  const html = "<html><body>"
+    + "<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute('hidden')};$RC('B:5','S:5')</script>"
+    + "<article><p>Visible intro paragraph with enough words to satisfy the shell gate alone.</p>"
+    + "<div hidden id=\"S:5\"><p>Nested streamed body that must NOT be silently omitted.</p></div>"
+    + "</article></body></html>";
+  const out = extractHtml({ html, url: "https://example.test/", contentType: "text/html" });
+  assert.match(out.text, /Nested streamed body that must NOT be silently omitted/);
 });
 
 test("selectMainContentHtml: empty <main> shell scopes to empty so chrome doesn't mask a needed render (#108, codex P2)", () => {

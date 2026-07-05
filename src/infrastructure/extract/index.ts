@@ -6,6 +6,7 @@ import type {
 } from "../../application/use-cases/tier1-extract.ts";
 import { isHtmlContentType } from "../http/body.ts";
 import { extractVisibleText } from "./html.ts";
+import { revealedReactBoundaryIds } from "./hidden.ts";
 import { selectMainContentHtml } from "./main-content.ts";
 import { extractPageMetadata } from "./metadata.ts";
 import { evaluateShellGate } from "./shell-gate.ts";
@@ -28,7 +29,12 @@ export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
   // Scope visible text to the main-content <article> when present so site chrome (GitHub's nav
   // header, blog headers/footers) doesn't crowd out the README/body. Metadata (title/og/jsonLd)
   // is still extracted from the full page — only the visible TEXT is scoped. (#93)
-  const text = html ? extractVisibleText(selectMainContentHtml(input.html) ?? input.html) : input.html;
+  // Compute the React boundary reveal set ONCE from the full page + thread it through scoping +
+  // extraction. A scoped <article> fragment loses the <script>$RC(...)</script> calls (stripped/
+  // outside scope), so recomputing it from the fragment would empty the set + strip a React
+  // boundary (#118 codex P1). Both selectMainContentHtml and extractVisibleText take it explicitly.
+  const revealedIds = revealedReactBoundaryIds(input.html);
+  const text = html ? extractVisibleText(selectMainContentHtml(input.html, revealedIds) ?? input.html, revealedIds) : input.html;
   const shellGate = evaluateShellGate({
     html: input.html,
     text,

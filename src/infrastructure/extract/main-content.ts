@@ -1,5 +1,5 @@
 import { collectHiddenDisplayNoneClasses } from "./hidden-classes.ts";
-import { stripHiddenSubtrees } from "./hidden.ts";
+import { revealedReactBoundaryIds, stripHiddenSubtrees } from "./hidden.ts";
 import { extractVisibleText, findElements, stripElement, stripHtmlComments } from "./html.ts";
 
 /**
@@ -10,6 +10,22 @@ import { extractVisibleText, findElements, stripElement, stripHtmlComments } fro
  * tree before scoring, so a chrome-heavy <main> can't win on bulk alone. (#108)
  */
 export const MAIN_OVERRIDE_FACTOR = 1.5;
+
+/**
+ * A LATER sibling <article> overrides the FIRST only when it is substantially richer AND the first
+ * is skeleton-short. The first <article> is the page's primary content in document order (GitHub
+ * README, blog post, docs section); a slightly-longer later sibling is usually a related/author
+ * block and must NOT displace it (#108). But React streaming-SSR ships a SHORT loading-skeleton
+ * <article> FIRST and the real streamed article as a far-richer later sibling (docs.anthropic.com:
+ * skeleton ≈ 175 chars vs real ≈ 2901 chars, ~16×). The 5× ratio + the short-first guard let the
+ * real article win for the React-skeleton case WITHOUT displacing a substantial primary on a React
+ * page that merely has a `$RC` boundary elsewhere (e.g. in a header widget) — only a short first
+ * article is treated as a skeleton (#118 codex P2).
+ */
+export const SIBLING_ARTICLE_OVERRIDE_FACTOR = 5;
+/** A first <article> at or below this visible-text length is treated as a skeleton candidate
+ *  (a loading placeholder, not primary content). Real article bodies are normally far larger. */
+export const SKELETON_ARTICLE_MAX_CHARS = 1000;
 
 /**
  * <aside>/<nav>/<footer> are chrome (sidebars, TOCs, mega-menus, page footers). They are stripped
@@ -29,12 +45,14 @@ function stripChrome(html: string): string {
  * substantially richer (MAIN_OVERRIDE_FACTOR), because <main> often wraps the <article> plus
  * chrome that the tighter <article> scope excludes.
  *
- * Why the FIRST <article>, not the longest: document order makes the first <article> the page's
+ * Why the FIRST <article> is the default: document order makes the first <article> the page's
  * primary one (GitHub README, blog post, docs section). The card-grid hub case the old "return
  * the first <article> blindly" mishandled is rescued by the <main> override — a hub's <main>
  * holds the real intro+categories and is far larger than any tile, so <main> wins. A longer LATER
  * sibling <article> is usually a related/author block inside an <aside>, which stripChrome has
- * already removed from the candidate pool.
+ * already removed from the candidate pool. The ONE exception is React streaming-SSR, which ships
+ * a short loading-skeleton <article> first and the real streamed article as a substantially
+ * richer later sibling — SIBLING_ARTICLE_OVERRIDE_FACTOR lets that real article win (#118).
  *
  * The page is pre-cleaned EXACTLY as `extractVisibleText` does before searching (hidden classes
  * collected from the full page, then script/style/noscript/template + comments + hidden subtrees
@@ -44,7 +62,7 @@ function stripChrome(html: string): string {
  * evaluateShellGate (index.ts), so the selection changes render escalation: scoping to a short
  * skeleton makes the gate MORE likely to trip (correct — the page needs rendering), never less. (#93)
  */
-export function selectMainContentHtml(html: string): string | null {
+export function selectMainContentHtml(html: string, revealedIds: Set<string> = revealedReactBoundaryIds(html)): string | null {
   // Fast path: no <article> AND no <main> → nothing to select. Skips the full pre-clean on the
   // common no-main-content page and — critically — on pathological inputs (the REDOS-5 <script>
   // flood), so cleaning runs once (in extractVisibleText) instead of twice and extractHtml stays
@@ -52,25 +70,50 @@ export function selectMainContentHtml(html: string): string | null {
   // comment just skips the short-circuit, never a false positive).
   if (!/<article/i.test(html) && !/<main/i.test(html)) return null;
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
+  // revealedIds comes from the caller (the full page) so a scoped fragment's missing $RC call
+  // does not under-detect streaming. A React `<div hidden id="S:N">` boundary completed by a
+  // `$RC` is real server-streamed content the browser reveals, so the article inside one IS a
+  // candidate (a genuinely `display:none`-hidden article is still excluded — #97 safety).
   const withoutCode = ["script", "style", "noscript", "template"]
     .reduce((value, tag) => stripElement(value, tag), html);
-  const clean = stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses)));
+  const clean = stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses, revealedIds)));
 
-  const firstArticle = findElements(clean, "article")[0];
+  // Score every <article> by visible-text length. The FIRST is the page's primary (document
+  // order), but a SUBSTANTIALLY richer sibling overrides it — a React loading skeleton is a short
+  // placeholder shipped first; the real streamed article is a far larger later sibling. Scoring
+  // threads revealedIds so a boundary-bearing fragment is measured with its streamed content.
+  const articles = findElements(clean, "article").map<{ content: string; len: number }>((el) => ({
+    content: el.content,
+    len: extractVisibleText(el.content, revealedIds).length,
+  }));
+  const firstArticle = articles[0];
+  const richestArticle = articles.reduce<{ content: string; len: number } | undefined>(
+    (best, el) => !best || el.len > best.len ? el : best,
+    undefined,
+  );
   const longestMain = findElements(clean, "main").reduce<{ content: string; len: number } | undefined>(
     (best, el) => {
-      const len = extractVisibleText(el.content).length;
+      const len = extractVisibleText(el.content, revealedIds).length;
       return !best || len > best.len ? { content: el.content, len } : best;
     },
     undefined,
   );
-  const articleLen = firstArticle ? extractVisibleText(firstArticle.content).length : 0;
+  // First <article> wins by default. A substantially richer sibling overrides it ONLY on a React
+  // streaming page (revealedIds non-empty) WHEN the first article is skeleton-short — the React
+  // loading-skeleton pattern (short placeholder first, real streamed article as a richer sibling).
+  // The short-first guard prevents displacing a substantial primary on a React page that merely
+  // has a $RC boundary elsewhere (a header/widget) (#118 codex P2).
+  const firstIsSkeleton = !!firstArticle && firstArticle.len <= SKELETON_ARTICLE_MAX_CHARS;
+  const selectedArticle = revealedIds.size > 0 && firstIsSkeleton && richestArticle && firstArticle && richestArticle.len >= firstArticle.len * SIBLING_ARTICLE_OVERRIDE_FACTOR
+    ? richestArticle
+    : firstArticle;
+  const articleLen = selectedArticle?.len ?? 0;
   const mainLen = longestMain?.len ?? 0;
 
-  if (firstArticle && longestMain) {
+  if (selectedArticle && longestMain) {
     // <main> wins only when substantially richer (a tile <article> vs real content in <main>);
     // otherwise the <article>'s tighter scope avoids footer/nav/aside chrome.
-    return mainLen >= articleLen * MAIN_OVERRIDE_FACTOR ? longestMain.content : firstArticle.content;
+    return mainLen >= articleLen * MAIN_OVERRIDE_FACTOR ? longestMain.content : selectedArticle.content;
   }
-  return firstArticle?.content ?? longestMain?.content ?? null;
+  return selectedArticle?.content ?? longestMain?.content ?? null;
 }
