@@ -25,10 +25,15 @@ export function fits(
 
 /** Why pick() returned provider "none" — surfaced as the raw-fallback reason. */
 export function noneReason(options: ModelPickOptions, configuredCount: number): string {
+  // No providers configured at all is the primary cause — check it first so a zero-candidate
+  // local binary reports "unconfigured" even when the sensitive gate (localOnly) also fired
+  // (the gate changed no outcome; mis-attributing it to "sensitive_content_no_local_provider"
+  // hides that the binary simply has no provider).
+  if (configuredCount === 0) return "unconfigured";
   if (options.localOnly) return "sensitive_content_no_local_provider";
   if (options.provider) return "provider_unconfigured";
   if (options.model) return "model_unavailable";
-  return configuredCount === 0 ? "unconfigured" : "no_model_fit";
+  return "no_model_fit";
 }
 
 /** Coerce a caller-supplied transform.provider override to a known provider id, or flag it

@@ -7,6 +7,7 @@ import type { HtmlExtraction, HtmlExtractionInput } from "../src/application/use
 import { TransformError } from "../src/application/ports/transformer.ts";
 import { validateJsonSchema } from "../src/infrastructure/llm/json-schema.ts";
 import { LlmTransformer, ModelRouter } from "../src/infrastructure/llm/model-router.ts";
+import { noneReason } from "../src/infrastructure/llm/router-helpers.ts";
 import { detectSensitiveTransformInput } from "../src/infrastructure/llm/safety.ts";
 import type { LlmGenerateInput, LlmGenerateResult, LlmModelCandidate, LlmProvider } from "../src/infrastructure/llm/types.ts";
 
@@ -825,6 +826,35 @@ test("a JWT present only in the source url is flagged (codex P2 on #47)", () => 
   const r = detectSensitiveTransformInput({ content: "plain body, no credential", sourceUrl: "https://files.example.com/d/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig12345678" });
   assert.equal(r.sensitive, true);
   assert.equal(r.reason, "source_credential_signal");
+});
+
+test("detectSensitiveTransformInput: a loopback URL in CONTENT (a docs example) is NOT flagged (#127 0.11.3)", () => {
+  // http://localhost:PORT (or 127.x / bracketed [::1]) in fetched content — a README setup
+  // example — resolves to the reader's machine, not a leaked internal endpoint. Must not
+  // degrade summary to raw on the hosted flavor.
+  assert.equal(detectSensitiveTransformInput({ content: "Run: export ADDRESS=http://localhost:8000" }).sensitive, false);
+  assert.equal(detectSensitiveTransformInput({ content: "Connect via http://127.0.0.1:9000" }).sensitive, false);
+  assert.equal(detectSensitiveTransformInput({ content: "IPv6 loopback http://[::1]:8000/x" }).sensitive, false, "bracketed ::1 is loopback too");
+});
+
+test("detectSensitiveTransformInput: a loopback SOURCE url is still flagged + internal IPv6/RFC1918 in content still flagged (#127 0.11.3)", () => {
+  // The loopback exemption is CONTENT-only. A loopback SOURCE url means captatum would
+  // fetch a loopback target (SSRF) — still flagged. RFC1918 / link-local / metadata IPs —
+  // and now bracketed internal IPv6 (ULA/link-local, previously hidden by regex truncation)
+  // — in content are flagged (the exemption is loopback-only).
+  assert.equal(detectSensitiveTransformInput({ content: "plain body", sourceUrl: "http://localhost:8000/x" }).sensitive, true);
+  assert.equal(detectSensitiveTransformInput({ content: "internal api http://10.0.0.5/api" }).sensitive, true);
+  assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]:8000/api" }).sensitive, true, "bracketed unique-local IPv6 is internal, not loopback");
+});
+
+test("noneReason: zero candidates reports 'unconfigured' even when the sensitive gate fired (#127 0.11.3)", () => {
+  // The local binary builds the router with zero candidates; when the sensitive gate also
+  // fires (localOnly), noneReason used to mis-attribute 'sensitive_content_no_local_provider'.
+  // Order is now configuredCount===0 first.
+  assert.equal(noneReason({ localOnly: true }, 0), "unconfigured");
+  assert.equal(noneReason({}, 0), "unconfigured");
+  // Hosted flavor (a candidate exists) + localOnly still reports the sensitive cause.
+  assert.equal(noneReason({ localOnly: true }, 1), "sensitive_content_no_local_provider");
 });
 
 class FakeClock implements ClockPort {

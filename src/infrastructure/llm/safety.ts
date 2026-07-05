@@ -10,7 +10,7 @@
  * (token prefixes, PEM headers, signed URLs) without flagging discussion text.
  * Security-relevant change — reflect in docs/threat-model.md.
  */
-import { isPrivate } from "../../domain/policy.ts";
+import { isLoopbackHost, isPrivate } from "../../domain/policy.ts";
 
 const SENSITIVE_CREDENTIAL_PATTERNS = [
   /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/i,
@@ -81,8 +81,10 @@ const INTERNAL_HOST_SUFFIXES = [
     .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
 ];
 
-/** Bounded URL-literal scan for embedded signed/internal URLs in content. */
-const SIGNED_URL_IN_CONTENT = /https?:\/\/[^\s"'<>)\]]{1,512}/gi;
+/** Bounded URL-literal scan for embedded signed/internal URLs in content. `]` is allowed
+ *  so bracketed IPv6 literals (`http://[fd00::1]:8000`, `http://[::1]:8000`) are scanned
+ *  rather than truncated at the bracket (which silently skipped ALL IPv6 internal hosts). */
+const SIGNED_URL_IN_CONTENT = /https?:\/\/[^\s"'<>)]{1,512}/gi;
 /** Cap the embedded-URL scan to the head of the content. The high-confidence
  *  credential/header patterns below scan the FULL content regardless of size;
  *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
@@ -129,7 +131,10 @@ export function detectSensitiveTransformInput(input: {
   // The credential/header patterns above already scanned the FULL content.
   const head = content.length > MAX_CONTENT_SCAN ? content.slice(0, MAX_CONTENT_SCAN) : content;
   for (const match of head.matchAll(SIGNED_URL_IN_CONTENT)) {
-    const reason = signedUrlReason(match[0], CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(match[0]);
+    // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup example —
+    // resolves to the READER's machine, not a leaked internal endpoint) must not be flagged.
+    // RFC1918 / 169.254.169.254 / .corp / .internal / signed-URL keys are still flagged here.
+    const reason = signedUrlReason(match[0], CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(match[0], true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
   return { sensitive: false };
@@ -160,9 +165,10 @@ function signedUrlReason(sourceUrl: string, keys: Set<string> = SIGNED_QUERY_KEY
   return undefined;
 }
 
-function internalHostReason(sourceUrl: string): string | undefined {
+function internalHostReason(sourceUrl: string, allowLoopback = false): string | undefined {
   try {
     const host = new URL(sourceUrl).hostname.toLowerCase().replace(/\.$/, "");
+    if (isLoopback(host)) return allowLoopback ? undefined : "internal_host";
     if (host === "localhost" || INTERNAL_HOST_SUFFIXES.some((s) => host === s.slice(1) || host.endsWith(s))) {
       return "internal_host";
     }
@@ -171,6 +177,15 @@ function internalHostReason(sourceUrl: string): string | undefined {
     if (isPrivate(host)) return "internal_host";
   } catch { /* ignore unparseable URLs */ }
   return undefined;
+}
+
+/** Loopback (localhost, .localhost, 127.0.0.0/8, ::1 incl. bracketed [::1]) — a docs/example
+ *  target that resolves to the reader's own machine, not a leaked internal endpoint. Exempt
+ *  from the CONTENT-embedded scan (allowLoopback); kept on the SOURCE-url scan so captatum
+ *  never fetches a loopback target. Reuses domain/policy's isLoopbackHost (bracket/zone
+ *  stripping + octet/group validation) so IPv6 loopback is classified correctly. */
+function isLoopback(host: string): boolean {
+  return isLoopbackHost(host) || host.endsWith(".localhost");
 }
 
 /** Redact signed/tokenized query-param values from a URL before display (INFOLEAK-1). */
