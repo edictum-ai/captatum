@@ -45,6 +45,26 @@ test("lean payload carries the tiered fields and load-bearing primitives", () =>
   assert.equal(shape.title, "Example Article");
 });
 
+test("4xx/5xx response: the receipt is fail + http_error, never pass + accessible [GUARD, was GAP]", () => {
+  // A non-empty error body (text/plain 'Forbidden', JSON error, rich HTML error) used to be
+  // presented as a successful, public, non-gated fetch (status:pass, access:none, ok:true).
+  // Now classifyAccess gates it http_error and classifyStatus fails it. The body is still in
+  // result.result so the agent can read the server's message.
+  const r = buildStructuredContent(base({
+    code: 404,
+    codeText: "Not Found",
+    result: "404: Not Found",
+    jsRequired: false,
+    resolvedVia: "tier1-error",
+    errors: [{ code: "http_error", message: "HTTP 404 Not Found" }],
+  }), false);
+  assert.equal(r.status, "fail", "a 4xx is an honest failure, not pass/partial");
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.access, { mainContentAccessible: false, gated: true, gateReason: "http_error" });
+  assert.equal(r.code, 404);
+  assert.equal(r.result, "404: Not Found", "the error body is still returned for the agent to read");
+});
+
 test("heavy fields are absent by default and unlocked with debug: true", () => {
   const lean = buildStructuredContent(base(), false);
   assert.equal("attempts" in lean, false);

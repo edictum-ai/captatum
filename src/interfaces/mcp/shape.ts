@@ -66,6 +66,9 @@ function splitErrors(result: Result): { errors: ProvenanceError[]; warnings: Pro
 
 function classifyStatus(result: Result, warnings: ProvenanceError[]): Status {
   if (result.tier === "error" || !hasContent(result)) return "fail";
+  // HTTP error (4xx/5xx): the body is an error page, not usable content — fail honestly
+  // even though a body was returned (the agent can still read result.result for the message).
+  if (Number(result.code) >= 400) return "fail";
   if (warnings.length > 0) return "partial";
   // Summary/extract requested but the transform fell back to raw — degraded.
   const t = result.transform;
