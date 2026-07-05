@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.11.2] — 2026-07-06
+
+One transform correctness fix (the two refinements deferred from #130's codex review) + a vendor-neutral docs pass. No breaking changes.
+
+- **fix(transform): truncation loop refinements (#131)** — two edge cases in the transform truncation loop. **P2-B:** for `output: extract`, a length-capped completion is incomplete JSON; `finalize()` ran before the truncation check and threw `extract_invalid_json`, failing the request instead of escalating. Now truncation is checked first — a truncated completion records `success` (a budget cap isn't a hard failure, must not demote), keeps the raw text as best, and escalates / surfaces an honest `transform_truncated`. **P2-A:** `MAX_TRANSFORM_ATTEMPTS` shared one counter between hard-fail candidate fallback and truncation escalation, so 5 hard-fails threw `transform_provider_failed` without reaching a healthy later candidate. Now hard-fail + truncation-next-candidate self-terminate via candidate exhaustion, and a separate `escalations` counter bounds only truncation-budget retry. Refactored six helpers into `router-helpers.ts` (no behavior change); 5 new tests; an adversarial 4-lens review found 0 defects.
+- **docs:** made the repo vendor-neutral — removed the AWS/Fargate deploy refs (`scripts/deploy.sh`, the runbook section of `docs/deploy.md`, a stale handoff doc) so the public repo carries no infra specifics (#133/#127).
+
+Checks: `pnpm run check` + 491 unit + 50 integration fixture tests green.
+
+## [0.11.1] — 2026-07-05
+
+The model-aware transform cap (which 0.11.2 then refines), a deep-content extraction fix, multi-arch release images, and the egress-wall docs.
+
+- **feat(transform): model-aware output cap + truncation escalation (#125/#130)** — per-model max output tokens (deepseek 16K / qwen 65K, was a global 4K cap), default budget 8K, `finish_reason=length` detection, escalation bounded by remaining context + the caller's explicit budget, honest `transform_truncated` advisory. Fixes silent truncation on heavy docs.
+- **fix(extract): raise EXTRACT_CHAR_BUDGET 1MB → 5MB (#121)** — deep-content pages (Jira REST articles) were beheaded at the 1MB extraction cap.
+- **ci(release): build multi-arch (amd64+arm64) GHCR images (#123)** — `release.yml` builds both arches (QEMU for arm64) so the Mac mini (arm64) pulls a native image.
+- **docs:** the datacenter-ASN egress wall + the residential-egress (Mac mini) deploy (#122).
+
+Checks: `pnpm run check` + 486 unit + 50 integration fixture tests green.
+
 ## [0.11.0] — 2026-07-05
 
 Two coverage fixes closing the remaining dev-docs gaps from the 0.9.0/0.10.0 diagnosis: POST-data SPAs that hydrate via a first-party POST (Notion, Jira) and React streaming-SSR pages whose article body lives in a hidden Suspense boundary (Anthropic docs). Both codex-reviewed across multiple rounds.
