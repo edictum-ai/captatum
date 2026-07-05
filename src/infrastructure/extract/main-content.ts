@@ -94,8 +94,12 @@ export function selectMainContentHtml(html: string): string | null {
     },
     undefined,
   );
-  // First <article> wins unless a sibling is substantially richer (React skeleton case).
-  const selectedArticle = richestArticle && firstArticle && richestArticle.len >= firstArticle.len * SIBLING_ARTICLE_OVERRIDE_FACTOR
+  // First <article> wins by default. A substantially richer sibling overrides it ONLY on a
+  // React streaming page (reactStreaming), where a short loading-skeleton <article> ships
+  // first and the real streamed article is a far-richer later sibling. Gated to React so a
+  // non-React page's first-article tie-break (#108) is never displaced by a longer sibling
+  // (author block, index teaser, …) — only the React skeleton idiom triggers the override.
+  const selectedArticle = reactStreaming && richestArticle && firstArticle && richestArticle.len >= firstArticle.len * SIBLING_ARTICLE_OVERRIDE_FACTOR
     ? richestArticle
     : firstArticle;
   const articleLen = selectedArticle?.len ?? 0;

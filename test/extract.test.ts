@@ -1568,12 +1568,14 @@ test("selectMainContentHtml: prefers the FIRST <article> when there is no <main>
   assert.equal((main ?? "").includes("Author Bio"), false, "longer later sibling article displaced the primary article");
 });
 
-test("selectMainContentHtml: a substantially richer sibling <article> overrides a loading skeleton (#118)", () => {
+test("selectMainContentHtml: a substantially richer sibling <article> overrides a loading skeleton on React pages (#118)", () => {
   // React streaming-SSR ships a short loading-skeleton <article> FIRST and the real streamed
   // article as a later, far-richer sibling (docs.anthropic.com: skeleton ~175 chars vs real
   // ~2901 chars, ~16x). First-article-wins would lock in the skeleton and return only "Loading..."
-  // text; SIBLING_ARTICLE_OVERRIDE_FACTOR (5x) lets the real article win. The modestly-longer
-  // author-bio sibling above (~2.4x) stays below the threshold, so #108's tie-break holds.
+  // text; SIBLING_ARTICLE_OVERRIDE_FACTOR (5x) lets the real article win. The override is GATED to
+  // React (the $RC swap marker makes reactStreaming true) so a non-React page's #108 first-article
+  // tie-break is never displaced by a longer sibling. The modestly-longer author-bio sibling in the
+  // test below (~2.4x) also stays under the 5x threshold, so #108 holds two ways.
   const skeleton = "<p>" + "Loading... ".repeat(5) + "</p>"; // ~55 chars, a minimal Suspense fallback
   const realBody = "<h1>Real Streamed Content</h1>"
     + "<p>This is the actual article body that React streams inside a Suspense boundary and reveals "
@@ -1583,10 +1585,25 @@ test("selectMainContentHtml: a substantially richer sibling <article> overrides 
     + "The real streamed article is substantially richer than the skeleton placeholder, so the "
     + "sibling-override factor lets it win the article pick instead of locking in the loading text. "
     + "This mirrors docs.anthropic.com where the boundary article is roughly sixteen times richer.</p>";
-  const html = "<html><body><article>" + skeleton + "</article><article>" + realBody + "</article></body></html>";
+  // The $RC swap script makes reactStreaming true (the page is React streaming-SSR).
+  const swap = "<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute('hidden')}</script>";
+  const html = "<html><body>" + swap + "<article>" + skeleton + "</article><article>" + realBody + "</article></body></html>";
   const main = selectMainContentHtml(html);
   assert.match(main ?? "", /Real Streamed Content/);
-  assert.equal((main ?? "").includes("Loading..."), false, "the substantially richer real article must override the skeleton");
+  assert.equal((main ?? "").includes("Loading..."), false, "the substantially richer real article must override the skeleton on a React page");
+});
+
+test("selectMainContentHtml: a richer sibling does NOT override the primary on a non-React page (#108 tie-break, codex P2)", () => {
+  // The sibling override is gated to React streaming. On a plain (non-React) page, a much-longer
+  // later sibling — a related article, author block, or index teaser outside aside/nav/footer —
+  // must NOT displace the page's primary (first) article, even when >5x richer. (Without the
+  // reactStreaming gate, this regresses #108's first-article tie-break for every non-React page.)
+  const primary = "<article><h1>Primary Post</h1><p>The main post.</p></article>";
+  const longSibling = "<article><h3>Related</h3><p>" + "A very long related-article teaser. ".repeat(20) + "</p></article>";
+  const html = "<html><body>" + primary + longSibling + "</body></html>"; // no $RC marker -> not React
+  const main = selectMainContentHtml(html);
+  assert.match(main ?? "", /Primary Post/);
+  assert.equal((main ?? "").includes("Related"), false, "a non-React page's longer sibling must not displace the primary article");
 });
 
 test("selectMainContentHtml: empty <main> shell scopes to empty so chrome doesn't mask a needed render (#108, codex P2)", () => {
