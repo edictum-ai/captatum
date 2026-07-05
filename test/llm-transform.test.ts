@@ -4,6 +4,7 @@ import type { ClockPort } from "../src/application/ports/clock.ts";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
 import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts";
 import type { HtmlExtraction, HtmlExtractionInput } from "../src/application/use-cases/tier1-extract.ts";
+import { TransformError } from "../src/application/ports/transformer.ts";
 import { validateJsonSchema } from "../src/infrastructure/llm/json-schema.ts";
 import { LlmTransformer, ModelRouter } from "../src/infrastructure/llm/model-router.ts";
 import { detectSensitiveTransformInput } from "../src/infrastructure/llm/safety.ts";
@@ -380,6 +381,130 @@ test("#48 B: an empty completion from the primary falls back to the next model w
   assert.equal(result.result, "qwen summary");
 });
 
+test("#125: truncation escalates the budget until the model finishes cleanly", async () => {
+  // No explicit budget (default applies). The model truncates below 30K output, finishes
+  // cleanly at/above. The transformer escalates the budget + retries until complete.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      const truncated = (input.maxOutputTokens ?? 0) < 30_000;
+      return { text: truncated ? "partial" : "complete summary", truncated };
+    },
+  };
+  const transformer = new LlmTransformer({
+    router: new ModelRouter(provider.candidates()),
+    providers: { openrouter: provider },
+  });
+  const result = await transformer.transform({
+    mode: "summarize", output: "summary", content: "page", prompt: "p",
+  });
+  assert.equal(result.result, "complete summary");
+  assert.equal(result.info.truncated ?? false, false, "no truncation advisory once the model finishes");
+});
+
+test("#125: a still-truncated result after escalation surfaces an honest advisory", async () => {
+  // The model always truncates regardless of budget. Escalation exhausts (model maxed,
+  // no higher-cap candidate) and the result carries truncated:true so the use case can
+  // surface a transform_truncated error instead of a silently cut-off answer.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 8_000 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      return { text: "partial", truncated: true };
+    },
+  };
+  const transformer = new LlmTransformer({
+    router: new ModelRouter(provider.candidates()),
+    providers: { openrouter: provider },
+  });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p" });
+  assert.equal(result.info.truncated, true);
+  assert.equal(result.result, "partial");
+});
+
+test("#125 codex P2: truncation escalates across candidates to the higher-cap fallback's max", async () => {
+  // deepseek max 16K, qwen max 65K. The page needs >16K and <65K output — deepseek
+  // maxes out (truncated), then qwen is tried at its full 65K cap and completes.
+  // The escalation must reach qwen@65K within the attempt budget (no early exit at 32K).
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [
+      candidate("openrouter", "deepseek/deepseek-v4-flash", { order: 0, maxOutputTokens: 16_384 }),
+      candidate("openrouter", "qwen/qwen3.6-flash", { order: 1, maxOutputTokens: 65_536 }),
+    ],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      const ok = (input.maxOutputTokens ?? 0) >= 65_536;
+      return { text: ok ? "complete at 65K" : "partial", truncated: !ok };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p" });
+  assert.equal(result.info.model, "qwen/qwen3.6-flash");
+  assert.equal(result.result, "complete at 65K");
+  assert.equal(result.info.truncated ?? false, false);
+  assert.match(result.info.fallbackFrom ?? "", /deepseek/, "deepseek was tried + truncated first");
+});
+
+test("#125 codex P2: an explicit caller budget is a hard ceiling — truncation does not escalate past it", async () => {
+  // budget:50 truncates; the model could complete at a higher cap, but the caller set an
+  // explicit max-output budget, so escalation must NOT exceed it. Return the truncated result.
+  const calls: LlmGenerateInput[] = [];
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> { calls.push(input); return { text: "partial", truncated: true }; },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p", budget: 50 });
+  assert.equal(result.info.truncated, true);
+  assert.equal(calls.length, 1, "no escalation retry beyond the explicit budget");
+  assert.equal(calls[0]?.maxOutputTokens, 50, "the caller's explicit budget is honored");
+});
+
+test("#125 codex P2: fits() reserves the requested cap, not the model max (long page fits at default budget)", () => {
+  // qwen: 128K context, 65K max output. A 100K-token page with a default 8K budget
+  // fits (100K + 8K = 108K < 128K), but would NOT fit if the bare 65K max were reserved.
+  const router = new ModelRouter([candidate("openrouter", "qwen/qwen3.6-flash", { contextTokens: 128_000, maxOutputTokens: 65_536 })]);
+  assert.equal(router.pick("summarize", 100_000, { reserveOutputTokens: 8_000 }).model, "qwen/qwen3.6-flash", "8K reserve fits a 100K-input page");
+  assert.equal(router.pick("summarize", 100_000).provider, "none", "no reserve falls back to the 65K model max, which 100K input does not fit");
+});
+
+test("#125 codex P2: escalation is bounded by remaining context, not the bare model max", async () => {
+  // qwen: 128K context, 65K max output. A ~90K-token input leaves ~38K output headroom.
+  // The page needs 20K (fits in 38K but not the 8K default). Jumping to the 65K model max
+  // would reject qwen on retry (90K+65K > 128K); bounding by remaining context retries at
+  // ~38K and completes.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "qwen/qwen3.6-flash", { contextTokens: 128_000, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      const ok = (input.maxOutputTokens ?? 0) >= 20_000;
+      return { text: ok ? "complete" : "partial", truncated: !ok };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "x".repeat(360_000), prompt: "p" });
+  assert.equal(result.result, "complete");
+  assert.equal(result.info.truncated ?? false, false);
+});
+
+test("#125 codex P2: attempt-cap exhaustion with all-failing models throws transform_provider_failed (no silent raw)", async () => {
+  // 6 models, all hard-fail. The 5-attempt cap exits the loop before pick-none fires;
+  // without the fix this returns a silent raw fallback. It must throw the accumulated failure.
+  const models = Array.from({ length: 6 }, (_, i) => candidate("openrouter", `m${i}/model-${i}`, { order: i }));
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => models,
+    async generate(): Promise<LlmGenerateResult> { throw new Error("upstream down"); },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  await assert.rejects(
+    () => transformer.transform({ mode: "summarize", output: "summary", content: "x", prompt: "p" }),
+    (e: unknown) => e instanceof TransformError && e.code === "transform_provider_failed",
+  );
+});
+
 test("router feedback demotes flaky free model before local fallback", () => {
   const router = new ModelRouter([
     candidate("openrouter", "free/model", { free: true }),
@@ -428,7 +553,7 @@ test("transform with no budget sends a bounded default output cap, never undefin
   assert.equal(typeof cap, "number", "maxOutputTokens must always be set");
   assert.equal(Number.isInteger(cap), true);
   assert.ok((cap ?? 0) >= 1);
-  assert.equal(cap, 2000, "default cap applied when budget is omitted");
+  assert.equal(cap, 8000, "default cap applied when budget is omitted");
 });
 
 test("explicit budget below the default is honored (#3)", async () => {
@@ -438,11 +563,11 @@ test("explicit budget below the default is honored (#3)", async () => {
   assert.equal(provider.calls[0]?.maxOutputTokens, 50, "small explicit budget must not be bumped to the default");
 });
 
-test("explicit budget above the hard cap is clamped (#3)", async () => {
-  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), { text: "ok" });
+test("explicit budget above the model max is clamped (#3, #125)", async () => {
+  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true, maxOutputTokens: 16_384 }), { text: "ok" });
   const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
   await transformer.transform({ mode: "summarize", output: "summary", content: "x", prompt: "p", budget: 999_999 });
-  assert.equal(provider.calls[0]?.maxOutputTokens, 4000, "budget clamped to the hard cap");
+  assert.equal(provider.calls[0]?.maxOutputTokens, 16_384, "budget clamped to the model's max output");
 });
 
 test("maxOutputTokensDefault option overrides the config default (#3)", async () => {
@@ -668,6 +793,7 @@ function candidate(
     local: overrides.local ?? false,
     supportsJson: overrides.supportsJson ?? true,
     contextTokens: overrides.contextTokens ?? 128_000,
+    maxOutputTokens: overrides.maxOutputTokens ?? 65_536,
     costWeight: overrides.costWeight ?? 0,
     order: overrides.order ?? 0,
   };

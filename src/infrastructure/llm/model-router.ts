@@ -11,11 +11,10 @@ import { buildMessages } from "./prompts.ts";
 import { detectSensitiveTransformInput } from "./safety.ts";
 import { estimateTokens, MAX_OUTPUT_TOKENS_CAP, resolveOutputCap } from "./tokens.ts";
 import type { LlmGenerateResult, LlmModelCandidate, ProviderMap } from "./types.ts";
+import { demotionOf, effectiveOrder, staticRank } from "./router-ranking.ts";
 
-// Reserved output headroom for the context-fit gate. Equals the output-token hard cap
-// so a model admitted by fits() can always hold the requested generation (admission
-// and the cap agree — no mid-completion context overflow).
-const RESERVED_OUTPUT_TOKENS = MAX_OUTPUT_TOKENS_CAP;
+/** Bound on escalation attempts per transform (#125) — caps latency/cost on a page that won't fit even at the largest model's max (then surfaces an honest `transform_truncated`). */
+const MAX_TRANSFORM_ATTEMPTS = 5;
 
 export class ModelRouter implements ModelRouterPort {
   private readonly candidatesByKey: Map<string, LlmModelCandidate>;
@@ -39,7 +38,7 @@ export class ModelRouter implements ModelRouterPort {
       || demotionOf(left, this.health) - demotionOf(right, this.health)
       || staticRank(left) - staticRank(right)
       || left.model.localeCompare(right.model));
-    return { provider: best.provider, model: best.model, free: best.free };
+    return { provider: best.provider, model: best.model, free: best.free, maxOutputTokens: best.maxOutputTokens, contextTokens: best.contextTokens };
   }
 
   feedback(score: ModelScore): void {
@@ -49,23 +48,6 @@ export class ModelRouter implements ModelRouterPort {
   }
 }
 
-/** Configured order plus the sticky demotion offset (0 healthy / 1 demoted one rank). */
-function effectiveOrder(candidate: LlmModelCandidate, health: Map<string, ModelHealth>): number {
-  return candidate.order + (health.get(candidate.model)?.demotion ?? 0);
-}
-
-/** Sticky demotion (0/1) — the load-bearing tiebreak after effective order. */
-function demotionOf(candidate: LlmModelCandidate, health: Map<string, ModelHealth>): number {
-  return health.get(candidate.model)?.demotion ?? 0;
-}
-
-/** Principled tiebreak for equal effective orders: free before paid before local (+ cost weight).
- *  The old rank() MINUS the dead feedback-penalty term (the EMA is gone). */
-function staticRank(candidate: LlmModelCandidate): number {
-  const localPenalty = candidate.local ? 0.45 : 0;
-  const paidPenalty = candidate.free ? 0 : 0.25;
-  return localPenalty + paidPenalty + candidate.costWeight;
-}
 
 export interface LlmTransformerOptions {
   router: ModelRouterPort;
@@ -110,15 +92,21 @@ export class LlmTransformer implements TransformPort {
       localOnly: sensitive.sensitive,
     };
 
-    // Try candidate models in router-ranked order; on a provider error (dead model,
-    // 429 rate-limit, timeout, empty completion) record a hard_fail (sticky demotion
-    // across requests) and try the next candidate. Only degrade after every candidate
-    // is exhausted.
+    // Candidate loop (#125). On a provider ERROR (throw/empty) push the model to `tried` +
+    // try the next. On TRUNCATION (finish_reason=length, non-empty) keep the longest result +
+    // ESCALATE the budget — but ONLY for an omitted/default budget (an explicit caller budget
+    // is a hard ceiling, never exceeded — codex P2). Bounded by remaining context + an attempt
+    // cap; the best surfaces honestly as info.truncated instead of being thrown away.
     const tried: string[] = [];
     let lastError: Error | undefined;
-    while (true) {
-      const pick = this.router.pick(input.mode, inTokens, { ...baseOptions, exclude: tried });
+    let best: TransformResult | undefined;
+    let budgetFloor = input.budget; // grows on truncation
+    let attempts = 0;
+    while (attempts++ < MAX_TRANSFORM_ATTEMPTS) {
+      // Reserve what this attempt will request so a long page is not rejected for a model MAX it won't use (codex P2 #125).
+      const pick = this.router.pick(input.mode, inTokens, { ...baseOptions, exclude: tried, reserveOutputTokens: budgetFloor ?? this.maxOutputTokensDefault });
       if (pick.provider === "none" || !pick.model) {
+        if (best) return best; // every candidate truncated — best + truncated advisory
         if (tried.length === 0) return rawFallback(input.content, pick.reason ?? "unconfigured");
         throw new TransformError(
           "transform_provider_failed",
@@ -126,11 +114,10 @@ export class LlmTransformer implements TransformPort {
         );
       }
       const provider = this.providers[pick.provider];
-      if (!provider) {
-        tried.push(pick.model);
-        continue;
-      }
+      if (!provider) { tried.push(pick.model); continue; }
 
+      const modelMax = pick.maxOutputTokens ?? MAX_OUTPUT_TOKENS_CAP;
+      const cap = resolveOutputCap(budgetFloor, this.maxOutputTokensDefault, modelMax);
       const started = this.nowMs();
       let generated: LlmGenerateResult;
       try {
@@ -142,7 +129,7 @@ export class LlmTransformer implements TransformPort {
           schema: input.schema,
           budget: input.budget,
           messages,
-          maxOutputTokens: resolveOutputCap(input.budget, this.maxOutputTokensDefault),
+          maxOutputTokens: cap,
         });
         // #48 B: an empty completion (DeepSeek capacity pressure) is a failure —
         // retry the next candidate (qwen) with `fallbackFrom`, instead of failing
@@ -160,7 +147,7 @@ export class LlmTransformer implements TransformPort {
 
       const latencyMs = elapsed(started, this.nowMs());
       const finalized = finalize(input, generated.text, pick.model, this.router, generated.outTokens);
-      return {
+      const result: TransformResult = {
         result: finalized.result,
         info: {
           provider: pick.provider,
@@ -171,11 +158,24 @@ export class LlmTransformer implements TransformPort {
           latencyMs,
           costUsd: generated.costUsd,
           ...(finalized.schemaIssue ? { schemaIssue: finalized.schemaIssue } : {}),
-          // tried holds every candidate that failed before this one succeeded.
           ...(tried.length > 0 ? { fallbackFrom: tried.join(", ") } : {}),
+          ...(generated.truncated ? { truncated: true } : {}),
         },
       };
+      if (!generated.truncated) return result; // complete
+      if (!best || result.result.length > best.result.length) best = result; // keep longest truncation
+      if (typeof input.budget === "number" && input.budget > 0) return best; // explicit caller budget is a hard ceiling — do not escalate past it (codex P2 #125)
+      // Escalate to the model's full cap, bounded by remaining context so a long page isn't rejected for a model MAX the context can't hold (codex P2 #125).
+      const ceiling = Math.min(modelMax, (pick.contextTokens ?? MAX_OUTPUT_TOKENS_CAP) - inTokens);
+      if (cap < ceiling) budgetFloor = ceiling; // more headroom — retry same model at the ceiling
+      else tried.push(pick.model); // model maxed or context-bound — next candidate (higher cap)
     }
+    // Attempt cap exhausted. If a truncated `best` exists, surface it (+ truncated advisory);
+    // if every attempt hard-failed, throw the accumulated failure so the use-case surfaces
+    // transform_provider_failed rather than a silent raw fallback (codex P2 #125).
+    if (best) return best;
+    if (tried.length > 0) throw new TransformError("transform_provider_failed", errorMessage(lastError, `All ${tried.length} candidate model(s) failed`));
+    return rawFallback(input.content, "transform_unavailable");
   }
 
   private nowMs(): number {
@@ -207,7 +207,11 @@ function fits(candidate: LlmModelCandidate, task: RouterTask, inputTokens: numbe
   if (options.exclude && options.exclude.includes(candidate.model)) return false;
   if (options.localOnly && !candidate.local) return false;
   if (task === "extract" && !candidate.supportsJson) return false;
-  return candidate.contextTokens >= inputTokens + RESERVED_OUTPUT_TOKENS;
+  // Reserve what will be requested (passed cap clamped to the model max), not the bare
+  // model max, so a long page with a small/default budget isn't rejected for headroom
+  // it won't use (codex P2 #125). Falls back to the model max for direct pick callers.
+  const reserve = options.reserveOutputTokens !== undefined ? Math.min(options.reserveOutputTokens, candidate.maxOutputTokens) : candidate.maxOutputTokens;
+  return candidate.contextTokens >= inputTokens + reserve;
 }
 
 function noneReason(options: ModelPickOptions, configuredCount: number): string {

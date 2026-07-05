@@ -16,12 +16,24 @@ export interface ModelPickOptions {
   localOnly?: boolean;
   /** Models already tried in this transform — excluded so the router returns the next candidate. */
   exclude?: string[];
+  /** Output tokens the caller will actually request from the picked model (the resolved cap).
+   *  Reserved in the context-fit check so a long page with a small budget is not rejected for
+   *  the model's MAX output (qwen 65K) it will never use. Defaults to the model's max (#125). */
+  reserveOutputTokens?: number;
 }
 
 export interface ModelPick {
   provider: RouterProvider;
   model?: string;
   free?: boolean;
+  /** The picked model's max output tokens (provider limit). The transformer clamps
+   *  the budget to this so generation is bounded by what the model can actually
+   *  produce (#125). Absent when provider is "none". */
+  maxOutputTokens?: number;
+  /** The picked model's context window (tokens). Bounds truncation escalation by the
+   *  remaining context (context − input) so a long page isn't rejected for a model MAX
+   *  the context can't hold (#125). Absent when provider is "none". */
+  contextTokens?: number;
   /** Populated when provider is "none" (degrade to raw). */
   reason?: string;
 }

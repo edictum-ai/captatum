@@ -72,9 +72,11 @@ export const config = {
     },
     ollamaModel: () => envString("OLLAMA_MODEL", "llama3.1"),
     timeoutMs: () => envPositiveInteger("TRANSFORM_TIMEOUT_MS", 45000),
-    /** #3: default output-token cap when the caller omits `budget` (bounds paid
-     *  generation per call). Clamped upstream to MAX_OUTPUT_TOKENS_CAP. */
-    maxOutputTokensDefault: () => envPositiveInteger("TRANSFORM_MAX_OUTPUT_TOKENS", 2000),
+    /** #3: default output-token budget when the caller omits `budget` (bounds paid
+     *  generation per call). Clamped upstream to the chosen model's max (#125).
+     *  Raised 2 000 → 8 000: 2 K was low enough that content-rich pages silently
+     *  truncated. */
+    maxOutputTokensDefault: () => envPositiveInteger("TRANSFORM_MAX_OUTPUT_TOKENS", 8000),
     freeFirst: true,
   },
   render: {

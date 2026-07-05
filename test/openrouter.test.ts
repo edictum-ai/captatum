@@ -41,7 +41,16 @@ test("parseOpenRouterCompletion returns text + usage on success", () => {
     choices: [{ message: { content: "hello world" }, finish_reason: "stop" }],
     usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.001 },
   });
-  assert.deepEqual(r, { text: "hello world", inTokens: 10, outTokens: 2, costUsd: 0.001 });
+  assert.deepEqual(r, { text: "hello world", truncated: false, inTokens: 10, outTokens: 2, costUsd: 0.001 });
+});
+
+test("parseOpenRouterCompletion flags truncation on finish_reason=length (#125)", () => {
+  const r = parseOpenRouterCompletion({
+    choices: [{ message: { content: "cut off mid-" }, finish_reason: "length" }],
+    usage: { prompt_tokens: 10, completion_tokens: 2 },
+  });
+  assert.equal(r.truncated, true);
+  assert.equal(r.text, "cut off mid-");
 });
 
 test("parseOpenRouterCompletion throws 'empty completion' when content is absent", () => {
