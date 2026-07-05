@@ -152,6 +152,18 @@ the contract reference; this file is the security reasoning.
   `psl` to a 15-day-cleared release bumped in routine refresh; the fetcher SSRF guard still
   validates the target IP per hop; no credentials are forwarded; scope is bounded to one
   registrable domain regardless. `localhost`/IP-literal pages never match (fail-closed).
+- **Deployment egress — the datacenter-ASN wall.** A hosted deployment on a cloud
+  datacenter IP (AWS/GCP/Azure) loses to a plain residential webfetch on Cloudflare/anti-bot-
+  protected sites (Notion, cppreference, npmjs, Cursor): those sites challenge/slow
+  **datacenter ASNs**, so captatum's fetch/render fails (`captcha`, `render_empty`, error
+  boundary). captatum's TLS fingerprint is HTTP-only (HTTPS has no fingerprint), and the
+  challenge is upstream of the fingerprint anyway — the lever is the **egress IP**, a
+  deployment property, not captatum code. captatum renders these same sites correctly from a
+  residential IP (verified, same Chromium). Mitigated by: deploy on a **residential-IP host**
+  (always-on Mac mini / home server) behind a Cloudflare Tunnel — the egress is residential
+  and not challenged; the `FetcherPort` SSRF guard is unchanged. Full analysis + evidence +
+  trade-offs: [`docs/deployment-egress.md`](deployment-egress.md); deploy guide:
+  [`deploy/mac-mini.md`](../deploy/mac-mini.md).
 - The Transform router egresses fetched content to OpenRouter. This is acceptable
   for **public** pages. **Non-public content** (authed/signed URLs, internal hosts)
   must route to local Ollama or skip the transform; detection is signal-based, not
