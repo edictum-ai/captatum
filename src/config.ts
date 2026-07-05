@@ -87,6 +87,12 @@ export const config = {
     /** DOS-2: max concurrent Tier-3 renders. Chromium is the expensive resource, so
      * bound it independently of the global admission cap (default 2). */
     maxConcurrentRenders: () => envPositiveInteger("CAPTATUM_MAX_CONCURRENT_RENDERS", 2),
+    /** #111: per-render cap on a forwarded POST body (bytes). Never truncates — a body over
+     *  the cap is aborted (a half JSON body 400s). 1 MiB accommodates large Notion pages. */
+    postMaxBytes: () => envPositiveInteger("CAPTATUM_RENDER_POST_MAX_BYTES", 1048576),
+    /** #111: per-render concurrency cap on concurrent first-party POSTs (Chromium's per-origin
+     *  limit). A POST over the cap is aborted (tryAcquire, never awaited) as render_concurrency_limit. */
+    postConcurrency: () => envPositiveInteger("CAPTATUM_RENDER_POST_CONCURRENCY", 6),
   },
   tidb: {
     host: () => envString("TIDB_HOST", ""),

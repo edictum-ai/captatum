@@ -58,6 +58,10 @@ export interface PlaywrightRequest {
   isNavigationRequest?(): boolean;
   /** The frame that issued the request; === page.mainFrame() for top-level requests. */
   frame?(): PlaywrightFrame;
+  /** POST body bytes (#111 route gate); null when the request has no body. */
+  postDataBuffer?(): Buffer | null;
+  /** Request headers (#111 Content-Type allowlist + advisory Content-Length pre-check). */
+  headers?(): Record<string, string>;
 }
 
 export interface PlaywrightResponse {

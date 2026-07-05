@@ -56,7 +56,8 @@ the contract reference; this file is the security reasoning.
   - manual redirects re-validated each hop, `maxHops=5`.
   - decompressed-byte cap; `AbortController` timeout.
 - Tier-3 in-browser SSRF: `page.route` intercepts every browser request before
-  the browser can egress, and **every non-aborted GET is fulfilled through
+  the browser can egress, and **every non-aborted GET — and a first-party POST
+  (same registrable domain, fetch/XHR only — #111) — is fulfilled through
   `FetcherPort`** (`route.fulfill`, never `route.continue`) — the browser never
   resolves or connects on its own, so DNS-rebinding and the redirect TOCTOU are
   structurally impossible and every redirect hop is re-validated (`maxHops`).
@@ -131,6 +132,24 @@ the contract reference; this file is the security reasoning.
 
 - Tier-3 is the maximal SSRF surface. The in-browser controls are mandatory, not
   advisory; a Tier-3 path that drops any of them is a release blocker.
+- **TIER3-POST — page-authored upstream egress (#111).** Tier-3 now forwards a
+  first-party POST body (Notion/Jira hydrate via POST), which is untrusted page content
+  egressed to a first-party endpoint. A compromised/XSSed page on victim.com could amplify
+  crafted POST bytes (up to `CAPTATUM_RENDER_POST_MAX_BYTES` × `CAPTATUM_RENDER_POST_CONCURRENCY`
+  permits × concurrent renders) to its own origin's side-effecting/CSRF endpoints. Bounded by:
+  the registrable-domain first-party gate (`isSameRegistrableDomain`, PSL-aware via `psl`);
+  POST-only (`PUT`/`PATCH`/`DELETE` abort); the header allowlist (only `Content-Type` is
+  forwarded — never `Cookie`/`Authorization`/`Origin`/`Referer`/`Content-Length`); the per-POST
+  body cap (never truncated); the essential render-byte pool accounting (body reserved at
+  dispatch, released on reject); and the per-render POST semaphore. The fetcher still
+  SSRF-validates the target IP per hop; the body is bytes on a guard-pinned connection.
+- **PSL data lag (#111).** Multi-tenant suffix recognition depends on the pinned `psl`
+  release's data. A multi-tenant suffix added to the upstream Public Suffix List after the
+  pinned release is not yet recognized, so two tenants on that suffix would be treated as the
+  same registrable domain (cross-tenant POST egress within the suffix). Mitigated by: pinning
+  `psl` to a 15-day-cleared release bumped in routine refresh; the fetcher SSRF guard still
+  validates the target IP per hop; no credentials are forwarded; scope is bounded to one
+  registrable domain regardless. `localhost`/IP-literal pages never match (fail-closed).
 - The Transform router egresses fetched content to OpenRouter. This is acceptable
   for **public** pages. **Non-public content** (authed/signed URLs, internal hosts)
   must route to local Ollama or skip the transform; detection is signal-based, not

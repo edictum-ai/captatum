@@ -57,10 +57,17 @@ class WreqTier1Requester implements HttpRequester {
         timeout: input.timeoutMs,
         compress: false,
         cookieMode: "ephemeral",
+        method: input.method ?? "GET",
+        // body forwarded only when present (POST); wreq sends it as a buffered write so the
+        // server sees a real Content-Length. cookieMode stays ephemeral — no auth/cookie leak.
+        ...(input.body !== undefined ? { body: input.body } : {}),
         headers: {
           Host: input.hostHeader,
           "Accept-Encoding": "gzip, br, deflate",
           "User-Agent": "captatum/0.1",
+          ...(input.body !== undefined && input.requestContentType
+            ? { "Content-Type": input.requestContentType }
+            : {}),
         },
       });
 

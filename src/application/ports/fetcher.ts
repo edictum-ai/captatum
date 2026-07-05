@@ -7,6 +7,21 @@ export interface FetcherOptions {
   maxHops: number;
 }
 
+/**
+ * Optional non-GET request descriptor — a SEPARATE argument rather than a field on
+ * FetcherOptions so the (shared, immutable) opts can never carry a method/body that
+ * leaks across requests. Today only POST is supported (#111): a Tier-3 in-browser POST
+ * the route gate has authorized as first-party is forwarded through FetcherPort with the
+ * body bytes + an allowlisted Content-Type. `method`/`body` apply to the INITIAL request
+ * only — `fetchWithRedirects` reverts to GET + no body on any 3xx (incl. 307/308) so the
+ * body never reaches a redirect target (SSRF/data-leak guard).
+ */
+export interface PostInit {
+  method: "POST";
+  body: Uint8Array;
+  requestContentType?: string;
+}
+
 export interface Redirect {
   url: string;
   status: number;
@@ -66,5 +81,6 @@ export interface FetcherPort {
   fetchGuarded(
     url: string,
     opts: FetcherOptions,
+    postInit?: PostInit,
   ): Promise<FetcherResult | RejectResult>;
 }

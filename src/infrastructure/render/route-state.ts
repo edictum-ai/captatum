@@ -1,11 +1,13 @@
 import type { FetcherResult, RejectResult } from "../../application/ports/fetcher.ts";
 import type { RenderAction, RenderInput } from "../../application/ports/renderer.ts";
-import { isAdTrackerHost, isFirstPartyHost } from "../../domain/adblock.ts";
+import { registrableDomain } from "../../domain/registrable-domain.ts";
+import { config } from "../../config.ts";
 import type { PlaywrightFrame, PlaywrightRequest, PlaywrightRoute } from "./playwright-types.ts";
 import { safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { FetcherRouteFulfiller, type RouteFulfiller } from "./route-fulfill.ts";
-
-const BLOCKED_TYPES = new Set(["image", "font", "media"]);
+import { planPostForward } from "./post-forward.ts";
+import { Semaphore } from "./semaphore.ts";
+import { hostnameOf, isNavigation, shouldAbortWithoutBody } from "./route-helpers.ts";
 
 /** Render resource types the page's CLIENT APP needs to load, or it throws a
  *  client-side exception (Next.js "Application error: a client-side exception has
@@ -48,6 +50,9 @@ export class RenderRouteState {
   readonly guard: BrowserUrlGuard;
   private readonly fulfiller: RouteFulfiller;
   private readonly mainHost: string;
+  private readonly mainRegistrableDomain: string | null;
+  private readonly postMaxBytes: number;
+  private readonly postSemaphore: Semaphore;
   status = 200;
   finalUrl = "";
   redirects: FetcherResult["redirects"] = [];
@@ -67,6 +72,11 @@ export class RenderRouteState {
     this.actions = actions;
     this.guard = guard;
     this.mainHost = hostnameOf(input.url);
+    // Computed ONCE from the page URL; NEVER recomputed on a same-tab navigation — the
+    // POST first-party scope never expands mid-render (a security property, not accident).
+    this.mainRegistrableDomain = registrableDomain(this.mainHost);
+    this.postMaxBytes = config.render.postMaxBytes();
+    this.postSemaphore = new Semaphore(config.render.postConcurrency());
     this.fulfiller = new FetcherRouteFulfiller(input.fetcher, {
       maxBytes: input.maxBytes,
       timeoutMs: input.timeoutMs,
@@ -106,7 +116,7 @@ export class RenderRouteState {
       return this.abortBlockedType(route, url, resourceType);
     }
     if (!mainFrameNav && request.method() !== "GET") {
-      return this.abort(route, url, resourceType, "unsupported_browser_method");
+      return this.handleNonGet(route, request, url, resourceType);
     }
     // Once a pool is blown, subsequent resources in THAT pool are aborted before any
     // network. Essentials and non-essentials have separate pools, so a blown
@@ -171,6 +181,52 @@ export class RenderRouteState {
     });
   }
 
+  /** #111: a non-GET Tier-3 request. Only a first-party POST (fetch/xhr) forwards through FetcherPort;
+   *  everything else aborts. The body is reserved against the ESSENTIAL pool at dispatch + released on
+   *  reject (so N rejected POSTs can't blow the pool); concurrency is bounded by a tryAcquire semaphore. */
+  private async handleNonGet(route: PlaywrightRoute, request: PlaywrightRequest, url: string, resourceType: string): Promise<void> {
+    const h = request.headers?.() ?? {};
+    const plan = planPostForward({
+      method: request.method(),
+      resourceType,
+      url,
+      body: request.postDataBuffer?.() ?? null,
+      contentType: h["content-type"],
+      contentLength: h["content-length"],
+      mainRegistrableDomain: this.mainRegistrableDomain,
+      maxBytes: this.postMaxBytes,
+    });
+    if (plan.kind === "abort") return this.abort(route, url, resourceType, plan.reason);
+    // POST is essential: once the essential pool is blown (the crossing POST was fulfilled), later
+    // essentials abort — same rule as the GET essential path, keeping total egress bounded.
+    if (this.essentialBudgetExceeded) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
+    if (!this.postSemaphore.tryAcquire()) return this.abort(route, url, resourceType, "render_concurrency_limit");
+    // Reserve the body at dispatch (before the await) so N concurrent POSTs each (cap-1) bytes
+    // cannot bypass the pool. Released on reject (no completed egress); the response is added on fulfill.
+    this.essentialBytes += plan.body.byteLength;
+    try {
+      const outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit);
+      if (outcome.kind === "reject") {
+        this.essentialBytes -= plan.body.byteLength;
+        return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
+      }
+      // Re-check after resolve: a concurrent essential may have blown the pool in flight. The crossing
+      // POST is fulfilled (aborting a body-bearing POST mid-load 400s the page); later ones abort.
+      if (this.essentialBytes + outcome.body.byteLength > this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER) {
+        this.essentialBudgetExceeded = true;
+      }
+      this.essentialBytes += outcome.body.byteLength;
+      this.actions.push({ type: "request-forwarded-post", outcome: "ok", url: safeRenderUrl(url), resourceType, method: "POST", bodyBytes: plan.body.byteLength, responseBytes: outcome.body.byteLength });
+      await route.fulfill({
+        status: outcome.status,
+        body: outcome.body,
+        ...(outcome.contentType ? { contentType: outcome.contentType } : {}),
+      });
+    } finally {
+      this.postSemaphore.release();
+    }
+  }
+
   private async abortBlockedType(
     route: PlaywrightRoute,
     url: string,
@@ -191,36 +247,4 @@ export class RenderRouteState {
     this.actions.push({ type, reason, url: safeRenderUrl(url), resourceType });
     await route.abort("blockedbyclient");
   }
-}
-
-/** Body types we never fetch, and ad/tracker subresources, are aborted before any
- *  network. Adblock is THIRD-PARTY only: the fetched page's own (first-party) host
- *  is exempt so a blocklisted vendor apex that IS the requested page (amplitude.com,
- *  hotjar.com, …) still loads. The main-frame navigation is exempted by the caller.
- *  Like blocked body types, an aborted ad/tracker URL is still P1/DNS private-IP-
- *  checked (abortBlockedType) so the action log records a private target. */
-function shouldAbortWithoutBody(url: string, resourceType: string, mainHost: string): boolean {
-  if (BLOCKED_TYPES.has(resourceType)) return true;
-  if (isFirstPartyHost(hostnameOf(url), mainHost)) return false; // first-party subresource
-  return isAdTracker(url);
-}
-
-function isAdTracker(input: string): boolean {
-  try {
-    return isAdTrackerHost(new URL(input).hostname);
-  } catch {
-    return true;
-  }
-}
-
-function hostnameOf(url: string): string {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-function isNavigation(request: { isNavigationRequest?: () => boolean; resourceType(): string }): boolean {
-  return request.isNavigationRequest?.() ?? request.resourceType() === "document";
 }

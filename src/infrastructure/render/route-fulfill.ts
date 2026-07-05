@@ -2,6 +2,7 @@ import type {
   FetcherOptions,
   FetcherPort,
   FetcherResult,
+  PostInit,
   Redirect,
   RejectResult,
 } from "../../application/ports/fetcher.ts";
@@ -42,7 +43,7 @@ const DEFAULT_MIME: Record<string, string> = {
  * content-encoding echo, which would make the browser double-decompress).
  */
 export interface RouteFulfiller {
-  resolve(url: string, resourceType: string): Promise<FulfillOutcome>;
+  resolve(url: string, resourceType: string, postInit?: PostInit): Promise<FulfillOutcome>;
 }
 
 export class FetcherRouteFulfiller implements RouteFulfiller {
@@ -54,8 +55,10 @@ export class FetcherRouteFulfiller implements RouteFulfiller {
     this.opts = opts;
   }
 
-  async resolve(url: string, resourceType: string): Promise<FulfillOutcome> {
-    const result = await this.fetcher.fetchGuarded(url, this.opts);
+  async resolve(url: string, resourceType: string, postInit?: PostInit): Promise<FulfillOutcome> {
+    // `this.opts` stays immutable GET-shaped; `postInit` is a per-call descriptor so a
+    // POST-then-GET sequence can never leak method/body into the next GET subresource (#111 D1).
+    const result = await this.fetcher.fetchGuarded(url, this.opts, postInit);
     if ("rejected" in result) return { kind: "reject", reject: result };
     let body: Uint8Array;
     try {

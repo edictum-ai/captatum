@@ -14,13 +14,21 @@ export type RenderActionType =
   | "resource-aborted"
   | "request-blocked"
   | "websocket-closed"
-  | "download-blocked";
+  | "download-blocked"
+  | "request-forwarded-post";
 
 export interface RenderAction {
   type: RenderActionType;
-  reason: string;
+  /** Optional for forwarded actions (a forwarded POST has no abort reason); required for blocks. */
+  reason?: string;
   url?: string;
   resourceType?: string;
+  /** Outcome of the action — defaults to "block" for back-compat (#111 provenance for forwards). */
+  outcome?: "ok" | "block";
+  /** Provenance for a forwarded POST (request-forwarded-post): the page-authored egress. */
+  method?: string;
+  bodyBytes?: number;
+  responseBytes?: number;
 }
 
 export interface RenderSuccess {
