@@ -5,7 +5,7 @@ import { config } from "../../config.ts";
 import type { PlaywrightFrame, PlaywrightRequest, PlaywrightRoute } from "./playwright-types.ts";
 import { safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { FetcherRouteFulfiller, type RouteFulfiller } from "./route-fulfill.ts";
-import { CORS_ALLOW_ORIGIN, planOptionsPreflight, planPostForward } from "./post-forward.ts";
+import { authorizePostForward, CORS_ALLOW_ORIGIN, materializePostForward, planOptionsPreflight } from "./post-forward.ts";
 import { Semaphore } from "./semaphore.ts";
 import { hostnameOf, isNavigation, shouldAbortWithoutBody } from "./route-helpers.ts";
 
@@ -187,29 +187,29 @@ export class RenderRouteState {
       return;
     }
     const h = request.headers?.() ?? {};
-    const plan = planPostForward({
-      method: request.method(),
-      resourceType,
-      url,
-      body: request.postDataBuffer?.() ?? null,
-      contentType: h["content-type"],
-      contentLength: h["content-length"],
-      mainRegistrableDomain: this.mainRegistrableDomain,
-      maxBytes: this.postMaxBytes,
+    // Authorize (gate + Content-Length) BEFORE reading the body — reject an oversized DECLARED body without materializing it (#111 codex P1).
+    const auth = authorizePostForward({
+      method: request.method(), resourceType, url,
+      contentLength: h["content-length"], mainRegistrableDomain: this.mainRegistrableDomain, maxBytes: this.postMaxBytes,
     });
+    if (auth.kind === "abort") return this.abort(route, url, resourceType, auth.reason);
+    const plan = materializePostForward({ body: request.postDataBuffer?.() ?? null, contentType: h["content-type"], maxBytes: this.postMaxBytes });
     if (plan.kind === "abort") return this.abort(route, url, resourceType, plan.reason);
-    // POST is essential: once the essential pool is blown, later essentials abort (total egress bounded).
     if (this.essentialBudgetExceeded) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     if (!this.postSemaphore.tryAcquire()) return this.abort(route, url, resourceType, "render_concurrency_limit");
-    // Reserve the body at dispatch (before the await) so N concurrent POSTs can't bypass the pool; released on reject.
-    this.essentialBytes += plan.body.byteLength;
+    this.essentialBytes += plan.body.byteLength; // reserve at dispatch (before await); released on reject
     try {
       const outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit);
       if (outcome.kind === "reject") {
         this.essentialBytes -= plan.body.byteLength;
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
       }
-      // Re-check after resolve: a concurrent essential may have blown the pool in flight; the crossing POST is fulfilled, later ones abort.
+      // Re-check after resolve: a concurrent POST may have blown the pool in flight (#111 codex P2).
+      if (this.essentialBudgetExceeded) {
+        this.essentialBytes -= plan.body.byteLength;
+        return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
+      }
+      // The crossing POST marks the pool exceeded but is still fulfilled (aborting mid-load 400s the page).
       if (this.essentialBytes + outcome.body.byteLength > this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER) {
         this.essentialBudgetExceeded = true;
       }

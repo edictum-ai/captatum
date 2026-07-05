@@ -40,13 +40,16 @@ export type PostForwardPlan =
   | { kind: "forward"; body: Uint8Array; postInit: PostInit }
   | { kind: "abort"; reason: string };
 
-/** Decide whether a non-GET Tier-3 request forwards as a first-party POST, or aborts. The
- *  `unsupported_browser_method` reason covers every gate failure (non-POST, non-fetch/xhr,
- *  document, third-party) — one code, clean provenance, no fragmenting. */
-export function planPostForward(input: PostForwardInput): PostForwardPlan {
+/** Phase 1 (NO body read): the gate + the advisory Content-Length pre-check. Run BEFORE
+ *  `request.postDataBuffer()` so a page that DECLARES an oversized body is rejected without
+ *  materializing it into the Node process (memory-DoS guard — #111 codex P1). The gate also
+ *  runs first so a third-party POST is rejected before any cap signal. */
+export function authorizePostForward(input: {
+  method: string; resourceType: string; url: string;
+  contentLength?: string; mainRegistrableDomain: string | null; maxBytes: number;
+}): { kind: "proceed" } | { kind: "abort"; reason: string } {
   const host = hostnameOf(input.url);
-  // Gate FIRST. mainRegistrableDomain null (IP/localhost) -> isSameRegistrableDomain is false
-  // (null !== null is fail-closed), so the POST aborts rather than forwarding on an ambiguous host.
+  // Gate: mainRegistrableDomain null (IP/localhost) -> isSameRegistrableDomain false (fail-closed).
   if (
     input.method !== "POST"
     || !DATA_FETCH_TYPES.has(input.resourceType)
@@ -54,27 +57,24 @@ export function planPostForward(input: PostForwardInput): PostForwardPlan {
   ) {
     return { kind: "abort", reason: "unsupported_browser_method" };
   }
-  if (input.body === null) return { kind: "abort", reason: "unreadable_post_body" };
-
-  // Advisory Content-Length pre-check: reject a page that declares an oversized body before we
-  // would count its bytes against the pool. The hard cap below is authoritative either way.
   const declared = parseContentLength(input.contentLength);
   if (declared !== null && declared > input.maxBytes) {
     return { kind: "abort", reason: "request_body_too_large" };
   }
-  // Hard cap (NEVER truncate — a half JSON body 400s; a clean abort lets the page degrade).
-  if (input.body.byteLength > input.maxBytes) {
-    return { kind: "abort", reason: "request_body_too_large" };
-  }
-  // Content-Type allowlist validation: length cap (defense-in-depth) + no CRLF/NUL (header
-  // injection). Node's validateHeaderValue already rejects control bytes on the wire; this
-  // guards the value before it reaches the fetcher. Absent Content-Type is forwarded as-such.
+  return { kind: "proceed" };
+}
+
+/** Phase 2 (body read): null check + hard cap (NEVER truncate) + Content-Type validation. */
+export function materializePostForward(input: {
+  body: Uint8Array | null; contentType?: string; maxBytes: number;
+}): PostForwardPlan {
+  if (input.body === null) return { kind: "abort", reason: "unreadable_post_body" };
+  if (input.body.byteLength > input.maxBytes) return { kind: "abort", reason: "request_body_too_large" };
   if (input.contentType !== undefined) {
     if (input.contentType.length > 256 || /[\r\n\0]/.test(input.contentType)) {
       return { kind: "abort", reason: "invalid_post_header" };
     }
   }
-
   return {
     kind: "forward",
     body: input.body,
@@ -84,6 +84,15 @@ export function planPostForward(input: PostForwardInput): PostForwardPlan {
       ...(input.contentType !== undefined ? { requestContentType: input.contentType } : {}),
     },
   };
+}
+
+/** Convenience wrapper: authorize then materialize (for tests + callers that already hold the body).
+ *  The production path (RenderRouteState) calls the two phases separately so the body is NOT read
+ *  until `authorizePostForward` passes. */
+export function planPostForward(input: PostForwardInput): PostForwardPlan {
+  const auth = authorizePostForward(input);
+  if (auth.kind === "abort") return auth;
+  return materializePostForward(input);
 }
 
 function parseContentLength(raw: string | undefined): number | null {
@@ -115,7 +124,9 @@ export const CORS_ALLOW_ORIGIN: Record<string, string> = { "access-control-allow
 const CORS_PREFLIGHT_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "POST, OPTIONS",
-  "access-control-allow-headers": "content-type",
+  // `*` covers any Access-Control-Request-Headers (x-requested-with, tracing headers, …) without
+  // echoing attacker-controlled names. Valid: the POST carries no credentials (#111 codex P2).
+  "access-control-allow-headers": "*",
   "access-control-max-age": "600",
 };
 
