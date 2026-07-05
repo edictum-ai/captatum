@@ -152,19 +152,27 @@ function isHidden(attrs: AttributeMap, hiddenClasses: Set<string>, reactStreamin
     const disp = inlineDisplayValue(attrs.style);
     if (disp !== undefined) return disp === "none";
   }
+  // A display:none class hides regardless of the React boundary idiom — the browser's CSS keeps
+  // the element invisible even after the $RC swap removes the `hidden` attribute, so the boundary
+  // exemption must NOT skip the class check (#118 codex P2).
+  if (hasHiddenClass(attrs, hiddenClasses)) return true;
   if (attrs.hidden !== undefined) {
-    // React streaming-SSR boundary (`<div hidden id="S:N">`): real server-streamed
-    // content the browser reveals via the $RC/$RX swap — see REACT_BOUNDARY_ID above.
+    // React streaming-SSR boundary (`div hidden id="S:N"`): real server-streamed content the
+    // browser reveals via the $RC/$RX swap — see REACT_BOUNDARY_ID above. Reached only when no
+    // inline display:none + no display:none class authorized a hide first.
     if (reactStreaming && typeof attrs.id === "string" && REACT_BOUNDARY_ID.test(attrs.id)) {
       return false;
     }
     return true;
   }
   if (typeof attrs.display === "string" && attrs.display.trim().toLowerCase() === "none") return true;
-  if (hiddenClasses.size > 0 && typeof attrs.class === "string") {
-    for (const token of attrs.class.split(/\s+/)) {
-      if (hiddenClasses.has(token)) return true;
-    }
+  return false;
+}
+
+function hasHiddenClass(attrs: AttributeMap, hiddenClasses: Set<string>): boolean {
+  if (hiddenClasses.size === 0 || typeof attrs.class !== "string") return false;
+  for (const token of attrs.class.split(/\s+/)) {
+    if (hiddenClasses.has(token)) return true;
   }
   return false;
 }

@@ -877,6 +877,14 @@ test("stripHiddenSubtrees keeps React streaming-SSR boundary content (<div hidde
     /STILL HIDDEN/,
   );
 
+  // A display:none CLASS on a React boundary still hides it — the browser's CSS keeps the element
+  // invisible even after $RC removes the `hidden` attribute, so the boundary exemption must not
+  // skip the class check (#118 codex P2). hiddenClasses is collected from <style> upstream.
+  assert.doesNotMatch(
+    stripHiddenSubtrees('<div hidden id="S:1" class="hide">CLASS_HIDDEN</div><script>$RC("S:1")</script>', new Set(["hide"])),
+    /CLASS_HIDDEN/,
+  );
+
   // vscdn/Netflix config blob (`style="display:none"`, NOT a React boundary) stays hidden
   // even when a React swap marker is present elsewhere in the document.
   assert.doesNotMatch(
