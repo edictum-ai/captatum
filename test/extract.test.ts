@@ -1568,6 +1568,27 @@ test("selectMainContentHtml: prefers the FIRST <article> when there is no <main>
   assert.equal((main ?? "").includes("Author Bio"), false, "longer later sibling article displaced the primary article");
 });
 
+test("selectMainContentHtml: a substantially richer sibling <article> overrides a loading skeleton (#118)", () => {
+  // React streaming-SSR ships a short loading-skeleton <article> FIRST and the real streamed
+  // article as a later, far-richer sibling (docs.anthropic.com: skeleton ~175 chars vs real
+  // ~2901 chars, ~16x). First-article-wins would lock in the skeleton and return only "Loading..."
+  // text; SIBLING_ARTICLE_OVERRIDE_FACTOR (5x) lets the real article win. The modestly-longer
+  // author-bio sibling above (~2.4x) stays below the threshold, so #108's tie-break holds.
+  const skeleton = "<p>" + "Loading... ".repeat(5) + "</p>"; // ~55 chars, a minimal Suspense fallback
+  const realBody = "<h1>Real Streamed Content</h1>"
+    + "<p>This is the actual article body that React streams inside a Suspense boundary and reveals "
+    + "after hydration. It carries the page's real prose — many sentences of genuine content that the "
+    + "browser unveils once the boundary completes, far more than the loading placeholder above. "
+    + "Captatum recognizes the streaming idiom at Tier-1 so this content is extracted without a render. "
+    + "The real streamed article is substantially richer than the skeleton placeholder, so the "
+    + "sibling-override factor lets it win the article pick instead of locking in the loading text. "
+    + "This mirrors docs.anthropic.com where the boundary article is roughly sixteen times richer.</p>";
+  const html = "<html><body><article>" + skeleton + "</article><article>" + realBody + "</article></body></html>";
+  const main = selectMainContentHtml(html);
+  assert.match(main ?? "", /Real Streamed Content/);
+  assert.equal((main ?? "").includes("Loading..."), false, "the substantially richer real article must override the skeleton");
+});
+
 test("selectMainContentHtml: empty <main> shell scopes to empty so chrome doesn't mask a needed render (#108, codex P2)", () => {
   // Client-rendered SPA shell: an empty <main id=root> (the render target) with header/footer
   // chrome OUTSIDE it. Scoping to the empty <main> leaves textLength 0 so the shell-gate escalates
