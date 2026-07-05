@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.0] — 2026-07-05
+
+Two coverage fixes closing the remaining dev-docs gaps from the 0.9.0/0.10.0 diagnosis: POST-data SPAs that hydrate via a first-party POST (Notion, Jira) and React streaming-SSR pages whose article body lives in a hidden Suspense boundary (Anthropic docs). Both codex-reviewed across multiple rounds.
+
+- **feat(tier3): forward first-party POST + PSL-aware first-party gate (#111)** — Notion (`POST /api/v3/syncRecordValues`) and Jira (`api.atlassian.com` flags + `developer.atlassian.com` cookie-integrator) hydrate via a first-party POST; Tier-3 aborted every non-GET so they returned `render_empty`. Now forwards authorized first-party POSTs through `FetcherPort` so they render. `PostInit` is a separate 3rd arg to `fetchGuarded` (FetcherOptions stays immutable GET-shaped — the route handler fires per-subresource, so shared mutable opts would leak method into the next GET). Redirect body-drop (any 3xx incl. 307/308 reverts to GET + no body); POST-only; header allowlist (Content-Type only — never Cookie/Auth/Origin/Referer/Content-Length); body cap + release-on-reject essential-pool accounting; per-render POST semaphore. The first-party gate is PSL-aware via `psl` (full PSL incl. private domains — `tldts` was rejected, it collapses `github.io` cross-tenant). CORS for same-registrable cross-origin POSTs (Jira): a synthesized permissive OPTIONS preflight + `Access-Control-Allow-Origin` on the POST response (captatum is its own controlled fetcher; the POST carries no credentials). New runtime dep `psl@1.15.0` (MIT, the first `src/domain` third-party import).
+- **fix(extract): recognize React streaming-SSR boundaries as visible (#118)** — React 18+ streams a boundary's real content inside `<div hidden id="S:N">` + a `$RC("…","S:N")` completion call that removes `hidden` after hydration. The hidden-subtree stripper treated these as hidden config blobs and dropped them, so Anthropic/Next.js docs returned only cookie/consent text (a false-positive Tier-1 "success"). A boundary is now un-hidden only when a `$RC` call TARGETS its id (not `$RS`/`$RX`/`$RT`; not a document-global flag), threaded from the full page so a scoped fragment's missing `$RC` script doesn't under-detect; `display:none` classes/inline styles still win. Live: docs.anthropic.com 0 bytes (cookie-text-only) → 2901 bytes of the real article, no render needed.
+
+Checks: `pnpm run check` + 478 unit + 50 integration fixture tests green.
+
 ## [0.10.0] — 2026-07-05
 
 Closes three of the four reliability gaps the 0.9.0 cross-model benchmark + 5-agent failure diagnosis filed (#108–#111). Three extraction/render fixes, all backward-compatible; each codex-reviewed. (#111 — first-party POST forwarding for Notion-style SPAs — is designed and deferred to 0.11.0; it touches the SSRF-critical egress path and warrants its own focused PR.)
