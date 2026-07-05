@@ -197,15 +197,15 @@ export class RenderRouteState {
     if (plan.kind === "abort") return this.abort(route, url, resourceType, plan.reason);
     if (this.essentialBudgetExceeded) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     if (!this.postSemaphore.tryAcquire()) return this.abort(route, url, resourceType, "render_concurrency_limit");
-    this.essentialBytes += plan.body.byteLength; // reserve at dispatch (before await); released on reject
+    this.essentialBytes += plan.body.byteLength; // reserve at dispatch; released on reject
+    if (this.essentialBytes > this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER) this.essentialBudgetExceeded = true; // crossing reservation marks the pool blown synchronously so concurrent early-checks see it (#111 codex P2)
     try {
       const outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit);
       if (outcome.kind === "reject") {
         this.essentialBytes -= plan.body.byteLength;
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
       }
-      // Re-check after resolve: a concurrent POST may have blown the pool in flight (#111 codex P2).
-      if (this.essentialBudgetExceeded) {
+      if (this.essentialBudgetExceeded) { // a concurrent POST may have blown the pool in flight (#111 codex P2)
         this.essentialBytes -= plan.body.byteLength;
         return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
       }
@@ -215,7 +215,7 @@ export class RenderRouteState {
       }
       this.essentialBytes += outcome.body.byteLength;
       this.actions.push({ type: "request-forwarded-post", outcome: "ok", url: safeRenderUrl(url), resourceType, method: "POST", bodyBytes: plan.body.byteLength, responseBytes: outcome.body.byteLength });
-      // Add ACAO so the in-render browser's CORS check admits the cross-origin POST response (#111 codex P1).
+      // ACAO:* admits the cross-origin POST response (#111 codex P1). Credentialed CORS (credentials:"include") would need the Origin echoed — known limitation (rare; cookies stripped).
       await route.fulfill({
         status: outcome.status,
         body: outcome.body,
