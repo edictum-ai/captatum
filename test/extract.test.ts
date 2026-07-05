@@ -849,6 +849,45 @@ test("stripHiddenSubtrees drops display:none / hidden subtrees (single pass, O(n
   assert.equal(stripHiddenSubtrees("<p>visible</p>"), "<p>visible</p>");
 });
 
+test("stripHiddenSubtrees keeps React streaming-SSR boundary content (<div hidden id=\"S:N\"> + $RC/$RX swap)", () => {
+  // Real React 18+ streaming: the server ships a boundary's real content INSIDE a
+  // `hidden` div, plus a `$RC`/`$RX` swap script that removes `hidden` after hydration.
+  // This IS real page content the browser reveals — NOT a hidden config blob. Regression
+  // (Anthropic/Next.js docs): the article body lived in the hidden boundary, so stripping
+  // it left only cookie/consent text → a false-positive Tier-1 "success" + no escalation.
+  const rc = '<div hidden id="S:1"><article><h1>The Real Article</h1><p>body</p></article></div>'
+    + '<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute("hidden")}</script>';
+  const kept = stripHiddenSubtrees(rc);
+  assert.match(kept, /The Real Article/, "React boundary content is KEPT (browser reveals it)");
+  assert.match(kept, /<article/, "the article element is preserved");
+  // $RX (error-boundary completion) is the same idiom.
+  assert.match(stripHiddenSubtrees('<div hidden id="S:2"><p>Recovered</p></div><script>$RX("S:2")</script>'), /Recovered/);
+  // Multiple boundaries all un-hidden.
+  const multi = stripHiddenSubtrees('<div hidden id="S:0">A</div><div hidden id="S:1">B</div><script>$RC("S:0")</script>');
+  assert.match(multi, /A/);
+  assert.match(multi, /B/);
+
+  // DUAL SIGNAL: without a swap marker in the document, a `hidden id="S:N"` div is NOT
+  // un-hidden — a non-React page that happens to use that id convention stays hidden.
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="S:1">SECRET</div><p>after</p>'), /SECRET/);
+
+  // Inline `display:none` on a React boundary still wins (an author who explicitly hid it).
+  assert.doesNotMatch(
+    stripHiddenSubtrees('<div hidden id="S:1" style="display:none">STILL HIDDEN</div><script>$RC("S:1")</script>'),
+    /STILL HIDDEN/,
+  );
+
+  // vscdn/Netflix config blob (`style="display:none"`, NOT a React boundary) stays hidden
+  // even when a React swap marker is present elsewhere in the document.
+  assert.doesNotMatch(
+    stripHiddenSubtrees('<code style="display:none">THEME_OPTIONS_SECRET</code><script>$RC("S:0")</script>'),
+    /THEME_OPTIONS_SECRET/,
+  );
+
+  // An id that is NOT a React boundary marker (not S:N) stays hidden even with a swap marker.
+  assert.doesNotMatch(stripHiddenSubtrees('<div hidden id="sidebar">SECRET</div><script>$RC("S:0")</script>'), /SECRET/);
+});
+
 test("stripHiddenSubtrees stays linear on a flood of hidden elements (per-subtree toLowerCase DoS)", () => {
   // Regression: an earlier version called html.toLowerCase() once per hidden subtree,
   // making `<span hidden>x</span>` floods O(n²) (~3.3s at 672k chars; ~7s at 1.5M).

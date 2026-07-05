@@ -28,13 +28,40 @@ const VOID_ELEMENTS = new Set([
   "link", "meta", "param", "source", "track", "wbr",
 ]);
 
+/** React 18+ streaming-SSR Suspense boundary: the server streams the boundary's real
+ *  content INSIDE a `<div hidden id="S:N">`, then a `$RC`/`$RX` swap script removes the
+ *  `hidden` attribute after hydration so the browser reveals it. Unlike a vscdn
+ *  `<code style="display:none">` config blob, this IS real page content the user sees —
+ *  stripping it drops the article body (Anthropic/Next.js docs return only cookie text
+ *  because the article lives in the hidden boundary). The element-level id is the strong
+ *  signal (React-specific); the document-level swap marker confirms streaming is active,
+ *  so a non-React page that happens to use `id="S:1"` on a genuinely hidden div is not
+ *  affected. Inline `display:none` still wins (an author who explicitly hid a boundary
+ *  keeps it hidden). */
+const REACT_BOUNDARY_ID = /^S:\d+$/;
+const REACT_SWAP_MARKER = /\$r[cxst]/i; // $RC/$RX/$RS/$RT swap markers (case-insensitive)
+
+/** True when the document carries a React streaming-SSR swap marker ($RC/$RX/$RS/$RT) —
+ *  the dual-signal confirmation that `<div hidden id="S:N">` boundaries are React Suspense
+ *  boundaries (real server-streamed content the browser reveals after hydration). The caller
+ *  in `extractVisibleText` computes this from the ORIGINAL html and passes it in, because the
+ *  markers live inside `<script>` tags that are stripped BEFORE `stripHiddenSubtrees` runs —
+ *  computing it from the already-script-stripped input would always read false. */
+export function hasReactStreamingSwap(html: string): boolean {
+  return REACT_SWAP_MARKER.test(html);
+}
+
 interface StackFrame {
   name: string;
   /** True if this opener started the active suppressed region. */
   suppressor: boolean;
 }
 
-export function stripHiddenSubtrees(html: string, hiddenClasses: Set<string> = new Set()): string {
+export function stripHiddenSubtrees(
+  html: string,
+  hiddenClasses: Set<string> = new Set(),
+  reactStreaming: boolean = hasReactStreamingSwap(html),
+): string {
   const lower = html.toLowerCase();
   const len = html.length;
   let out = "";
@@ -78,7 +105,7 @@ export function stripHiddenSubtrees(html: string, hiddenClasses: Set<string> = n
     if (!tag) { if (!suppressed) out += "<"; i += 1; continue; }
     const advance = Math.max(tag.end, i + 1);
     if (VOID_ELEMENTS.has(tag.name)) {
-      if (!suppressed) out += isHidden(tag.attrs, hiddenClasses) ? " " : html.slice(i, advance);
+      if (!suppressed) out += isHidden(tag.attrs, hiddenClasses, reactStreaming) ? " " : html.slice(i, advance);
       i = advance;
       continue;
     }
@@ -92,11 +119,11 @@ export function stripHiddenSubtrees(html: string, hiddenClasses: Set<string> = n
       tag.raw.endsWith("/>") &&
       (tag.name === "svg" || tag.name === "math" || stack.some((f) => f.name === "svg" || f.name === "math"))
     ) {
-      if (!suppressed) out += isHidden(tag.attrs, hiddenClasses) ? " " : html.slice(i, advance);
+      if (!suppressed) out += isHidden(tag.attrs, hiddenClasses, reactStreaming) ? " " : html.slice(i, advance);
       i = advance;
       continue;
     }
-    const startsHidden = !suppressed && isHidden(tag.attrs, hiddenClasses);
+    const startsHidden = !suppressed && isHidden(tag.attrs, hiddenClasses, reactStreaming);
     stack.push({ name: tag.name, suppressor: startsHidden });
     if (startsHidden) {
       suppressed = true;
@@ -120,12 +147,19 @@ export function stripHiddenSubtrees(html: string, hiddenClasses: Set<string> = n
  *  `display="none"` attribute covers SVG `<g display="none">`/`<text display="none">`
  *  (HTML elements don't use a `display` attribute, so this is SVG-specific and not
  *  cancellable by a descendant, unlike `visibility:hidden`). */
-function isHidden(attrs: AttributeMap, hiddenClasses: Set<string>): boolean {
+function isHidden(attrs: AttributeMap, hiddenClasses: Set<string>, reactStreaming: boolean): boolean {
   if (typeof attrs.style === "string") {
     const disp = inlineDisplayValue(attrs.style);
     if (disp !== undefined) return disp === "none";
   }
-  if (attrs.hidden !== undefined) return true;
+  if (attrs.hidden !== undefined) {
+    // React streaming-SSR boundary (`<div hidden id="S:N">`): real server-streamed
+    // content the browser reveals via the $RC/$RX swap — see REACT_BOUNDARY_ID above.
+    if (reactStreaming && typeof attrs.id === "string" && REACT_BOUNDARY_ID.test(attrs.id)) {
+      return false;
+    }
+    return true;
+  }
   if (typeof attrs.display === "string" && attrs.display.trim().toLowerCase() === "none") return true;
   if (hiddenClasses.size > 0 && typeof attrs.class === "string") {
     for (const token of attrs.class.split(/\s+/)) {

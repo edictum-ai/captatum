@@ -229,10 +229,12 @@ describe("Fixture integration — content-presence assertions (real Playwright)"
     assert.doesNotMatch(r.result, /Static Content Page/, "destination NOT followed (meta refresh ignored at Tier-1)");
   });
 
-  test("streaming-suspense: bare hidden attr strips React streamed content [GAP]", { skip: skipReason, timeout: 30_000 }, async () => {
+  test("streaming-suspense: React boundary content extracted (hidden id=S:N + $RC swap) [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
     const r = await captatum.execute({ url: `${server.url}/streaming-suspense`, ...RAW });
-    assert.match(r.result, /Loading article/, "skeleton present");
-    assert.doesNotMatch(r.result, /Real Streamed Article Title/, "hidden streamed content stripped");
+    // The article body is server-streamed inside <div hidden id="S:1">; React's $RC swap
+    // reveals it at runtime. Captatum now recognizes the idiom at Tier-1 (no render needed),
+    // so the real streamed content is extracted instead of just the skeleton/cookie text.
+    assert.match(r.result, /Real Streamed Article Title/, "React boundary content extracted at Tier-1");
   });
 
   test("error-page-404: 4xx body is extracted, not dropped as a fatal error [GUARD]", { skip: skipReason, timeout: 30_000 }, async () => {
