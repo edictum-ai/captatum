@@ -4,7 +4,7 @@
 # Trust model: the gateway is the ONLY container with OAuth keys and the SQLite
 # file. The browser sidecar shares the GATEWAY's network namespace
 # (network_mode: service:gateway), so its loopback-only CDP is reachable from the
-# gateway as 127.0.0.1:9222 — exactly the ECS awsvpc pattern. A Chromium
+# gateway as 127.0.0.1:9222 — the shared-network-namespace pod pattern. A Chromium
 # compromise escapes into the sidecar (no OAuth keys, no SQLite, no env), not the
 # gateway. See docs/threat-model.md.
 #

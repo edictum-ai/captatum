@@ -24,11 +24,12 @@ if [ -z "${CHROME:-}" ]; then
   exit 1
 fi
 
-# Bind loopback only: ECS awsvpc tasks share one network namespace, so the
-# gateway container reaches the browser via 127.0.0.1 (same pattern as the
-# cloudflared -> gateway 127.0.0.1:3000 hop). Loopback-only also keeps CDP off
-# the task ENI. (Chromium binds 127.0.0.1 by default; --remote-debugging-address
-# is intentionally NOT set to 0.0.0.0.)
+# Bind loopback only: pods that share one network namespace (e.g. the gateway
+# + browser sidecar) reach each other via 127.0.0.1, so the gateway reaches the
+# browser on 127.0.0.1:9222 (same pattern as the tunnel -> gateway 127.0.0.1:3000
+# hop). Loopback-only also keeps CDP off the pod's network interface. (Chromium
+# binds 127.0.0.1 by default; --remote-debugging-address is intentionally NOT set
+# to 0.0.0.0.)
 exec "${CHROME}" \
   --headless=new \
   --no-sandbox \

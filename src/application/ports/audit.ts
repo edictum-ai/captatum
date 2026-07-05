@@ -35,12 +35,12 @@ export interface ToolAuditEvent {
   durationMs: number;
   transformProvider?: string;
   transformModel?: string;
-  /** Per-call transform cost in USD (from the provider's usage.cost). Queryable in CloudWatch for spend tracking. */
+  /** Per-call transform cost in USD (from the provider's usage.cost). Surface in your observability sink for spend tracking. */
   transformCostUsd?: number;
   transformInTokens?: number;
   transformOutTokens?: number;
   /** Failed-primary model list when the router fell back to a later candidate (#82). Operator-only
-   *  (the user-facing receipt is silent on a successful fallback); queryable in CloudWatch. */
+   *  (the user-facing receipt is silent on a successful fallback); surface in your observability sink. */
   transformFallbackFrom?: string;
 }
 

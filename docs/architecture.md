@@ -14,7 +14,7 @@ Two deployment flavors off **one core engine**:
 - **Hosted remote server runtime**. Streamable HTTP `POST /mcp` +
   gateway-owned OAuth, on Node 24 native TS. This repo ships the runtime and
   local authenticated tests/smoke; public deployment packaging, container
-  publishing, ECS wiring, and cloudflared routing are outside this repo slice.
+  publishing, container-orchestrator wiring, and tunnel routing are outside this repo slice.
   When deployed, this is the flavor web agents use because they cannot use a
   stdio bridge.
 - **Self-contained local binary**. The same engine compiled (Bun `--compile`)
