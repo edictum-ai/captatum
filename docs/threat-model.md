@@ -93,8 +93,10 @@ the contract reference; this file is the security reasoning.
   counting `TransformStream`.
 - Linear HTML extraction (REDOS-5): every element/close-tag/comment/`<style>`/svg-`<text>`
   scanner uses a monotonic close-search cursor (no per-tag rescan to EOS), so an
-  unclosed-same-tag flood within the 1 MB `EXTRACT_CHAR_BUDGET` cannot stall the
-  synchronous event loop. The byte budget is a backstop, not the primary control.
+  unclosed-same-tag flood within the 5 MB `EXTRACT_CHAR_BUDGET` cannot stall the
+  synchronous event loop. The byte budget is a backstop, not the primary control; it was
+  raised 1 MB → 5 MB so deep-content pages whose article sits late in a large HTML body
+  (e.g. Atlassian Jira REST docs, ~2.9 MB with the article at ~2.8 MB) are not beheaded.
 - Bounded transform generation: every provider call carries a bounded
   `max_tokens`/`num_predict` — the server default (`TRANSFORM_MAX_OUTPUT_TOKENS`,
   2000) when `budget` is omitted, clamped to a 4000 hard cap — so a missing budget
