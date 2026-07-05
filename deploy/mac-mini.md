@@ -3,6 +3,29 @@
 Run the gateway + browser sidecar in Docker on a Mac Mini, with a Cloudflare Tunnel
 exposing it. Good for an always-on self-host on hardware you already own.
 
+## Why a Mac mini (residential egress)?
+
+**This is the recommended production deployment.** A cloud/datacenter deployment
+(AWS/GCP/Azure) loses to a plain residential webfetch on Cloudflare/anti-bot-protected
+sites (Notion, cppreference, npmjs, Cursor) — those sites challenge **datacenter ASNs**,
+and captatum cannot bypass that in code (the egress IP is the lever, not the fetcher).
+A Mac mini on a home ISP egresses from a **residential IP** that those sites do not
+challenge, so captatum wins where the cloud deploy loses — with **no code change and no
+paid proxy**. See [`docs/deployment-egress.md`](../docs/deployment-egress.md) for the
+full analysis + evidence.
+
+**Step 0 — verify the host's IP is clean before you migrate:**
+
+```sh
+curl -sI https://www.npmjs.com/package/react               # expect 200, not a challenge
+curl -sI https://en.cppreference.com/w/cpp/algorithm/ranges/sort
+curl -sI https://qogita.notion.site/                       # any notion.site page
+```
+
+If any returns a Cloudflare challenge (`403`/`503` + challenge body), the host's IP is
+flagged (some ISPs use CGNAT/business ranges) and the residential benefit won't apply.
+A typical home ISP IP passes.
+
 ## 1) Docker + repo
 
 ```sh
@@ -52,3 +75,59 @@ Use `launchd` (or Docker Desktop's "Start on login") to run both `cloudflared` a
 ```sh
 curl -sf https://captatum.your-domain.com/healthz   # -> {"status":"ok"}
 ```
+
+## 5) Reference configs (copy-paste)
+
+### `~/.cloudflared/config.yml` (maps the hostname → the local gateway)
+
+```yaml
+tunnel: <TUNNEL-UUID>                # from `cloudflared tunnel create captatum`
+credentials-file: /Users/you/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: captatum.your-domain.com
+    service: http://localhost:3000
+  - service: http_status:404
+```
+
+### `~/Library/LaunchAgents/com.cloudflare.cloudflared.plist` (run on boot)
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.cloudflare.cloudflared</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/cloudflared</string>
+    <string>tunnel</string>
+    <string>--config</string><string>/Users/you/.cloudflared/config.yml</string>
+    <string>run</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>StandardErrorPath</key><string>/tmp/cloudflared.err.log</string>
+</dict>
+</plist>
+```
+
+Load it: `launchctl load ~/Library/LaunchAgents/com.cloudflare.cloudflared.plist`.
+
+### `.env` (the gateway — copy from `.env.example`)
+
+The required vars (all in `.env.example`): `CAPTATUM_FLAVOR=hosted`, the OAuth signing
+keys (from `scripts/gen-oauth-keys.ts`), Cloudflare Access (`CF_ACCESS_*`), and
+`MCP_ALLOWED_HOSTS`/`MCP_ALLOWED_ORIGINS`. `docker compose` reads `../.env` relative to
+`deploy/`. The SQLite store + browser sidecar need no extra config (defaults).
+
+### Cutover from the AWS deployment
+
+The inbound trust boundary is identical (Cloudflare Tunnel + Access on `/oauth/authorize*`),
+so cutover is: (1) stand up the Mac mini stack; (2) repoint the tunnel/DNS hostname from
+the Fargate cloudflared to the Mac mini; (3) verify `/healthz` + a challenge site
+(`curl -sI https://www.npmjs.com/package/react` → 200). Connectors (claude.ai/ChatGFT)
+keep the same URL — no client-side change. Existing OAuth tokens re-issue on first
+reconnect (one-time; the Mac mini's SQLite is a fresh store). Keep the AWS stack as a
+cold fallback until the residential deploy is proven stable.
+

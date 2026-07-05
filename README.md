@@ -140,6 +140,8 @@ Every response's first text line is a provenance marker (`<!-- captatum tier=1 r
 
 The **hosted** shape is a Streamable-HTTP MCP server (`POST /mcp`) with gateway OAuth, reachable from web agents (claude.ai, chatgpt.com). It boots with a **local SQLite file** by default — **no database** — behind **Cloudflare Access** (required at boot), with the browser in a **separate sidecar** container.
 
+> **Recommended: deploy on a residential-IP host (e.g. an always-on Mac mini) + Cloudflare Tunnel.** A cloud/datacenter deployment (AWS/GCP/Azure) loses to a plain residential webfetch on Cloudflare/anti-bot-protected sites (Notion, cppreference, npmjs, Cursor) — those sites challenge **datacenter ASNs**, and captatum can't bypass that in code (the egress IP is the lever). A residential host egresses from an ISP IP that isn't challenged, so captatum wins where the cloud deploy loses — no code change, no paid proxy. Full analysis: [`docs/deployment-egress.md`](./docs/deployment-egress.md); step-by-step + copy-paste configs: [`deploy/mac-mini.md`](./deploy/mac-mini.md).
+
 | | **Local (stdio)** | **Hosted (remote)** |
 | --- | --- | --- |
 | **Auth** | None (single-user, loopback) | OAuth gateway (PKCE, scopes, audit) |
