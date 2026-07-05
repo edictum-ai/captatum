@@ -267,6 +267,47 @@ test("output extract invalid JSON returns structured error and keeps fetch prove
   assert.deepEqual(result.errors, [{ code: "extract_invalid_json", message: "Provider returned invalid JSON for extract output" }]);
 });
 
+test("#131 P2-B: a truncated extract escalates and completes instead of throwing extract_invalid_json", async () => {
+  // extract mode: the model truncates below the escalated cap (returning incomplete JSON), then
+  // completes on the retry. Pre-fix the first truncated attempt was finalized first and threw
+  // extract_invalid_json (parseJsonResult on incomplete JSON) before the truncation branch ran.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      const truncated = (input.maxOutputTokens ?? 0) < 30_000;
+      return truncated
+        ? { text: '{"title":"parti', truncated: true }
+        : { text: '{"title":"Complete"}' };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const schema = { type: "object", required: ["title"], properties: { title: { type: "string" } } };
+  const result = await transformer.transform({ mode: "extract", output: "extract", content: "page", prompt: "p", schema });
+  assert.equal(result.result, JSON.stringify({ title: "Complete" }, null, 2));
+  assert.equal(result.info.truncated ?? false, false, "completed after escalation — no truncation advisory");
+});
+
+test("#131 P2-B: an extract that never completes surfaces truncated (never throws extract_invalid_json)", async () => {
+  // The model always truncates, so the incomplete JSON is never parseable. Pre-fix this threw
+  // extract_invalid_json; post-fix the cap escalates then surfaces the longest raw text as
+  // truncated:true (the use case maps that to transform_truncated), never throwing.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
+    async generate(): Promise<LlmGenerateResult> {
+      return { text: '{"title":"parti', truncated: true };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({
+    mode: "extract", output: "extract", content: "page", prompt: "p",
+    schema: { type: "object", properties: { title: { type: "string" } } },
+  });
+  assert.equal(result.info.truncated, true);
+  assert.equal(result.result, '{"title":"parti', "raw incomplete JSON kept as best, not parsed");
+});
+
 
 test("provider exception returns raw without erasing original fetch provenance", async () => {
   const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), new Error("upstream broke"));
@@ -489,9 +530,11 @@ test("#125 codex P2: escalation is bounded by remaining context, not the bare mo
   assert.equal(result.info.truncated ?? false, false);
 });
 
-test("#125 codex P2: attempt-cap exhaustion with all-failing models throws transform_provider_failed (no silent raw)", async () => {
-  // 6 models, all hard-fail. The 5-attempt cap exits the loop before pick-none fires;
-  // without the fix this returns a silent raw fallback. It must throw the accumulated failure.
+test("#131 P2-A / #125: every candidate hard-failing throws transform_provider_failed (candidate exhaustion, no silent raw)", async () => {
+  // 6 models, all hard-fail. Candidate exhaustion (every model pushed to `tried`) fires
+  // pick-none → throw the accumulated failure. Pre-#131 this exited via the shared 5-attempt
+  // cap; #131 P2-A made hard-fail fallback traverse all candidates, so the exit is now
+  // candidate exhaustion. The outcome is unchanged: throw, never a silent raw fallback.
   const models = Array.from({ length: 6 }, (_, i) => candidate("openrouter", `m${i}/model-${i}`, { order: i }));
   const provider: LlmProvider = {
     id: "openrouter",
@@ -503,6 +546,73 @@ test("#125 codex P2: attempt-cap exhaustion with all-failing models throws trans
     () => transformer.transform({ mode: "summarize", output: "summary", content: "x", prompt: "p" }),
     (e: unknown) => e instanceof TransformError && e.code === "transform_provider_failed",
   );
+});
+
+test("#131 P2-A: hard-fail fallback traverses all candidates — a healthy 6th model is reached after 5 failures", async () => {
+  // Pre-#131 the shared 5-attempt cap exited the loop after the first 5 hard-fails and threw
+  // transform_provider_failed, never reaching a healthy 6th candidate. Post-fix, hard-fail
+  // fallback is bounded by candidate exhaustion (not attempts), so m5 is reached and succeeds.
+  const models = Array.from({ length: 6 }, (_, i) => candidate("openrouter", `m${i}/model-${i}`, { order: i }));
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => models,
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      if (input.model === "m5/model-5") return { text: "healthy sixth model summary" };
+      throw new Error("upstream down");
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p" });
+  assert.equal(result.info.model, "m5/model-5");
+  assert.equal(result.result, "healthy sixth model summary");
+  assert.match(result.info.fallbackFrom ?? "", /m0.*m1.*m2.*m3.*m4/, "all five failing models were tried first");
+});
+
+test("#131: an explicit budget is a hard ceiling for extract too — truncated incomplete JSON is returned, not escalated", async () => {
+  // Intersection of the hard-ceiling invariant and the P2-B raw-best path: extract mode, an
+  // explicit small budget, and a model that truncates (incomplete JSON). The cap must NOT
+  // escalate past the caller budget; the raw incomplete JSON is returned as best + truncated.
+  const calls: LlmGenerateInput[] = [];
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      calls.push(input);
+      return { text: '{"title":"par', truncated: true };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({
+    mode: "extract", output: "extract", content: "page", prompt: "p", budget: 50,
+    schema: { type: "object", properties: { title: { type: "string" } } },
+  });
+  assert.equal(calls.length, 1, "explicit budget — no escalation retry");
+  assert.equal(calls[0]?.maxOutputTokens, 50, "caller budget honored");
+  assert.equal(result.info.truncated, true);
+  assert.equal(result.result, '{"title":"par', "raw incomplete JSON returned as best, not parsed");
+});
+
+test("#131: a hard-fail followed by a truncation returns the truncated best via the pick-none branch", async () => {
+  // m0 hard-fails, m1 truncates at its ceiling (cap >= ceiling → push to tried), then pick-none
+  // fires (both excluded) and returns m1's truncated best. This pins the pick-none `if (best)`
+  // branch, which serves the mixed hard-fail-then-truncate case, not only every-candidate-truncated.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [
+      candidate("openrouter", "m0/model", { order: 0, maxOutputTokens: 8_000 }),
+      candidate("openrouter", "m1/model", { order: 1, maxOutputTokens: 8_000 }),
+    ],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      if (input.model === "m0/model") throw new Error("upstream down");
+      return { text: "partial from m1", truncated: true };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p" });
+  assert.equal(result.info.truncated, true);
+  assert.equal(result.result, "partial from m1");
+  assert.equal(result.info.model, "m1/model");
+  assert.match(result.info.fallbackFrom ?? "", /m0/, "m0 was tried + failed first");
 });
 
 test("router feedback demotes flaky free model before local fallback", () => {
