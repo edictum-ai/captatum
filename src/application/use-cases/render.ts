@@ -146,14 +146,16 @@ function actionAttempts(actions: RenderAction[]): AttemptTrace[] {
   return actions.map((action) => ({
     step: 3,
     tier: 3,
-    outcome: "block",
+    outcome: action.outcome ?? "block",
     durationMs: 0,
     reason: actionReason(action),
   }));
 }
 
 function actionReason(action: RenderAction): string {
-  const parts = [action.type, action.reason];
+  const parts: string[] = [action.type];
+  if (action.reason) parts.push(action.reason);
+  if (action.method) parts.push(action.method);
   if (action.resourceType) parts.push(action.resourceType);
   if (action.url) parts.push(action.url);
   return parts.join(":");

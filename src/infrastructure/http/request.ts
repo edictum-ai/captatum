@@ -11,6 +11,12 @@ export interface HttpRequestInput {
   hostHeader: string;
   signal: AbortSignal;
   timeoutMs: number;
+  /** Non-GET request descriptor (#111). Undefined for GET (the default). */
+  method?: string;
+  /** Request body bytes (single buffered write — Node derives Content-Length). */
+  body?: Uint8Array;
+  /** Allowlisted Content-Type (validated upstream; forwarded only when a body is present). */
+  requestContentType?: string;
 }
 
 export interface HttpResponse {
@@ -35,7 +41,7 @@ export class NodeHttpRequester implements HttpRequester {
         protocol: input.url.protocol,
         hostname: input.address,
         port: input.url.port || defaultPort(input.url.protocol),
-        method: "GET",
+        method: input.method ?? "GET",
         path: `${input.url.pathname}${input.url.search}`,
         family: input.family,
         signal: input.signal,
@@ -44,6 +50,13 @@ export class NodeHttpRequester implements HttpRequester {
           Host: input.hostHeader,
           "Accept-Encoding": "gzip, br, deflate",
           "User-Agent": "captatum/0.1",
+          // Content-Type is the ONLY forwarded request header (#111 D5). Added only when a
+          // body is present. NEVER Cookie/Auth/Origin/Referer/Content-Length/Transfer-Encoding
+          // — Node derives Content-Length from request.end(Buffer) below; streaming/chunked
+          // would be a request-smuggling shape.
+          ...(input.body !== undefined && input.requestContentType
+            ? { "Content-Type": input.requestContentType }
+            : {}),
         },
       }, (response) => {
         resolve({
@@ -65,7 +78,11 @@ export class NodeHttpRequester implements HttpRequester {
           rejectPromise(new GuardedFetchError("network_error", "Network request failed"));
         }
       });
-      request.end();
+      // Single buffered write: Node synthesizes Content-Length from the buffer length. An empty
+      // Uint8Array (0-byte POST) still forces Content-Length: 0 (request.end(undefined) would
+      // omit it and elicit 411 from strict servers). GET passes no body (#111 D5).
+      if (input.body !== undefined) request.end(Buffer.from(input.body));
+      else request.end();
     });
   }
 }

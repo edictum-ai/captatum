@@ -3,6 +3,7 @@ import type {
   FetcherOptions,
   FetcherPort,
   FetcherResult,
+  PostInit,
   Redirect,
   RejectResult,
 } from "../../application/ports/fetcher.ts";
@@ -32,7 +33,7 @@ export class GuardedHttpFetcher implements FetcherPort {
     this.requester = deps.requester ?? new NodeHttpRequester();
   }
 
-  async fetchGuarded(url: string, opts: FetcherOptions): Promise<FetcherResult | RejectResult> {
+  async fetchGuarded(url: string, opts: FetcherOptions, postInit?: PostInit): Promise<FetcherResult | RejectResult> {
     const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -44,6 +45,7 @@ export class GuardedHttpFetcher implements FetcherPort {
         opts,
         timeoutMs,
         controller.signal,
+        postInit,
       );
     } catch (error) {
       return toRejectResult(error);
@@ -57,6 +59,7 @@ export class GuardedHttpFetcher implements FetcherPort {
     opts: FetcherOptions,
     timeoutMs: number,
     signal: AbortSignal,
+    postInit?: PostInit,
   ): Promise<FetcherResult> {
     const maxBytes = positive(opts.maxBytes, "maxBytes");
     const maxHops = nonNegative(opts.maxHops, "maxHops");
@@ -65,7 +68,12 @@ export class GuardedHttpFetcher implements FetcherPort {
 
     for (;;) {
       throwIfAborted(signal);
-      const response = await this.requestValidated(current, timeoutMs, signal);
+      // method/body apply to the INITIAL request only. On ANY redirect hop (incl. 307/308,
+      // which RFC 7231 preserves) we revert to GET + no body — a deliberate, mandatory
+      // deviation so the page-authored POST body can never reach a redirect target host
+      // (SSRF/data-leak guard). `redirects.length === 0` exactly identifies the initial
+      // request because redirects is pushed AFTER the 3xx is processed below.
+      const response = await this.requestValidated(current, timeoutMs, signal, redirects.length === 0 ? postInit : undefined);
       if (isRedirectStatus(response.status)) {
         const location = headerValue(response.headers, "location");
         if (!location) {
@@ -87,6 +95,7 @@ export class GuardedHttpFetcher implements FetcherPort {
     current: NormalizedUrl,
     timeoutMs: number,
     signal: AbortSignal,
+    postInit?: PostInit,
   ) {
     // SSRF-4: enforce the port denylist here (the single chokepoint), before
     // either requester (wreq-js HTTP or Node HTTPS fallback) is selected.
@@ -101,6 +110,13 @@ export class GuardedHttpFetcher implements FetcherPort {
         hostHeader: current.hostHeader,
         signal,
         timeoutMs,
+        // postInit is undefined on every redirect hop (body-drop guard above); the IP-pinning
+        // SSRF guard is method-agnostic — the body is just bytes on a guard-resolved connection.
+        ...(postInit ? {
+          method: postInit.method,
+          body: postInit.body,
+          requestContentType: postInit.requestContentType,
+        } : {}),
       }),
       signal,
     );

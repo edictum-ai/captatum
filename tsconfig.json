@@ -9,7 +9,10 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "psl": ["./node_modules/psl/types/index.d.ts"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

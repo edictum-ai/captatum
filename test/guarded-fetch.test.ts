@@ -193,6 +193,68 @@ test("parallel guarded fetches keep DNS and redirect state isolated", async () =
   assert.equal(await textOf(plain), "c.test");
 });
 
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+test("POST body forwards on the initial request and is DROPPED on a 3xx redirect (#111 SSRF HIGH)", async () => {
+  // The body-drop guard: method/body apply to the INITIAL request only, so the page-authored
+  // POST body can never reach a redirect target host. The POST gate lives in route-state; this
+  // test pins the fetcher-level guarantee that a redirect hop reverts to GET + no body.
+  const requester = new ScriptedRequester((input) => {
+    if (input.url.hostname === "api.example.test") return response(302, { location: "https://other.example.test/land" });
+    return response(200, { "content-type": "text/plain" }, "ok");
+  });
+  const fetcher = new GuardedHttpFetcher({
+    resolver: resolverFor({
+      "api.example.test": [{ address: SAFE_IP, family: 4 }],
+      "other.example.test": [{ address: SAFE_IP, family: 4 }],
+    }),
+    requester,
+  });
+  const result = await fetcher.fetchGuarded("https://api.example.test/start", DEFAULT_OPTS, {
+    method: "POST", body: enc('{"secret":"x"}'), requestContentType: "application/json",
+  });
+  assertResult(result);
+  assert.equal(requester.calls.length, 2, "followed the redirect");
+  // Initial request carried the POST body + Content-Type.
+  assert.equal(requester.calls[0].method, "POST");
+  assert.equal(Buffer.from(requester.calls[0].body!).toString(), '{"secret":"x"}');
+  assert.equal(requester.calls[0].requestContentType, "application/json");
+  // Redirect hop: GET (method undefined -> default) + NO body — the body never reaches other.example.test.
+  assert.equal(requester.calls[1].method, undefined, "redirect reverts to GET");
+  assert.equal(requester.calls[1].body, undefined, "POST body must NOT leak to the redirect target");
+  assert.equal(requester.calls[1].requestContentType, undefined);
+});
+
+test("307/308 redirects revert the POST to GET + no body (deliberate RFC 7231 deviation, #111)", async () => {
+  // 307/308 preserve method+body per RFC 7231; captatum deviates deliberately (SSRF/data-leak guard).
+  for (const status of [301, 302, 307, 308]) {
+    const requester = new ScriptedRequester((input) => {
+      if (input.url.hostname === "api.example.test") return response(status, { location: "https://other.example.test/land" });
+      return response(200, { "content-type": "text/plain" }, "ok");
+    });
+    const fetcher = new GuardedHttpFetcher({
+      resolver: resolverFor({
+        "api.example.test": [{ address: SAFE_IP, family: 4 }],
+        "other.example.test": [{ address: SAFE_IP, family: 4 }],
+      }),
+      requester,
+    });
+    await fetcher.fetchGuarded("https://api.example.test/start", DEFAULT_OPTS, { method: "POST", body: enc("x"), requestContentType: "text/plain" });
+    assert.equal(requester.calls[1].method, undefined, `${status}: redirect reverts to GET`);
+    assert.equal(requester.calls[1].body, undefined, `${status}: body dropped on redirect`);
+  }
+});
+
+test("GET requests carry no method/body when postInit is omitted (backward-compat, #111)", async () => {
+  const requester = new ScriptedRequester(() => response(200, { "content-type": "text/plain" }, "ok"));
+  const fetcher = new GuardedHttpFetcher({ resolver: resolverFor({ "api.example.test": [{ address: SAFE_IP, family: 4 }] }), requester });
+  const result = await fetcher.fetchGuarded("https://api.example.test/start", DEFAULT_OPTS);
+  assertResult(result);
+  assert.equal(requester.calls[0].method, undefined);
+  assert.equal(requester.calls[0].body, undefined);
+  assert.equal(requester.calls[0].requestContentType, undefined);
+});
+
 class ScriptedRequester implements HttpRequester {
   readonly calls: HttpRequestInput[] = [];
   private readonly handler: (input: HttpRequestInput) => Promise<HttpResponse> | HttpResponse;

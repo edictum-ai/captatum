@@ -1,11 +1,13 @@
 import type { FetcherResult, RejectResult } from "../../application/ports/fetcher.ts";
 import type { RenderAction, RenderInput } from "../../application/ports/renderer.ts";
-import { isAdTrackerHost, isFirstPartyHost } from "../../domain/adblock.ts";
+import { registrableDomain } from "../../domain/registrable-domain.ts";
+import { config } from "../../config.ts";
 import type { PlaywrightFrame, PlaywrightRequest, PlaywrightRoute } from "./playwright-types.ts";
 import { safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { FetcherRouteFulfiller, type RouteFulfiller } from "./route-fulfill.ts";
-
-const BLOCKED_TYPES = new Set(["image", "font", "media"]);
+import { authorizePostForward, CORS_ALLOW_ORIGIN, materializePostForward, planOptionsPreflight } from "./post-forward.ts";
+import { Semaphore } from "./semaphore.ts";
+import { hostnameOf, isNavigation, shouldAbortWithoutBody } from "./route-helpers.ts";
 
 /** Render resource types the page's CLIENT APP needs to load, or it throws a
  *  client-side exception (Next.js "Application error: a client-side exception has
@@ -48,6 +50,9 @@ export class RenderRouteState {
   readonly guard: BrowserUrlGuard;
   private readonly fulfiller: RouteFulfiller;
   private readonly mainHost: string;
+  private readonly mainRegistrableDomain: string | null;
+  private readonly postMaxBytes: number;
+  private readonly postSemaphore: Semaphore;
   status = 200;
   finalUrl = "";
   redirects: FetcherResult["redirects"] = [];
@@ -67,6 +72,11 @@ export class RenderRouteState {
     this.actions = actions;
     this.guard = guard;
     this.mainHost = hostnameOf(input.url);
+    // Computed ONCE from the page URL; NEVER recomputed on a same-tab navigation — the
+    // POST first-party scope never expands mid-render (a security property, not accident).
+    this.mainRegistrableDomain = registrableDomain(this.mainHost);
+    this.postMaxBytes = config.render.postMaxBytes();
+    this.postSemaphore = new Semaphore(config.render.postConcurrency());
     this.fulfiller = new FetcherRouteFulfiller(input.fetcher, {
       maxBytes: input.maxBytes,
       timeoutMs: input.timeoutMs,
@@ -106,7 +116,7 @@ export class RenderRouteState {
       return this.abortBlockedType(route, url, resourceType);
     }
     if (!mainFrameNav && request.method() !== "GET") {
-      return this.abort(route, url, resourceType, "unsupported_browser_method");
+      return this.handleNonGet(route, request, url, resourceType);
     }
     // Once a pool is blown, subsequent resources in THAT pool are aborted before any
     // network. Essentials and non-essentials have separate pools, so a blown
@@ -120,22 +130,17 @@ export class RenderRouteState {
       return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
     }
     if (mainFrameNav) {
-      // The main-frame document navigation owns provenance, updated on EVERY such
-      // navigation — including a client-side same-tab navigation after the first
-      // load (e.g. location.href = '/canonical'). Subframe documents also satisfy
-      // isNavigationRequest(); we tell them apart by frame === page.mainFrame() so
-      // an iframe never clobbers finalUrl/redirects, and a subframe reject is not
-      // fatal (only the main frame's failure fails the render).
+      // The main-frame document navigation owns provenance (updated on EVERY main-frame nav,
+      // incl. a client-side same-tab nav). Subframe documents also satisfy isNavigationRequest();
+      // frame === page.mainFrame() tells them apart so an iframe never clobbers finalUrl/redirects
+      // and a subframe reject is not fatal.
       this.status = outcome.status;
       this.finalUrl = outcome.finalUrl;
       this.redirects = outcome.redirects;
-      // Fidelity note: the navigation body is served against the ORIGINAL request
-      // URL, so for a cross-origin redirect the browser's base URL stays the
-      // original origin (relative subresources resolve there and may miss) and
-      // Set-Cookie from intermediate hops is not carried. Replaying a 302 to
-      // finalUrl would fix the base URL, but Playwright does not follow a
-      // fulfilled redirect for a navigation. Render-fidelity limit for
-      // cross-origin redirects only — every hop was guard-validated, not an SSRF gap.
+      // Fidelity limit: the nav body is served against the ORIGINAL request URL, so a cross-origin
+      // redirect's base URL stays the original origin (relative subresources may miss) + Set-Cookie
+      // from intermediate hops isn't carried. Playwright can't follow a fulfilled redirect for a
+      // nav. Cross-origin-redirect only; every hop was guard-validated, not an SSRF gap.
     }
     // TIER3-DOS-1: each pool (essential vs non-essential) is capped. The essential cap is
     // ESSENTIAL_BUDGET_MULTIPLIER× the non-essential cap so heavy client apps (Cursor, Jira)
@@ -171,6 +176,57 @@ export class RenderRouteState {
     });
   }
 
+  /** #111: a non-GET Tier-3 request — a first-party CORS preflight (OPTIONS) gets a synthesized permissive
+   *  response; a first-party POST (fetch/xhr) forwards through FetcherPort (body reserved, released on reject); else aborts. */
+  private async handleNonGet(route: PlaywrightRoute, request: PlaywrightRequest, url: string, resourceType: string): Promise<void> {
+    // CORS preflight (OPTIONS) for a cross-origin POST: synthesize a permissive first-party response (#111 codex P1).
+    if (request.method() === "OPTIONS") {
+      const pre = planOptionsPreflight({ resourceType, url, mainRegistrableDomain: this.mainRegistrableDomain });
+      if (pre.kind === "abort") return this.abort(route, url, resourceType, pre.reason);
+      await route.fulfill({ status: 204, body: new Uint8Array(0), headers: pre.headers });
+      return;
+    }
+    const h = request.headers?.() ?? {};
+    // Authorize (gate + Content-Length) BEFORE reading the body — reject an oversized DECLARED body without materializing it (#111 codex P1).
+    const auth = authorizePostForward({
+      method: request.method(), resourceType, url,
+      contentLength: h["content-length"], mainRegistrableDomain: this.mainRegistrableDomain, maxBytes: this.postMaxBytes,
+    });
+    if (auth.kind === "abort") return this.abort(route, url, resourceType, auth.reason);
+    const plan = materializePostForward({ body: request.postDataBuffer?.() ?? null, contentType: h["content-type"], maxBytes: this.postMaxBytes });
+    if (plan.kind === "abort") return this.abort(route, url, resourceType, plan.reason);
+    if (this.essentialBudgetExceeded) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
+    if (!this.postSemaphore.tryAcquire()) return this.abort(route, url, resourceType, "render_concurrency_limit");
+    this.essentialBytes += plan.body.byteLength; // reserve at dispatch; released on reject
+    if (this.essentialBytes > this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER) this.essentialBudgetExceeded = true; // crossing reservation marks the pool blown synchronously so concurrent early-checks see it (#111 codex P2)
+    try {
+      const outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit);
+      if (outcome.kind === "reject") {
+        this.essentialBytes -= plan.body.byteLength;
+        return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
+      }
+      if (this.essentialBudgetExceeded) { // a concurrent POST may have blown the pool in flight (#111 codex P2)
+        this.essentialBytes -= plan.body.byteLength;
+        return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
+      }
+      // The crossing POST marks the pool exceeded but is still fulfilled (aborting mid-load 400s the page).
+      if (this.essentialBytes + outcome.body.byteLength > this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER) {
+        this.essentialBudgetExceeded = true;
+      }
+      this.essentialBytes += outcome.body.byteLength;
+      this.actions.push({ type: "request-forwarded-post", outcome: "ok", url: safeRenderUrl(url), resourceType, method: "POST", bodyBytes: plan.body.byteLength, responseBytes: outcome.body.byteLength });
+      // ACAO:* admits the cross-origin POST response (#111 codex P1). Credentialed CORS (credentials:"include") would need the Origin echoed — known limitation (rare; cookies stripped).
+      await route.fulfill({
+        status: outcome.status,
+        body: outcome.body,
+        ...(outcome.contentType ? { contentType: outcome.contentType } : {}),
+        headers: CORS_ALLOW_ORIGIN,
+      });
+    } finally {
+      this.postSemaphore.release();
+    }
+  }
+
   private async abortBlockedType(
     route: PlaywrightRoute,
     url: string,
@@ -191,36 +247,4 @@ export class RenderRouteState {
     this.actions.push({ type, reason, url: safeRenderUrl(url), resourceType });
     await route.abort("blockedbyclient");
   }
-}
-
-/** Body types we never fetch, and ad/tracker subresources, are aborted before any
- *  network. Adblock is THIRD-PARTY only: the fetched page's own (first-party) host
- *  is exempt so a blocklisted vendor apex that IS the requested page (amplitude.com,
- *  hotjar.com, …) still loads. The main-frame navigation is exempted by the caller.
- *  Like blocked body types, an aborted ad/tracker URL is still P1/DNS private-IP-
- *  checked (abortBlockedType) so the action log records a private target. */
-function shouldAbortWithoutBody(url: string, resourceType: string, mainHost: string): boolean {
-  if (BLOCKED_TYPES.has(resourceType)) return true;
-  if (isFirstPartyHost(hostnameOf(url), mainHost)) return false; // first-party subresource
-  return isAdTracker(url);
-}
-
-function isAdTracker(input: string): boolean {
-  try {
-    return isAdTrackerHost(new URL(input).hostname);
-  } catch {
-    return true;
-  }
-}
-
-function hostnameOf(url: string): string {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-function isNavigation(request: { isNavigationRequest?: () => boolean; resourceType(): string }): boolean {
-  return request.isNavigationRequest?.() ?? request.resourceType() === "document";
 }
