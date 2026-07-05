@@ -22,6 +22,10 @@ export interface ModelPick {
   provider: RouterProvider;
   model?: string;
   free?: boolean;
+  /** The picked model's max output tokens (provider limit). The transformer clamps
+   *  the budget to this so generation is bounded by what the model can actually
+   *  produce (#125). Absent when provider is "none". */
+  maxOutputTokens?: number;
   /** Populated when provider is "none" (degrade to raw). */
   reason?: string;
 }

@@ -380,6 +380,48 @@ test("#48 B: an empty completion from the primary falls back to the next model w
   assert.equal(result.result, "qwen summary");
 });
 
+test("#125: truncation escalates the budget until the model finishes cleanly", async () => {
+  // The model truncates (finish_reason=length) below 200 output tokens, finishes
+  // cleanly at/above. The transformer must escalate the budget + retry until complete.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      const truncated = (input.maxOutputTokens ?? 0) < 200;
+      return { text: truncated ? "partial" : "complete summary", truncated };
+    },
+  };
+  const transformer = new LlmTransformer({
+    router: new ModelRouter(provider.candidates()),
+    providers: { openrouter: provider },
+  });
+  const result = await transformer.transform({
+    mode: "summarize", output: "summary", content: "page", prompt: "p", budget: 50,
+  });
+  assert.equal(result.result, "complete summary");
+  assert.equal(result.info.truncated ?? false, false, "no truncation advisory once the model finishes");
+});
+
+test("#125: a still-truncated result after escalation surfaces an honest advisory", async () => {
+  // The model always truncates regardless of budget. Escalation exhausts (model maxed,
+  // no higher-cap candidate) and the result carries truncated:true so the use case can
+  // surface a transform_truncated error instead of a silently cut-off answer.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 8_000 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      return { text: "partial", truncated: true };
+    },
+  };
+  const transformer = new LlmTransformer({
+    router: new ModelRouter(provider.candidates()),
+    providers: { openrouter: provider },
+  });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p" });
+  assert.equal(result.info.truncated, true);
+  assert.equal(result.result, "partial");
+});
+
 test("router feedback demotes flaky free model before local fallback", () => {
   const router = new ModelRouter([
     candidate("openrouter", "free/model", { free: true }),
@@ -428,7 +470,7 @@ test("transform with no budget sends a bounded default output cap, never undefin
   assert.equal(typeof cap, "number", "maxOutputTokens must always be set");
   assert.equal(Number.isInteger(cap), true);
   assert.ok((cap ?? 0) >= 1);
-  assert.equal(cap, 2000, "default cap applied when budget is omitted");
+  assert.equal(cap, 8000, "default cap applied when budget is omitted");
 });
 
 test("explicit budget below the default is honored (#3)", async () => {
@@ -438,11 +480,11 @@ test("explicit budget below the default is honored (#3)", async () => {
   assert.equal(provider.calls[0]?.maxOutputTokens, 50, "small explicit budget must not be bumped to the default");
 });
 
-test("explicit budget above the hard cap is clamped (#3)", async () => {
-  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), { text: "ok" });
+test("explicit budget above the model max is clamped (#3, #125)", async () => {
+  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true, maxOutputTokens: 16_384 }), { text: "ok" });
   const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
   await transformer.transform({ mode: "summarize", output: "summary", content: "x", prompt: "p", budget: 999_999 });
-  assert.equal(provider.calls[0]?.maxOutputTokens, 4000, "budget clamped to the hard cap");
+  assert.equal(provider.calls[0]?.maxOutputTokens, 16_384, "budget clamped to the model's max output");
 });
 
 test("maxOutputTokensDefault option overrides the config default (#3)", async () => {
@@ -668,6 +710,7 @@ function candidate(
     local: overrides.local ?? false,
     supportsJson: overrides.supportsJson ?? true,
     contextTokens: overrides.contextTokens ?? 128_000,
+    maxOutputTokens: overrides.maxOutputTokens ?? 65_536,
     costWeight: overrides.costWeight ?? 0,
     order: overrides.order ?? 0,
   };

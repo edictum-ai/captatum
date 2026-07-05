@@ -41,6 +41,14 @@ export interface TransformInfo {
    * this field carries the failed-primary list for `debug:true` and the audit log.
    */
   fallbackFrom?: string;
+  /**
+   * True when the summary/extract completed but was cut off at the output-token cap
+   * (`finish_reason=length`) after budget escalation was exhausted — the result is
+   * usable but incomplete. The use case surfaces this as a non-fatal
+   * `transform_truncated` error so the caller is never silently handed a cut-off
+   * answer (#125). Absent when the model finished cleanly (`finish_reason=stop`).
+   */
+  truncated?: boolean;
 }
 
 export interface Timings {

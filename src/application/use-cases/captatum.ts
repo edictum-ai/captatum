@@ -196,9 +196,12 @@ export class CaptatumUseCase {
     if (transformed.info.provider === "none") {
       base.result = base.tier === 2 ? originalResult : fallbackExcerpt(base.result);
     }
-    // Non-fatal advisory: extract returned parsed JSON that violated the requested schema.
+    // Non-fatal advisories (#125): extract schema mismatch + truncation (cut off at the output cap after escalation).
     if (transformed.info.schemaIssue) {
       base.errors.push({ code: "extract_schema_invalid", message: transformed.info.schemaIssue });
+    }
+    if (transformed.info.truncated) {
+      base.errors.push({ code: "transform_truncated", message: "Summary truncated at the output-token ceiling after escalation — use output: raw for the full content." });
     }
     base.timings.transformMs = transformMs;
     stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);

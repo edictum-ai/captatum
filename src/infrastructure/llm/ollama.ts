@@ -1,4 +1,5 @@
 import { isLoopbackUrl, postJson } from "./http-json.ts";
+import { modelMaxOutputTokens } from "./tokens.ts";
 import type { LlmGenerateInput, LlmGenerateResult, LlmModelCandidate, LlmProvider } from "./types.ts";
 
 const DEFAULT_CONTEXT_TOKENS = 128_000;
@@ -34,6 +35,7 @@ export class OllamaProvider implements LlmProvider {
       local: isLoopbackUrl(this.baseUrl),
       supportsJson: true,
       contextTokens: DEFAULT_CONTEXT_TOKENS,
+      maxOutputTokens: modelMaxOutputTokens(this.model),
       costWeight: 0,
       order: 1000,
     }];
@@ -54,6 +56,7 @@ export class OllamaProvider implements LlmProvider {
     if (!text) throw new Error("Ollama returned an empty completion");
     return {
       text,
+      truncated: response.done_reason === "length",
       inTokens: response.prompt_eval_count,
       outTokens: response.eval_count,
     };
@@ -64,4 +67,5 @@ interface OllamaResponse {
   message?: { content?: string };
   prompt_eval_count?: number;
   eval_count?: number;
+  done_reason?: string;
 }

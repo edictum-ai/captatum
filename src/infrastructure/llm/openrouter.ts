@@ -1,4 +1,5 @@
 import { isLoopbackUrl, postJson } from "./http-json.ts";
+import { modelMaxOutputTokens } from "./tokens.ts";
 import type { LlmGenerateInput, LlmGenerateResult, LlmModelCandidate, LlmProvider } from "./types.ts";
 
 const DEFAULT_CONTEXT_TOKENS = 128_000;
@@ -79,6 +80,7 @@ export class OpenRouterProvider implements LlmProvider {
       local: false,
       supportsJson: true,
       contextTokens: DEFAULT_CONTEXT_TOKENS,
+      maxOutputTokens: modelMaxOutputTokens(model),
       costWeight: model.endsWith(":free") ? 0 : 0.12,
       order,
     }));
@@ -159,6 +161,7 @@ export function parseOpenRouterCompletion(response: OpenRouterResponse): LlmGene
   }
   return {
     text,
+    truncated: choice?.finish_reason === "length",
     inTokens: response.usage?.prompt_tokens,
     outTokens: response.usage?.completion_tokens,
     costUsd: numeric(response.usage?.cost),
