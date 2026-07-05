@@ -422,6 +422,37 @@ test("#125: a still-truncated result after escalation surfaces an honest advisor
   assert.equal(result.result, "partial");
 });
 
+test("#125 codex P2: truncation escalates across candidates to the higher-cap fallback's max", async () => {
+  // deepseek max 16K, qwen max 65K. The page needs >16K and <65K output — deepseek
+  // maxes out (truncated), then qwen is tried at its full 65K cap and completes.
+  // The escalation must reach qwen@65K within the attempt budget (no early exit at 32K).
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [
+      candidate("openrouter", "deepseek/deepseek-v4-flash", { order: 0, maxOutputTokens: 16_384 }),
+      candidate("openrouter", "qwen/qwen3.6-flash", { order: 1, maxOutputTokens: 65_536 }),
+    ],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      const ok = (input.maxOutputTokens ?? 0) >= 65_536;
+      return { text: ok ? "complete at 65K" : "partial", truncated: !ok };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p" });
+  assert.equal(result.info.model, "qwen/qwen3.6-flash");
+  assert.equal(result.result, "complete at 65K");
+  assert.equal(result.info.truncated ?? false, false);
+  assert.match(result.info.fallbackFrom ?? "", /deepseek/, "deepseek was tried + truncated first");
+});
+
+test("#125 codex P2: fits() reserves the requested cap, not the model max (long page fits at default budget)", () => {
+  // qwen: 128K context, 65K max output. A 100K-token page with a default 8K budget
+  // fits (100K + 8K = 108K < 128K), but would NOT fit if the bare 65K max were reserved.
+  const router = new ModelRouter([candidate("openrouter", "qwen/qwen3.6-flash", { contextTokens: 128_000, maxOutputTokens: 65_536 })]);
+  assert.equal(router.pick("summarize", 100_000, { reserveOutputTokens: 8_000 }).model, "qwen/qwen3.6-flash", "8K reserve fits a 100K-input page");
+  assert.equal(router.pick("summarize", 100_000).provider, "none", "no reserve falls back to the 65K model max, which 100K input does not fit");
+});
+
 test("router feedback demotes flaky free model before local fallback", () => {
   const router = new ModelRouter([
     candidate("openrouter", "free/model", { free: true }),

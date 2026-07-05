@@ -109,7 +109,8 @@ export class LlmTransformer implements TransformPort {
     let budgetFloor = input.budget; // grows on truncation
     let attempts = 0;
     while (attempts++ < MAX_TRANSFORM_ATTEMPTS) {
-      const pick = this.router.pick(input.mode, inTokens, { ...baseOptions, exclude: tried });
+      // Reserve what this attempt will request so a long page is not rejected for a model MAX it won't use (codex P2 #125).
+      const pick = this.router.pick(input.mode, inTokens, { ...baseOptions, exclude: tried, reserveOutputTokens: budgetFloor ?? this.maxOutputTokensDefault });
       if (pick.provider === "none" || !pick.model) {
         if (best) return best; // every candidate truncated — best + truncated advisory
         if (tried.length === 0) return rawFallback(input.content, pick.reason ?? "unconfigured");
@@ -169,7 +170,7 @@ export class LlmTransformer implements TransformPort {
       };
       if (!generated.truncated) return result; // complete
       if (!best || result.result.length > best.result.length) best = result; // keep longest truncation
-      if (cap < modelMax) budgetFloor = Math.min(cap * 2, modelMax); // same model, more budget
+      if (cap < modelMax) budgetFloor = modelMax; // jump to the model's full cap (max_tokens is a ceiling, not a target — the model stops at `stop`, so no over-generation cost); skips redundant intermediate caps so a higher-cap fallback (qwen 65K) is reached within the attempt budget (codex P2)
       else tried.push(pick.model); // model maxed -> next candidate (higher cap)
     }
     return best ?? rawFallback(input.content, "transform_unavailable");
@@ -204,10 +205,11 @@ function fits(candidate: LlmModelCandidate, task: RouterTask, inputTokens: numbe
   if (options.exclude && options.exclude.includes(candidate.model)) return false;
   if (options.localOnly && !candidate.local) return false;
   if (task === "extract" && !candidate.supportsJson) return false;
-  // Reserve the model's OWN max output (not a global const) so a model admitted by
-  // fits() can always hold a full-budget generation — admission + the model-aware
-  // cap agree, no mid-completion context overflow.
-  return candidate.contextTokens >= inputTokens + candidate.maxOutputTokens;
+  // Reserve what will be requested (passed cap clamped to the model max), not the bare
+  // model max, so a long page with a small/default budget isn't rejected for headroom
+  // it won't use (codex P2 #125). Falls back to the model max for direct pick callers.
+  const reserve = options.reserveOutputTokens !== undefined ? Math.min(options.reserveOutputTokens, candidate.maxOutputTokens) : candidate.maxOutputTokens;
+  return candidate.contextTokens >= inputTokens + reserve;
 }
 
 function noneReason(options: ModelPickOptions, configuredCount: number): string {

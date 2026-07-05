@@ -16,6 +16,10 @@ export interface ModelPickOptions {
   localOnly?: boolean;
   /** Models already tried in this transform — excluded so the router returns the next candidate. */
   exclude?: string[];
+  /** Output tokens the caller will actually request from the picked model (the resolved cap).
+   *  Reserved in the context-fit check so a long page with a small budget is not rejected for
+   *  the model's MAX output (qwen 65K) it will never use. Defaults to the model's max (#125). */
+  reserveOutputTokens?: number;
 }
 
 export interface ModelPick {
