@@ -1623,6 +1623,19 @@ test("selectMainContentHtml: a richer sibling does NOT override the primary on a
   assert.equal((main ?? "").includes("Related"), false, "a non-React page's longer sibling must not displace the primary article");
 });
 
+test("selectMainContentHtml: a substantial primary is NOT displaced by a richer sibling even on a React page (#118 codex P2)", () => {
+  // The override requires the FIRST article be skeleton-short. A React page that merely has a
+  // `$RC` boundary elsewhere (e.g. a header widget) but a SUBSTANTIAL primary first <article>
+  // followed by a much-longer sibling must keep the primary — only a short skeleton is overridden.
+  const primary = "<article><h1>Primary Post</h1><p>" + "This is the real primary article body with substantial prose. ".repeat(40) + "</p></article>";
+  const longSibling = "<article><h3>Related</h3><p>" + "A much longer related block. ".repeat(300) + "</p></article>";
+  // React streaming is active (a $RC call) but the boundary is unrelated to the articles.
+  const html = "<html><body><script>$RC('B:9','S:9')</script>" + primary + longSibling + "</body></html>";
+  const main = selectMainContentHtml(html);
+  assert.match(main ?? "", /Primary Post/);
+  assert.equal((main ?? "").includes("Related"), false, "a substantial primary is not displaced even on a React page");
+});
+
 test("extractHtml: a nested React boundary inside the scoped <article> is preserved (#118 codex P1)", () => {
   // The $RC swap script is OUTSIDE the article; the article contains a NESTED React boundary.
   // Scoping to the article loses the $RC marker (a script, stripped/outside scope), so the

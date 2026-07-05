@@ -12,15 +12,20 @@ import { extractVisibleText, findElements, stripElement, stripHtmlComments } fro
 export const MAIN_OVERRIDE_FACTOR = 1.5;
 
 /**
- * A LATER sibling <article> overrides the FIRST only when it is substantially richer. The first
- * <article> is the page's primary content in document order (GitHub README, blog post, docs
- * section); a slightly-longer later sibling is usually a related/author block and must NOT
- * displace it (#108). But React streaming-SSR ships a short loading-skeleton <article> FIRST
- * and the real streamed article as a later sibling (e.g. docs.anthropic.com: skeleton ≈ 175
- * chars vs real ≈ 2901 chars, ~16×). The 5× threshold lets the real article win for the React
- * skeleton case while preserving the #108 author-bio tie-break (a ~2.4× sibling stays secondary).
+ * A LATER sibling <article> overrides the FIRST only when it is substantially richer AND the first
+ * is skeleton-short. The first <article> is the page's primary content in document order (GitHub
+ * README, blog post, docs section); a slightly-longer later sibling is usually a related/author
+ * block and must NOT displace it (#108). But React streaming-SSR ships a SHORT loading-skeleton
+ * <article> FIRST and the real streamed article as a far-richer later sibling (docs.anthropic.com:
+ * skeleton ≈ 175 chars vs real ≈ 2901 chars, ~16×). The 5× ratio + the short-first guard let the
+ * real article win for the React-skeleton case WITHOUT displacing a substantial primary on a React
+ * page that merely has a `$RC` boundary elsewhere (e.g. in a header widget) — only a short first
+ * article is treated as a skeleton (#118 codex P2).
  */
 export const SIBLING_ARTICLE_OVERRIDE_FACTOR = 5;
+/** A first <article> at or below this visible-text length is treated as a skeleton candidate
+ *  (a loading placeholder, not primary content). Real article bodies are normally far larger. */
+export const SKELETON_ARTICLE_MAX_CHARS = 1000;
 
 /**
  * <aside>/<nav>/<footer> are chrome (sidebars, TOCs, mega-menus, page footers). They are stripped
@@ -94,10 +99,12 @@ export function selectMainContentHtml(html: string, revealedIds: Set<string> = r
     undefined,
   );
   // First <article> wins by default. A substantially richer sibling overrides it ONLY on a React
-  // streaming page (revealedIds non-empty), where a short loading-skeleton <article> ships first
-  // and the real streamed article is a far-richer later sibling. Gated to React so a non-React
-  // page's first-article tie-break (#108) is never displaced by a longer sibling.
-  const selectedArticle = revealedIds.size > 0 && richestArticle && firstArticle && richestArticle.len >= firstArticle.len * SIBLING_ARTICLE_OVERRIDE_FACTOR
+  // streaming page (revealedIds non-empty) WHEN the first article is skeleton-short — the React
+  // loading-skeleton pattern (short placeholder first, real streamed article as a richer sibling).
+  // The short-first guard prevents displacing a substantial primary on a React page that merely
+  // has a $RC boundary elsewhere (a header/widget) (#118 codex P2).
+  const firstIsSkeleton = !!firstArticle && firstArticle.len <= SKELETON_ARTICLE_MAX_CHARS;
+  const selectedArticle = revealedIds.size > 0 && firstIsSkeleton && richestArticle && firstArticle && richestArticle.len >= firstArticle.len * SIBLING_ARTICLE_OVERRIDE_FACTOR
     ? richestArticle
     : firstArticle;
   const articleLen = selectedArticle?.len ?? 0;
