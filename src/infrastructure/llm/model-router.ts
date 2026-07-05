@@ -112,7 +112,7 @@ export class LlmTransformer implements TransformPort {
       // Reserve what this attempt will request so a long page is not rejected for a model MAX it won't use (codex P2 #125).
       const pick = this.router.pick(input.mode, inTokens, { ...baseOptions, exclude: tried, reserveOutputTokens: budgetFloor ?? this.maxOutputTokensDefault });
       if (pick.provider === "none" || !pick.model) {
-        if (best) return best; // every candidate truncated — best + truncated advisory
+        if (best) return best; // all candidates exhausted with ≥1 truncation — return the longest truncated best + advisory (a hard-fail-then-truncate mix lands here too)
         if (tried.length === 0) return rawFallback(input.content, pick.reason ?? "unconfigured");
         throw new TransformError(
           "transform_provider_failed",

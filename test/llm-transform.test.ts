@@ -568,6 +568,53 @@ test("#131 P2-A: hard-fail fallback traverses all candidates — a healthy 6th m
   assert.match(result.info.fallbackFrom ?? "", /m0.*m1.*m2.*m3.*m4/, "all five failing models were tried first");
 });
 
+test("#131: an explicit budget is a hard ceiling for extract too — truncated incomplete JSON is returned, not escalated", async () => {
+  // Intersection of the hard-ceiling invariant and the P2-B raw-best path: extract mode, an
+  // explicit small budget, and a model that truncates (incomplete JSON). The cap must NOT
+  // escalate past the caller budget; the raw incomplete JSON is returned as best + truncated.
+  const calls: LlmGenerateInput[] = [];
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "free/model", { free: true, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      calls.push(input);
+      return { text: '{"title":"par', truncated: true };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({
+    mode: "extract", output: "extract", content: "page", prompt: "p", budget: 50,
+    schema: { type: "object", properties: { title: { type: "string" } } },
+  });
+  assert.equal(calls.length, 1, "explicit budget — no escalation retry");
+  assert.equal(calls[0]?.maxOutputTokens, 50, "caller budget honored");
+  assert.equal(result.info.truncated, true);
+  assert.equal(result.result, '{"title":"par', "raw incomplete JSON returned as best, not parsed");
+});
+
+test("#131: a hard-fail followed by a truncation returns the truncated best via the pick-none branch", async () => {
+  // m0 hard-fails, m1 truncates at its ceiling (cap >= ceiling → push to tried), then pick-none
+  // fires (both excluded) and returns m1's truncated best. This pins the pick-none `if (best)`
+  // branch, which serves the mixed hard-fail-then-truncate case, not only every-candidate-truncated.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [
+      candidate("openrouter", "m0/model", { order: 0, maxOutputTokens: 8_000 }),
+      candidate("openrouter", "m1/model", { order: 1, maxOutputTokens: 8_000 }),
+    ],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      if (input.model === "m0/model") throw new Error("upstream down");
+      return { text: "partial from m1", truncated: true };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p" });
+  assert.equal(result.info.truncated, true);
+  assert.equal(result.result, "partial from m1");
+  assert.equal(result.info.model, "m1/model");
+  assert.match(result.info.fallbackFrom ?? "", /m0/, "m0 was tried + failed first");
+});
+
 test("router feedback demotes flaky free model before local fallback", () => {
   const router = new ModelRouter([
     candidate("openrouter", "free/model", { free: true }),
