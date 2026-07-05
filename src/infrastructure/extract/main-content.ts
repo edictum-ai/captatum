@@ -57,7 +57,7 @@ function stripChrome(html: string): string {
  * evaluateShellGate (index.ts), so the selection changes render escalation: scoping to a short
  * skeleton makes the gate MORE likely to trip (correct — the page needs rendering), never less. (#93)
  */
-export function selectMainContentHtml(html: string): string | null {
+export function selectMainContentHtml(html: string, reactStreaming: boolean = hasReactStreamingSwap(html)): string | null {
   // Fast path: no <article> AND no <main> → nothing to select. Skips the full pre-clean on the
   // common no-main-content page and — critically — on pathological inputs (the REDOS-5 <script>
   // flood), so cleaning runs once (in extractVisibleText) instead of twice and extractHtml stays
@@ -65,22 +65,21 @@ export function selectMainContentHtml(html: string): string | null {
   // comment just skips the short-circuit, never a false positive).
   if (!/<article/i.test(html) && !/<main/i.test(html)) return null;
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
-  // React streaming flag from the ORIGINAL html — the $RC/$RX swap markers live inside <script>
-  // tags stripped below, so this must run before `withoutCode` (same ordering as extractVisibleText).
-  // A React `<div hidden id="S:N">` boundary is real server-streamed content the browser reveals,
-  // so the article inside one IS a candidate (a genuinely `display:none`-hidden article is still
-  // excluded — #97 safety preserved for non-React hidden content).
-  const reactStreaming = hasReactStreamingSwap(html);
+  // reactStreaming comes from the caller (the full page) so a scoped fragment's missing $RC
+  // marker does not under-detect streaming. A React `<div hidden id="S:N">` boundary is real
+  // server-streamed content the browser reveals, so the article inside one IS a candidate (a
+  // genuinely `display:none`-hidden article is still excluded — #97 safety preserved for non-React).
   const withoutCode = ["script", "style", "noscript", "template"]
     .reduce((value, tag) => stripElement(value, tag), html);
   const clean = stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses, reactStreaming)));
 
   // Score every <article> by visible-text length. The FIRST is the page's primary (document
   // order), but a SUBSTANTIALLY richer sibling overrides it — a React loading skeleton is a short
-  // placeholder shipped first; the real streamed article is a far larger later sibling.
+  // placeholder shipped first; the real streamed article is a far larger later sibling. Scoring
+  // threads reactStreaming so a boundary-bearing fragment is measured with its streamed content.
   const articles = findElements(clean, "article").map<{ content: string; len: number }>((el) => ({
     content: el.content,
-    len: extractVisibleText(el.content).length,
+    len: extractVisibleText(el.content, reactStreaming).length,
   }));
   const firstArticle = articles[0];
   const richestArticle = articles.reduce<{ content: string; len: number } | undefined>(
@@ -89,7 +88,7 @@ export function selectMainContentHtml(html: string): string | null {
   );
   const longestMain = findElements(clean, "main").reduce<{ content: string; len: number } | undefined>(
     (best, el) => {
-      const len = extractVisibleText(el.content).length;
+      const len = extractVisibleText(el.content, reactStreaming).length;
       return !best || len > best.len ? { content: el.content, len } : best;
     },
     undefined,

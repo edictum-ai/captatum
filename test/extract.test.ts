@@ -1606,6 +1606,20 @@ test("selectMainContentHtml: a richer sibling does NOT override the primary on a
   assert.equal((main ?? "").includes("Related"), false, "a non-React page's longer sibling must not displace the primary article");
 });
 
+test("extractHtml: a nested React boundary inside the scoped <article> is preserved (#118 codex P1)", () => {
+  // The $RC swap script is OUTSIDE the article; the article contains a NESTED React boundary.
+  // Scoping to the article loses the $RC marker (a script, stripped/outside scope), so the
+  // streaming flag must be threaded from the FULL page — otherwise extractVisibleText recomputes
+  // false from the fragment and strips the nested boundary, silently omitting its streamed body.
+  const html = "<html><body>"
+    + "<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute('hidden')}</script>"
+    + "<article><p>Visible intro paragraph with enough words to satisfy the shell gate alone.</p>"
+    + "<div hidden id=\"S:5\"><p>Nested streamed body that must NOT be silently omitted.</p></div>"
+    + "</article></body></html>";
+  const out = extractHtml({ html, url: "https://example.test/", contentType: "text/html" });
+  assert.match(out.text, /Nested streamed body that must NOT be silently omitted/);
+});
+
 test("selectMainContentHtml: empty <main> shell scopes to empty so chrome doesn't mask a needed render (#108, codex P2)", () => {
   // Client-rendered SPA shell: an empty <main id=root> (the render target) with header/footer
   // chrome OUTSIDE it. Scoping to the empty <main> leaves textLength 0 so the shell-gate escalates

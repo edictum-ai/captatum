@@ -65,9 +65,9 @@ export function findElements(html: string, tagName: string): HtmlElement[] {
   return elements;
 }
 
-export function extractVisibleText(html: string): string {
+export function extractVisibleText(html: string, reactStreaming: boolean = hasReactStreamingSwap(html)): string {
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
-  const reactStreaming = hasReactStreamingSwap(html); // $RC/$RX markers are in <script> (stripped below) — read original html first
+  // reactStreaming is caller-supplied (from the full page): a scoped fragment loses the $RC marker (#118 codex P1).
   const body = extractBodyHtml(html) ?? stripElement(html, "head");
   // `svg` is NOT stripped here — inlineSvgText (next) preserves its `<text>` chart
   // data before the wrapper is removed. stripHiddenSubtrees also drops class-based
