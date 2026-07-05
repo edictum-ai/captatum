@@ -9,7 +9,7 @@ import { buildPayload, candidateNodes, isContentNode } from "./tier1-payload.ts"
 
 /** REDOS-4: char budget for synchronous HTML extraction input. The scanners are
  *  O(n); 1M chars is far beyond any real page's structured-data region. */
-const EXTRACT_CHAR_BUDGET = 1_000_000;
+const EXTRACT_CHAR_BUDGET = 5_000_000; // covers deep-content pages (Jira REST article sits at ~2.8MB); scanners are O(n) (REDOS-5)
 
 export interface HtmlExtractionInput {
   html: string;
