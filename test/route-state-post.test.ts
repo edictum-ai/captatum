@@ -104,3 +104,27 @@ test("RenderRouteState aborts a document POST (only fetch/xhr are data fetches) 
   await state.handle(route);
   assert.equal((route as { aborted: boolean }).aborted, true, "document POST aborted");
 });
+
+test("RenderRouteState: a first-party CORS preflight (OPTIONS) gets a permissive synthesized response (#111 codex P1)", async () => {
+  // Jira: developer.atlassian.com page → OPTIONS preflight to api.atlassian.com (cross-origin,
+  // same registrable domain). Without a permissive preflight the browser never issues the POST.
+  const state = new RenderRouteState(RENDER_INPUT(okFetcher("x")), [], noopGuard);
+  const route = stubRoute({ method: "OPTIONS", resourceType: "fetch", url: "https://api.example.test/data" });
+  // Record the fulfill status + headers (stubRoute records only fulfilled/aborted).
+  let status = 0; let headers: Record<string, string> | undefined;
+  (route as { fulfill: unknown }).fulfill = async (opts: { status: number; headers?: Record<string, string>; body: Uint8Array }) => {
+    (route as { fulfilled: boolean }).fulfilled = true; status = opts.status; headers = opts.headers;
+  };
+  await state.handle(route);
+  assert.equal((route as { fulfilled: boolean }).fulfilled, true, "preflight fulfilled (not aborted)");
+  assert.equal(status, 204);
+  assert.equal(headers?.["access-control-allow-origin"], "*", "permissive ACAO");
+  assert.match(headers?.["access-control-allow-methods"] ?? "", /POST/, "POST allowed");
+});
+
+test("RenderRouteState: a third-party CORS preflight aborts (not first-party) (#111)", async () => {
+  const state = new RenderRouteState(RENDER_INPUT(okFetcher("x")), [], noopGuard);
+  const route = stubRoute({ method: "OPTIONS", resourceType: "fetch", url: "https://evil.example.org/data" });
+  await state.handle(route);
+  assert.equal((route as { aborted: boolean }).aborted, true, "third-party preflight aborted");
+});

@@ -5,7 +5,7 @@ import { config } from "../../config.ts";
 import type { PlaywrightFrame, PlaywrightRequest, PlaywrightRoute } from "./playwright-types.ts";
 import { safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { FetcherRouteFulfiller, type RouteFulfiller } from "./route-fulfill.ts";
-import { planPostForward } from "./post-forward.ts";
+import { CORS_ALLOW_ORIGIN, planOptionsPreflight, planPostForward } from "./post-forward.ts";
 import { Semaphore } from "./semaphore.ts";
 import { hostnameOf, isNavigation, shouldAbortWithoutBody } from "./route-helpers.ts";
 
@@ -130,22 +130,17 @@ export class RenderRouteState {
       return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
     }
     if (mainFrameNav) {
-      // The main-frame document navigation owns provenance, updated on EVERY such
-      // navigation — including a client-side same-tab navigation after the first
-      // load (e.g. location.href = '/canonical'). Subframe documents also satisfy
-      // isNavigationRequest(); we tell them apart by frame === page.mainFrame() so
-      // an iframe never clobbers finalUrl/redirects, and a subframe reject is not
-      // fatal (only the main frame's failure fails the render).
+      // The main-frame document navigation owns provenance (updated on EVERY main-frame nav,
+      // incl. a client-side same-tab nav). Subframe documents also satisfy isNavigationRequest();
+      // frame === page.mainFrame() tells them apart so an iframe never clobbers finalUrl/redirects
+      // and a subframe reject is not fatal.
       this.status = outcome.status;
       this.finalUrl = outcome.finalUrl;
       this.redirects = outcome.redirects;
-      // Fidelity note: the navigation body is served against the ORIGINAL request
-      // URL, so for a cross-origin redirect the browser's base URL stays the
-      // original origin (relative subresources resolve there and may miss) and
-      // Set-Cookie from intermediate hops is not carried. Replaying a 302 to
-      // finalUrl would fix the base URL, but Playwright does not follow a
-      // fulfilled redirect for a navigation. Render-fidelity limit for
-      // cross-origin redirects only — every hop was guard-validated, not an SSRF gap.
+      // Fidelity limit: the nav body is served against the ORIGINAL request URL, so a cross-origin
+      // redirect's base URL stays the original origin (relative subresources may miss) + Set-Cookie
+      // from intermediate hops isn't carried. Playwright can't follow a fulfilled redirect for a
+      // nav. Cross-origin-redirect only; every hop was guard-validated, not an SSRF gap.
     }
     // TIER3-DOS-1: each pool (essential vs non-essential) is capped. The essential cap is
     // ESSENTIAL_BUDGET_MULTIPLIER× the non-essential cap so heavy client apps (Cursor, Jira)
@@ -181,10 +176,16 @@ export class RenderRouteState {
     });
   }
 
-  /** #111: a non-GET Tier-3 request. Only a first-party POST (fetch/xhr) forwards through FetcherPort;
-   *  everything else aborts. The body is reserved against the ESSENTIAL pool at dispatch + released on
-   *  reject (so N rejected POSTs can't blow the pool); concurrency is bounded by a tryAcquire semaphore. */
+  /** #111: a non-GET Tier-3 request — a first-party CORS preflight (OPTIONS) gets a synthesized permissive
+   *  response; a first-party POST (fetch/xhr) forwards through FetcherPort (body reserved, released on reject); else aborts. */
   private async handleNonGet(route: PlaywrightRoute, request: PlaywrightRequest, url: string, resourceType: string): Promise<void> {
+    // CORS preflight (OPTIONS) for a cross-origin POST: synthesize a permissive first-party response (#111 codex P1).
+    if (request.method() === "OPTIONS") {
+      const pre = planOptionsPreflight({ resourceType, url, mainRegistrableDomain: this.mainRegistrableDomain });
+      if (pre.kind === "abort") return this.abort(route, url, resourceType, pre.reason);
+      await route.fulfill({ status: 204, body: new Uint8Array(0), headers: pre.headers });
+      return;
+    }
     const h = request.headers?.() ?? {};
     const plan = planPostForward({
       method: request.method(),
@@ -197,12 +198,10 @@ export class RenderRouteState {
       maxBytes: this.postMaxBytes,
     });
     if (plan.kind === "abort") return this.abort(route, url, resourceType, plan.reason);
-    // POST is essential: once the essential pool is blown (the crossing POST was fulfilled), later
-    // essentials abort — same rule as the GET essential path, keeping total egress bounded.
+    // POST is essential: once the essential pool is blown, later essentials abort (total egress bounded).
     if (this.essentialBudgetExceeded) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     if (!this.postSemaphore.tryAcquire()) return this.abort(route, url, resourceType, "render_concurrency_limit");
-    // Reserve the body at dispatch (before the await) so N concurrent POSTs each (cap-1) bytes
-    // cannot bypass the pool. Released on reject (no completed egress); the response is added on fulfill.
+    // Reserve the body at dispatch (before the await) so N concurrent POSTs can't bypass the pool; released on reject.
     this.essentialBytes += plan.body.byteLength;
     try {
       const outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit);
@@ -210,17 +209,18 @@ export class RenderRouteState {
         this.essentialBytes -= plan.body.byteLength;
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
       }
-      // Re-check after resolve: a concurrent essential may have blown the pool in flight. The crossing
-      // POST is fulfilled (aborting a body-bearing POST mid-load 400s the page); later ones abort.
+      // Re-check after resolve: a concurrent essential may have blown the pool in flight; the crossing POST is fulfilled, later ones abort.
       if (this.essentialBytes + outcome.body.byteLength > this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER) {
         this.essentialBudgetExceeded = true;
       }
       this.essentialBytes += outcome.body.byteLength;
       this.actions.push({ type: "request-forwarded-post", outcome: "ok", url: safeRenderUrl(url), resourceType, method: "POST", bodyBytes: plan.body.byteLength, responseBytes: outcome.body.byteLength });
+      // Add ACAO so the in-render browser's CORS check admits the cross-origin POST response (#111 codex P1).
       await route.fulfill({
         status: outcome.status,
         body: outcome.body,
         ...(outcome.contentType ? { contentType: outcome.contentType } : {}),
+        headers: CORS_ALLOW_ORIGIN,
       });
     } finally {
       this.postSemaphore.release();

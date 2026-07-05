@@ -99,3 +99,37 @@ function hostnameOf(url: string): string {
     return "";
   }
 }
+
+/** Headers added to a forwarded POST response so the in-render browser's CORS check admits the
+ *  cross-origin response (e.g. developer.atlassian.com reading api.atlassian.com's response). The
+ *  POST is already first-party-gated; this only tells captatum's OWN controlled browser the
+ *  response is cross-origin-readable. `*` is valid because the POST carries no credentials
+ *  (Cookie/Auth are never forwarded — D5). */
+export const CORS_ALLOW_ORIGIN: Record<string, string> = { "access-control-allow-origin": "*" };
+
+/** A first-party CORS preflight (OPTIONS) for a cross-origin POST gets a SYNTHESIZED permissive
+ *  response so the browser proceeds to the POST. Not forwarded: captatum is the fetcher in its
+ *  own controlled render, not a real cross-origin client the upstream must authorize, and the POST
+ *  itself is already first-party-gated. (Forwarding the preflight would also drop Origin — D5 — so
+ *  the upstream could not return a matching ACAO.) */
+const CORS_PREFLIGHT_HEADERS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "content-type",
+  "access-control-max-age": "600",
+};
+
+/** Decide whether a Tier-3 OPTIONS request is an authorized first-party CORS preflight to respond
+ *  to (permissively) or to abort. Same first-party gate as the POST: only same-registrable-domain
+ *  fetch/xhr preflights are honored. (#111 codex P1.) */
+export function planOptionsPreflight(input: { resourceType: string; url: string; mainRegistrableDomain: string | null }):
+  | { kind: "respond"; headers: Record<string, string> }
+  | { kind: "abort"; reason: string } {
+  if (input.resourceType !== "fetch" && input.resourceType !== "xhr") {
+    return { kind: "abort", reason: "unsupported_browser_method" };
+  }
+  if (!isSameRegistrableDomain(hostnameOf(input.url), input.mainRegistrableDomain ?? "")) {
+    return { kind: "abort", reason: "unsupported_browser_method" };
+  }
+  return { kind: "respond", headers: CORS_PREFLIGHT_HEADERS };
+}
