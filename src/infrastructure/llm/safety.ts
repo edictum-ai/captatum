@@ -140,6 +140,7 @@ export function detectSensitiveTransformInput(input: {
     // — a loopback OAuth redirect carrying a bearer token is a real leak, not a docs example.
     const reason = signedUrlReason(match[0], CONTENT_CREDENTIAL_QUERY_KEYS)
       ?? fragmentCredentialReason(match[0], CONTENT_CREDENTIAL_QUERY_KEYS)
+      ?? userinfoCredentialReason(match[0])
       ?? internalHostReason(match[0], true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
@@ -184,6 +185,18 @@ function fragmentCredentialReason(sourceUrl: string, keys: Set<string>): string 
   for (const key of new URLSearchParams(fragment).keys()) {
     if (keys.has(key.toLowerCase())) return "signed_or_tokenized_url";
   }
+  return undefined;
+}
+
+/** Credentials in the URL USERINFO (user:pass@host). Without this a loopback URL carrying
+ *  basic-auth credentials (http://client:secret@localhost:3000/cb) would egress under the
+ *  loopback exemption — query/fragment checks don't see userinfo. Returns "userinfo_credential"
+ *  if the URL has a non-empty username or password. */
+function userinfoCredentialReason(sourceUrl: string): string | undefined {
+  try {
+    const parsed = new URL(sourceUrl);
+    if (parsed.username || parsed.password) return "userinfo_credential";
+  } catch { /* ignore unparseable URLs */ }
   return undefined;
 }
 
