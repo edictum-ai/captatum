@@ -132,19 +132,31 @@ The per-host cap is therefore **union-keyed on egress hosts**: pre-egress it
 truncates each SEED registrable domain to `maxPerHostInBulk` (catches dumb
 floods); post-egress a running count aborts further seeds to any union host that
 crosses the cap (`status:"fail"`, code `bulk_per_host_cap`). The per-host
-token-bucket bounds the rate. Directed-DoS *relative to a victim* is inherent to
-any bulk tool — these caps bound, not eliminate, it (Known Risk).
+token-bucket bounds the rate **for known hosts** — an undiscovered redirect victim
+is not in the bucket until the first seed settles, so the discovery wave is
+bounded separately (see "In-flight discovery overshoot" below). Directed-DoS
+*relative to a victim* is inherent to any bulk tool — these caps bound, not
+eliminate, it (Known Risk).
 
-**In-flight discovery overshoot (honest count bound).** A victim host is only
-added to the union count AFTER a seed settles (the redirect target is unknown at
-dispatch). So up to `maxConcurrency - 1` seeds already in flight can reach a
-newly-discovered victim before the count cap aborts further dispatch. The
-worst-case per-victim fetch count is therefore **`maxPerHostInBulk + maxConcurrency - 1`**
-(= 13 at the defaults), not exactly `maxPerHostInBulk`. This overshoot is
-**rate-bounded independently** by the union-keyed `maxPerHostInflight` +
-`crawlDelayMs` token bucket (13 fetches arrive at a polite rate, not a burst).
-A future hardening (reserve/serialize unknown-egress discovery) tightens the
-count bound to exactly `maxPerHostInBulk`.
+**In-flight discovery overshoot (honest bounds).** A victim host is only added
+to the union count AND the union-keyed token bucket AFTER a seed settles (the
+redirect target is unknown at dispatch). Two consequences, stated honestly:
+- **Count:** up to `maxConcurrency - 1` seeds already in flight can reach a
+  newly-discovered victim before the count cap aborts further dispatch, so the
+  worst-case per-victim fetch count is `maxPerHostInBulk + maxConcurrency - 1`
+  (= 13 at the defaults), not exactly `maxPerHostInBulk`.
+- **Rate:** the union-keyed `maxPerHostInflight` token bucket ALSO cannot gate a
+  victim it has not seen yet. The first "discovery wave" (≤ `maxConcurrency`
+  seeds on distinct seed hosts, all funnelling to the as-yet-undiscovered victim)
+  hits the victim CONCURRENTLY — a one-time burst of ≤ `maxConcurrency` (= 4),
+  NOT a polite rate. Only after the victim is discovered are SUBSEQUENT seeds
+  rate-bounded by `maxPerHostInflight` + `crawlDelayMs`.
+
+Net: a redirect-funnel victim can see a one-time concurrent burst of ≤
+`maxConcurrency` and a total of ≤ `maxPerHostInBulk + maxConcurrency - 1`
+requests (both small at the defaults — 4 and 13). A future hardening
+(quarantine/serialize ALL unknown-egress dispatch once any seed discovers a
+victim) bounds the discovery wave too.
 
 **Egress-byte accounting honesty (v1).** `maxGlobalEgressBytes` is summed from
 `result.bytes` (document bytes), which is exact for the raw-default Tier-1 path.
