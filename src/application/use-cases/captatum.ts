@@ -4,6 +4,7 @@ import type { RenderPort } from "../ports/renderer.ts";
 import { TransformError, type TransformPort, type TransformResult } from "../ports/transformer.ts";
 import type { Platform } from "../../domain/platform.ts";
 import { type Result } from "../../domain/result.ts";
+import type { CaptatumContext } from "../ports/captatum-context.ts";
 import type { PlatformAdapterRegistry } from "../ports/platform-adapter.ts";
 import { createAdapterRegistry } from "../adapters.ts";
 import { tryTier2ShortCircuit } from "./tier2.ts";
@@ -29,10 +30,6 @@ const GENERIC_PLATFORM: Platform = {
   label: "Generic HTML",
   detectedFrom: "tier1",
 };
-
-export interface CaptatumContext {
-  fetchedAt?: string;
-}
 
 export interface CaptatumDeps {
   fetcher: FetcherPort;

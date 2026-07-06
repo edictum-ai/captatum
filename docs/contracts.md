@@ -66,6 +66,188 @@ One tool. Input (v0):
 
 **Client-aware shaping (#45).** Some connectors render `content[0].text` but not the full `structuredContent` (e.g. Claude Code), so `debug: true` (which places diagnostics in `structuredContent`) appears to do nothing there. The output shape can be tuned per OAuth `client_id` via the `CAPTATUM_CLIENT_PROFILES` env (`clientId=profile,…`; deployment-specific). The `text-forward` profile appends a compact diagnostics block to `content[0].text` when `debug` is on (for non-raw output — raw stays clean); unknown/local `client_id`s get the **default** profile (= today's behavior), so this is additive + backward-compatible. Registered connector `client_id`s are discoverable from the audit log (`audit.tool` events carry `clientId` per call).
 
+## Tool: `captatum_bulk`
+
+A second, additive tool that runs N independent single-URL `captatum` calls under
+hard global + per-host + per-call bounds. **The orchestrator adds NO egress
+path** — it composes the single-URL use case per seed; every per-seed SSRF /
+Tier-3 / prompt-injection control is enforced unchanged. Amplification factor is
+**fixed at 1 per caller-supplied URL**: no sitemap, no link-following, no
+recursion, no `depth` field (its absence is the structural anti-crawler
+guarantee). Discovery (board→roster, sitemap, crawl-frontier) stays in single-
+fetch / a future `captatum_crawl` lane; bulk is strictly per-URL. v1 is
+**cross-domain** (one call may span N registrable domains — "compare these
+competitor pages"); the directed-DoS bound is the per-host cap (below), not a
+same-domain scope restriction.
+
+**Bright line (stated honestly):** captatum never follows links and never
+depth-crawls in its GENERIC path. The existing Tier-2 ATS adapter is a built-in,
+bounded roster expander (cap 500) for board-root seeds in SINGLE fetch only.
+`captatum_bulk` adds NO expansion — it is per-URL only and additionally REJECTS
+board-root seeds per-entry. Discovery is a future `captatum_crawl` lane we are
+deliberately NOT entering.
+
+Input (v0):
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `urls` | yes | Non-empty array of fully-formed `http`/`https` URLs. Each is `http`→`https` upgraded, userinfo/CRLF-stripped (`normalizeContractUrl` per entry). Duplicates (canonicalized) are dropped and counted. |
+| `prompt` | no (yes for summary/extract) | Uniform across all seeds. Defaults to a general summary. |
+| `output` | no | **DEFAULT `raw`** for bulk (flipped from single-fetch's provider-conditional default). `summary`/`extract` run the Transform router once per seed and drop the URL cap to 10. |
+| `schema` | no | Uniform JSON schema for `output: extract`. |
+| `budget`, `transform`, `maxBytes`, `timeoutMs`, `debug` | no | Uniform; same semantics as single-fetch. Bulk `timeoutMs` default **8 s** (per-seed Tier-1/2). |
+| `allowRender` | no | **DEFAULT `false`** for bulk (flipped from hosted single-fetch's `true`). N Chromium sessions is qualitatively bigger blast radius; render-on-bulk is opt-in and capped by `maxRenderedSeeds`. |
+| `maxTransformCostUsd` | no | Per-call transform cost ceiling (USD). Caller-set, clamped to the server ceiling `$0.50`. Over-ceiling caller value is clamped + disclosed. |
+| `perSeedTransformCostUsd` | no | Per-seed transform cost ceiling (USD). Caller-set, clamped to the server ceiling `$0.05`. Bounds concurrent overshoot. |
+
+**No per-seed overrides in v1** — `prompt`/`output`/`schema`/`transform` apply
+uniformly to all seeds. Per-seed `{url,prompt,schema}` is a documented v1.1
+forward path (the `urls` element widens `string → string|object`, no schema
+break). **No `depth`/`scope` field** — its absence is the anti-crawler guarantee.
+
+### BulkGuard — the caps (cross-domain v1)
+
+These caps are the ONLY amplification bound in v1 (there is no per-tenant
+`BulkQuotaPort` and no separate `bulk:read` scope yet — see threat-model.md).
+Server ceilings are NOT caller-overridable; caller values for the cost knobs are
+**clamped** to the ceiling and the clamp is disclosed.
+
+| Cap | Default | Attack it bounds |
+| --- | --- | --- |
+| `maxUrls` | 50 (`raw`) / 10 (`summary`\|`extract`) | unbounded crawl (total across all hosts); over-ceiling → CLAMP + DISCLOSE |
+| `maxPerHostInBulk` | 10 | directed DoS — COUNT per victim; **union-keyed on egress hosts** (seed + redirect + finalUrl + Tier-2-resolved); truncate + disclose |
+| `maxGlobalEgressBytes` | 100 MB | egress amplification (host-agnostic global sum; v1 sums `result.bytes` — see honesty note) |
+| `maxGlobalWallMs` | 180 000 | browser-time / orphaned-call (hard, `AbortController`-tied, NOT caller-raisable) |
+| `maxConcurrency` | 4 | directed DoS — global fetch concurrency (shared across all hosts in a call) |
+| `maxRenderedSeeds` | 10 | Tier-3 OOM (count of seeds that escalate to render) |
+| `maxPerHostInflight` | 2 (CONFIGURABLE) | directed DoS — per-host token-bucket **burst** (union-keyed); tune empirically |
+| `crawlDelayMs` | 1000 (500 floor, server-clamped) | per-host token-bucket **refill** (politeness per victim) |
+| `maxTransformCostUsd` | 0.50 (CONFIGURABLE per-call; clamped) | cost amplification — global, re-checked after each transform |
+| `perSeedTransformCostUsd` | 0.05 (CONFIGURABLE per-call; clamped) | cost amplification — concurrent-overshoot bound |
+
+**Cross-domain directed-DoS model.** In same-domain the per-host caps were
+politeness to one host; in cross-domain they ARE the directed-DoS bound, and a
+redirect-funnel vector appears (N seeds on N distinct domains all 302→victim).
+The per-host cap is therefore **union-keyed on egress hosts**: pre-egress it
+truncates each SEED registrable domain to `maxPerHostInBulk` (catches dumb
+floods); post-egress a running count aborts further seeds to any union host that
+crosses the cap (`status:"fail"`, code `bulk_per_host_cap`). The per-host
+token-bucket bounds the rate. Directed-DoS *relative to a victim* is inherent to
+any bulk tool — these caps bound, not eliminate, it (Known Risk).
+
+**Egress-byte accounting honesty (v1).** `maxGlobalEgressBytes` is summed from
+`result.bytes` (document bytes), which is the real egress for the raw-default
+Tier-1 path. For `allowRender:true` bulks, Tier-3 subresource bytes are
+**undercounted** in v1 (the deep `egressBytes` plumbing into RenderRouteState is
+a follow-up); mitigated by `allowRender=false` default + `maxRenderedSeeds=10`.
+This undercount is a documented Known Risk, not a silent one.
+
+### Input shaping (before any egress)
+
+`validate → reject Tier-2 board URLs per-entry → dedupe → per-host cap (truncate
++ disclose) → total clamp (maxUrls, clamp + disclose)`. There is NO same-domain
+scope check in v1 (cross-domain is the normal case); the per-host cap replaces
+it as the directed-DoS bound. Tier-2 board-root seeds are rejected per-entry
+(`tier2_board_not_supported_in_bulk`): the roster-intact invariant (a Tier-2
+roster must NOT be byte-sliced) is preserved, and the career-site wedge is
+single-fetch the board (roster) → bulk the per-JD URLs.
+
+### Admission-path (load-bearing wiring)
+
+The `captatum_bulk` handler acquires **exactly ONE admission slot for the whole
+call** (the same process-wide `AdmissionLimiter`, `MAX_CONCURRENT_MCP=8`, that
+wraps single-fetch). The orchestrator receives the **UNWRAPPED**
+`CaptatumExecutorPort` — inner per-seed fan-out takes NO admission slots, bounded
+instead by the BulkGuard (`maxConcurrency` + union-keyed per-host gate).
+`OverloadedError` therefore fires ONLY at the bulk-call boundary (retryable
+`-32050`, whole-call) and is NEVER swallowed as a per-seed `tier:"error"`. This
+is the only consistent accounting: never wrap bulk's inner per-seed `execute()`
+with admission.
+
+### BulkResult envelope (new, `src/domain/bulk-result.ts`)
+
+```
+BulkResult {
+  schemaVersion: 1, kind: "bulk", bulkId,
+  ok, status: "pass" | "partial" | "fail",   // fail = ALL seeds failed
+  count, passed, failed, truncated, deduped,
+  totals: { bytes, egressBytes, durationMs, transformInTokens, transformOutTokens, transformCostUsd },
+  guard: BulkGuard,                          // the caps actually applied (honest receipt)
+  capBreaches: [reason],                     // which caps short-circuited the run
+  clamp: {                                   // disclosure of input shaping (decision 10)
+    inputUrls, afterDedupe, afterPerHostCap, processed,     // counts at each stage
+    perHostTruncated: [{ host, kept, dropped }],            // per-host cap disclosure
+    totalClampedTo?: number,                                 // set when maxUrls clamped
+  },
+  fenceToken: string,                        // random per-call separator in content[0].text
+  results: [{                                // one per processed seed, INPUT ORDER preserved
+    url, finalUrl, status, tier, code, codeText,
+    bytes, egressBytes, output, platform, jsRequired, resolvedVia,
+    redirectHosts: string[], contentSha256,  // anti-tamper / re-fetch handle
+    result,                                  // hard snippet <=500 chars (or board-rejected msg)
+    transform?: { provider, model?, reason? },
+    warnings: [...], errors: [...],
+  }],
+  failures: [{ url, code, message }],        // convenience: failed seeds only
+  warnings: [...], errors: [...],
+}
+```
+
+### MCP delivery
+
+- `content[0].text`: one bounded blob. Provenance header
+  `<!-- captatum kind=bulk count=N … fence=<token> -->` + per-URL sections framed
+  by the random fence token (`=== [n/N] <url> (fence=<token>) ===` …
+  `=== end (fence=<token>) ===`). Total capped `CAPTATUM_BULK_MAX_TEXT_CHARS`
+  (default 50 KB); per-URL capped (default 8 KB); overflow → <=500-char snippet +
+  `finalUrl`.
+- `structuredContent`: lean `BulkResult` rows, per-entry `result` <=500 chars,
+  per-entry `contentSha256` present; total capped ~25 KB, overflow drops the
+  snippet (keeps `url`+`status`+`tier`+`code`+`finalUrl`).
+- **Prompt-injection (Nx dose):** N entries in one tool result is an inherent Nx
+  injection-dose amplification. The fence token is server-generated (never
+  echoable from page content); per-entry `contentSha256` is an anti-tamper handle;
+  the server instructions state bulk entries are UNTRUSTED data and the consuming
+  agent must not act on instruction-shaped text across entries. Per-seed transform
+  isolation (one LLM call per seed) is a contract invariant — NO cross-seed
+  content concatenation into one LLM input.
+
+### Bulk error codes (per-seed `fail` unless noted)
+
+`bulk_per_host_cap` (directed-DoS count bound, union-keyed),
+`tier2_board_not_supported_in_bulk` (board-root seed rejected per-entry),
+`bulk_deadline_exceeded` (wall-cap abort of remaining seeds),
+`bulk_budget_exceeded` (egress-bytes or transform-cost cap bit — reason names
+which), `bulk_render_cap_exceeded` (maxRenderedSeeds). Partial failure is
+NORMAL — a per-seed SSRF block / 404 / timeout / captcha is one `fail` entry +
+a `failures[]` row, NOT a tool-level error. Tool-level error is reserved for
+input-validation, auth, and admission `OverloadedError` (`-32050`) only.
+
+### Recorded additive contract changes (not breaking)
+
+1. `CaptatumContext` gains optional `signal?: AbortSignal` (moved out of
+   `captatum.ts` to `src/application/ports/captatum-context.ts`; threaded into
+   `execute → fetcher.fetchGuarded` for v1 fetch-only abort). Existing callers
+   pass nothing — behavior unchanged.
+2. `ToolAuditEvent.tool` widens to `"captatum" | "captatum_bulk"` and gains
+   optional `bulkId?: string`. Bulk emits **per-seed** events (one per seed,
+   `tool:"captatum_bulk"` + `bulkId` + `url_host`) plus one **summary** event
+   (no per-url body; body allow-list unchanged) carrying `totals` +
+   `capBreaches`. Flagged for CloudWatch consumers.
+3. (Follow-up, not v1) `Result.egressBytes?: number` (real egress incl. Tier-3
+   subresources) and `FetcherResult.retryAfterMs?: number` are deferred — v1
+   sums `result.bytes` and treats 429/503 as per-seed fails.
+
+### Two flavors (one core)
+
+- **Local binary:** ships ON (single-user, no auth, no admission cap,
+  `BulkQuotaPort` = noop). The BulkGuard caps bound each call.
+- **Hosted remote:** ships behind `CAPTATUM_BULK_ENABLED` (default **off**),
+  flipped on only after a GLOBAL fetch-concurrency cap (`LimitingFetcher`) +
+  per-tenant `BulkQuotaPort` land and OOM/admission behavior is monitored. The
+  8-slot admission wraps the bulk call (1 slot/call). Reuses `fetch:read` /
+  `fetch:transform` (no separate `bulk:read` scope in v1).
+
 ## Provenance / Result schema
 
 Extends WebFetch's output shape (`bytes`, `code`, `codeText`, `result`, `durationMs`, `url`) so it's familiar to agents/clients, then adds provenance:
@@ -269,7 +451,7 @@ Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). 
 - TIER-3 in-browser SSRF: `page.route` intercepts every browser request; **every non-aborted GET — and a first-party POST (same registrable domain, fetch/XHR only — #111) — is fulfilled through `FetcherPort`** (`route.fulfill`, never `route.continue`) so the browser makes no direct egress — connections are IP-pinned and every redirect hop is re-validated (`maxHops`, and a POST's method/body apply to the initial hop only); image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap (advisory truncation); browser in a separate process/container with no env — in-process launch keeps the OS sandbox ON (`chromiumSandbox` default true), and the hosted path uses a CDP sidecar container (`CAPTATUM_BROWSER_CDP_ENDPOINT`) where `--no-sandbox` is acceptable (container-isolated). The browser never runs in-process with `--no-sandbox` against the gateway. The first-party POST gate is PSL-aware (`isSameRegistrableDomain` via `psl`), POST-only, header-allowlisted (Content-Type only — never Cookie/Auth/Origin/Referer/Content-Length), body-capped (`CAPTATUM_RENDER_POST_MAX_BYTES`, never truncated) + concurrency-capped (`CAPTATUM_RENDER_POST_CONCURRENCY`), and the body is counted against the essential render-byte pool at dispatch and released on reject so N rejected POSTs cannot blow the pool. A same-registrable cross-origin POST (e.g. a page on developer.atlassian.com POSTing to api.atlassian.com) triggers a Chromium CORS preflight (`OPTIONS`) + a CORS check on the response; captatum synthesizes a permissive first-party preflight response (204 + `Access-Control-Allow-Origin: *` + allow-methods/headers) and adds `Access-Control-Allow-Origin: *` to the forwarded POST response, so the in-render browser admits the cross-origin exchange (captatum is its own controlled fetcher, not a real cross-origin client the upstream must authorize; the POST is already first-party-gated and carries no credentials).
 - Response guards: stream through a counting reader that **truncates** at `maxBytes` (advisory `truncated` flag, not a hard reject) — Content-Length is attacker-controlled so a pre-check would only stop honest oversized servers; the streamed cap is the real backstop.
 - Logging: allow-list only (tier, finalUrl, platform, status, bytes, timing, blockReason); never body, never `Set-Cookie`/`Authorization`; canonicalize logged URLs to scheme+host when host is private. Per-call audit event.
-- Per-host throttle + global concurrency cap + in-flight URL dedupe + per-job max-egress-fetch counter.
+- Concurrency: a process-wide `AdmissionLimiter` (`MAX_CONCURRENT_MCP=8`) bounds concurrent tool **executions** on hosted (one slot per single-fetch call, one slot per whole `captatum_bulk` call). The single-URL `guardedFetch` is otherwise stateless (no per-host throttle, no in-flight dedupe at the fetcher). `captatum_bulk` adds its own in-orchestrator bounds — `maxConcurrency` (global fetch pool within a call) + a union-keyed per-host token-bucket gate (`maxPerHostInflight` + `crawlDelayMs`) + the BulkGuard caps; a process-wide **global** fetch-concurrency cap across concurrent bulks (`LimitingFetcher`) is the hosted enablement gate (see "Tool: captatum_bulk").
 
 ## Storage
 
@@ -354,10 +536,16 @@ reject (Tier-1 pre-download) and a **non-fatal advisory** entry inside a
 *successful* `Result.errors` (Tier-3 rendered HTML truncated at the cap;
 `output: extract` parsed JSON that violated a supported-keyword schema). The
 `tier`/`code` distinguish the two — advisory entries never set `tier: "error"`.
+`captatum_bulk` per-seed failure codes (one `fail` entry in `BulkResult.failures`,
+not a tool-level error — partial failure is normal): `bulk_per_host_cap`,
+`tier2_board_not_supported_in_bulk`, `bulk_deadline_exceeded`,
+`bulk_budget_exceeded`, `bulk_render_cap_exceeded`. Tool-level errors for bulk are
+limited to input validation (`invalid_input` / `invalid_url` / `bulk_urls_empty`),
+auth, and admission `OverloadedError` (`-32050`).
 
 ## Audit event
 
-One per tool call: `{ occurredAt, subject?, clientId?, tool:"captatum", url_host (scheme+host only), tier, platform, output, status, bytes, durationMs, transformProvider?, transformModel? }`. OAuth transitions also write metadata-only auth events: `{ occurredAt, event, status, clientId?, subject?, resource?, scopes?, redirectHost?, reason? }`. Never includes body, full URL path/query for private hosts, authorization codes, refresh tokens, access tokens, consent tokens, or credentials.
+One per tool call: `{ occurredAt, subject?, clientId?, tool:"captatum"|"captatum_bulk", bulkId?, url_host (scheme+host only), tier, platform, output, status, bytes, durationMs, transformProvider?, transformModel?, transformCostUsd?, transformInTokens?, transformOutTokens?, transformFallbackFrom? }`. OAuth transitions also write metadata-only auth events: `{ occurredAt, event, status, clientId?, subject?, resource?, scopes?, redirectHost?, reason? }`. Never includes body, full URL path/query for private hosts, authorization codes, refresh tokens, access tokens, consent tokens, or credentials. `captatum_bulk` emits **per-seed** events (one per seed, `tool:"captatum_bulk"` + `bulkId` + per-seed `url_host`/tier/bytes/transform cost; the body allow-list is unchanged) PLUS one **summary** event (`bulkId`, no per-url body) carrying the run totals and `capBreaches` — so spend and SSRF traceability are preserved per seed while total ingest stays bounded.
 
 ## Deployment
 
