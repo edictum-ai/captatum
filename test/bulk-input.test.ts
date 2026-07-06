@@ -100,3 +100,11 @@ test("normalizeBulkInput: > 200 urls (valid or malformed) → too_many_urls whol
     (e: unknown) => e instanceof CaptatumInputError && e.body.error.code === "too_many_urls",
   );
 });
+
+test("normalizeBulkInput: userinfo credentials are redacted from the failure row (no credential leak)", () => {
+  const out = normalizeBulkInput({ urls: ["https://user:secretpass@example.test/x"] });
+  assert.equal(out.invalid.length, 1);
+  assert.equal(out.invalid[0].code, "userinfo_url");
+  assert.ok(!out.invalid[0].url.includes("secretpass"), "the password is not echoed");
+  assert.ok(!out.invalid[0].url.includes("user@"), "the userinfo is stripped");
+});

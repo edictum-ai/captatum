@@ -36,6 +36,10 @@ export class GuardedHttpFetcher implements FetcherPort {
   async fetchGuarded(url: string, opts: FetcherOptions, postInit?: PostInit): Promise<FetcherResult | RejectResult> {
     const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    // Hoisted into fetchGuarded's scope so a reject (private redirect target, timeout mid-chain,
+    // network error) carries the redirect chain in the RejectResult — the bulk orchestrator
+    // counts redirect-funnel victims even when the final hop failed (directed-DoS accounting).
+    const redirects: Redirect[] = [];
 
     try {
       const timeoutMs = positive(opts.timeoutMs, "timeout");
@@ -55,9 +59,10 @@ export class GuardedHttpFetcher implements FetcherPort {
         timeoutMs,
         signal,
         postInit,
+        redirects,
       );
     } catch (error) {
-      return toRejectResult(error);
+      return toRejectResult(error, redirects);
     } finally {
       if (timeout) clearTimeout(timeout);
     }
@@ -68,11 +73,11 @@ export class GuardedHttpFetcher implements FetcherPort {
     opts: FetcherOptions,
     timeoutMs: number,
     signal: AbortSignal,
-    postInit?: PostInit,
+    postInit: PostInit | undefined,
+    redirects: Redirect[],
   ): Promise<FetcherResult> {
     const maxBytes = positive(opts.maxBytes, "maxBytes");
     const maxHops = nonNegative(opts.maxHops, "maxHops");
-    const redirects: Redirect[] = [];
     let current = initial;
 
     for (;;) {

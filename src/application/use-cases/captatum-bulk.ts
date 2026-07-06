@@ -30,7 +30,7 @@ import type { Result } from "../../domain/result.ts";
 import { normalizeBulkInput, type NormalizedBulkRequest } from "./bulk-input.ts";
 import { BudgetTracker, type BudgetCapReason } from "./bulk-budget.ts";
 import { PerHostGate, Semaphore } from "./bulk-concurrency.ts";
-import { abortedSeedResult, hostOf, toBulkSeedResult } from "./bulk-seed.ts";
+import { abortedSeedResult, hostOf, raceWallAbort, toBulkSeedResult } from "./bulk-seed.ts";
 import { assembleBulkResult } from "./bulk-assemble.ts";
 
 const GENERIC_PLATFORM: Platform = { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" };
@@ -152,25 +152,29 @@ export class CaptatumBulkUseCase {
           }
           let effectiveOutput: Output = request.requestedOutput !== "raw" && before.runTransform ? request.requestedOutput : "raw";
           // Serialize transforms (cap 1): the transform INPUT is unbounded, so one seed's actual
-          // cost can exceed its perSeed reservation — serializing lets the post-transform re-check
-          // gate each transform (overshoot ≤ 1 oversize seed, then the rest fail-soft to raw). Re-check
-          // the cost cap after acquiring the slot; if it breached while we waited, fail-soft to raw.
+          // cost can exceed perSeed; serializing lets the post-transform re-check gate each (overshoot
+          // ≤ 1 oversize). Re-check shortCircuit + costCapReached after acquiring the slot (the cap may
+          // have reached/breached while we waited) → fail-soft to raw.
           let transformSlotHeld = false;
           if (effectiveOutput !== "raw") {
             transformSlotHeld = await transformSem.acquire(signal);
-            if (!transformSlotHeld || shortCircuit) {
+            if (!transformSlotHeld || shortCircuit || budget.costCapReached()) {
               if (transformSlotHeld) transformSem.release();
               transformSlotHeld = false;
               effectiveOutput = "raw";
             }
           }
           const downgradedByCost = request.requestedOutput !== "raw" && effectiveOutput === "raw";
+          const execInput = { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: false, debug: request.debug };
+          const execCtx = { ...(context.fetchedAt !== undefined ? { fetchedAt: context.fetchedAt } : {}), signal };
           let seedResult: Result;
           try {
-            seedResult = await this.deps.executor.execute(
-              { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: false, debug: request.debug },
-              { ...(context.fetchedAt !== undefined ? { fetchedAt: context.fetchedAt } : {}), signal },
-            );
+            // A raw seed's fetch already aborts on the wall signal; a TRANSFORM seed's LLM call
+            // does not — race it so the wall abandons a slow transform (dispatch-level, v1)
+            // instead of holding the bulk open past 180s. The LLM call isn't canceled, only un-awaited.
+            seedResult = transformSlotHeld
+              ? await raceWallAbort(this.deps.executor.execute(execInput, execCtx), signal, seed)
+              : await this.deps.executor.execute(execInput, execCtx);
           } catch (err) {
             seedResult = syntheticFail(seed, err);
           } finally {
@@ -184,11 +188,9 @@ export class CaptatumBulkUseCase {
             shortCircuit = shortCircuit ?? budgetMsg(after.reason as BudgetCapReason);
             record(`bulk_budget_exceeded:${after.reason}`);
           }
-          // Post-settle union-egress-host count — the cross-domain directed-DoS accounting.
-          // A victim discovered via redirect is counted here. The pre-egress seed-domain check
-          // can't see a fresh-domain funnel seed, so once a REDIRECT-discovered victim (h !==
-          // seedKey) crosses the cap we QUARANTINE: stop dispatching the rest. That bounds the
-          // per-victim seed count at maxPerHostInBulk + maxConcurrency - 1 (in-flight finish).
+          // Post-settle union-egress-host count. The pre-egress seed-domain check can't see a
+          // fresh-domain funnel seed, so once a REDIRECT-discovered victim (h !== seedKey) crosses
+          // the cap we QUARANTINE: stop dispatching the rest (bounds per-victim seeds; in-flight finish).
           for (const h of unionEgressHosts({ seedRegistrable: registrableDomain(hostOf(seed.url)) ?? hostOf(seed.url), redirects: seedResult.redirects.map((r) => r.url), finalUrl: seedResult.finalUrl })) {
             const next = (hostCounts.get(h) ?? 0) + 1;
             hostCounts.set(h, next);
@@ -198,9 +200,8 @@ export class CaptatumBulkUseCase {
               record("bulk_per_host_cap");
             }
           }
-          // Use the SETTLED Result.output (Fix F): a summary/extract seed whose transform fell
-          // back to raw (provider none) reports raw, not the requested output. A cost-cap
-          // downgrade (Fix B) is surfaced as partial + a warning on an otherwise-passing seed.
+          // Use the SETTLED Result.output (a summary/extract seed that fell back to raw reports
+          // raw); a cost-cap downgrade is surfaced as partial + a warning on an otherwise-passing seed.
           const row = toBulkSeedResult(seed, seedResult, seedResult.output);
           if (downgradedByCost && row.status === "pass") {
             row.status = "partial";

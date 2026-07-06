@@ -97,3 +97,28 @@ export function abortedSeedResult(seed: ValidatedSeed, code: string, message: st
     errors: [{ code, message }],
   };
 }
+
+/** A transform seed whose LLM call was abandoned at the bulk wall deadline (the wall signal
+ *  can't cancel the provider call, so the orchestrator stops awaiting it). tier:error. */
+export function wallAbandonedResult(seed: ValidatedSeed): Result {
+  const message = "transform abandoned at the bulk wall deadline";
+  return {
+    url: seed.url, bytes: 0, code: 0, codeText: "FETCH_REJECTED", durationMs: 0, result: message,
+    schemaVersion: 1, finalUrl: seed.url, redirects: [], tier: "error", output: "raw",
+    platform: { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" },
+    jsRequired: false, resolvedVia: "bulk-wall-abandon", attempts: [], contentType: "",
+    timings: { totalMs: 0, fetchMs: 0 }, errors: [{ code: "bulk_deadline_exceeded", message }],
+  };
+}
+
+/** Race an executor promise against the wall signal: if the deadline fires during a call the
+ *  signal can't cancel (a slow LLM transform), abandon it with a deadline-fail result instead
+ *  of holding the bulk open past the wall. The provider call is NOT canceled (it may finish
+ *  wastefully), only un-awaited — the documented v1 dispatch-level abandonment. */
+export async function raceWallAbort(p: Promise<Result>, signal: AbortSignal, seed: ValidatedSeed): Promise<Result> {
+  if (signal.aborted) return wallAbandonedResult(seed);
+  return Promise.race([
+    p,
+    new Promise<Result>((resolve) => signal.addEventListener("abort", () => resolve(wallAbandonedResult(seed)), { once: true })),
+  ]);
+}

@@ -78,6 +78,13 @@ export class BudgetTracker {
     return this.opts.clock.nowMs() >= this.deadlineMs;
   }
 
+  /** Has the settled transform spend reached the global cost cap? (A transform landing exactly
+   *  at the cap doesn't exceed it, so `afterSeed`'s strict `>` doesn't trip — but no FURTHER
+   *  transform should run. Queued seeds re-check this after acquiring the transform slot.) */
+  costCapReached(): boolean {
+    return this.costSettled >= this.opts.maxTransformCostUsd;
+  }
+
   /** Reserve per-seed byte + cost budget before dispatching. See file header. */
   beforeSeed(): BeforeSeed {
     if (this.bytesSettled + this.bytesReserved + this.opts.perSeedMaxBytes > this.opts.maxGlobalEgressBytes) {

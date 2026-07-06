@@ -7,6 +7,7 @@ import { PlatformAdapterRegistry } from "../src/application/ports/platform-adapt
 import type { Result } from "../src/domain/result.ts";
 import { CaptatumBulkUseCase } from "../src/application/use-cases/captatum-bulk.ts";
 import { Semaphore } from "../src/application/use-cases/bulk-concurrency.ts";
+import { raceWallAbort } from "../src/application/use-cases/bulk-seed.ts";
 
 function fakeClock(start = 1000): ClockPort & { now: number } {
   return { now: start, nowMs() { return this.now; } } as ClockPort & { now: number };
@@ -269,4 +270,37 @@ test("bulk cost serialize: concurrent transforms are serialized so the cap re-ch
   const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4 }).execute({ urls, output: "summary", maxTransformCostUsd: 0.10 });
   assert.ok(res.totals.transformCostUsd <= 0.11 + 1e-9, `cost overshoot bounded to ~1 oversize seed; got ${res.totals.transformCostUsd}`);
   assert.equal(res.results.filter((r) => r.output === "summary").length, 1, "exactly 1 transform before the cap re-check gated the rest");
+});
+
+test("bulk cost: a transform landing EXACTLY at the cap blocks queued transforms (costCapReached)", async () => {
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 4 }, (_, i) => `https://h${i}.test/p${i}`);
+  for (const u of urls) exec.results.set(u, okResult(u, { output: "summary", costUsd: 0.10 }));
+  // Each transform costs exactly the $0.10 cap. The first lands at costSettled=0.10 (not > 0.10,
+  // so no shortCircuit), but costCapReached (>=) makes the queued seeds fail-soft to raw.
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4 }).execute({ urls, output: "summary", maxTransformCostUsd: 0.10 });
+  assert.equal(res.results.filter((r) => r.output === "summary").length, 1, "only the first transform runs (lands exactly at the cap)");
+  assert.equal(res.results.filter((r) => r.output === "raw").length, 3, "queued seeds fail-soft to raw once the cap is reached");
+});
+
+test("raceWallAbort: an aborted wall signal abandons a slow in-flight transform (dispatch-level)", async () => {
+  const ac = new AbortController();
+  ac.abort();
+  // a "slow" transform that never resolves on its own — the race must abandon it on the wall signal
+  const slow = new Promise<Result>(() => {});
+  const res = await raceWallAbort(slow, ac.signal, { url: "https://a.test/x" });
+  assert.equal(res.tier, "error");
+  assert.equal(res.errors[0]?.code, "bulk_deadline_exceeded");
+  assert.equal(res.resolvedVia, "bulk-wall-abandon");
+});
+
+test("bulk: a redirect-funnel to a FAILING victim is still counted (redirects preserved on reject)", async () => {
+  // Each seed 302s to victim.test, which then times out → a tier:error result whose redirects
+  // (the 302 to victim) are PRESERVED, so the union count sees the victim + the quarantine fires.
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 14 }, (_, i) => `https://src${i}.test/p`);
+  for (const u of urls) exec.results.set(u, { ...rejectResult(u, "timeout", "timed out"), redirects: [{ url: "https://victim.test/x", status: 302 }] });
+  const res = await makeBulk(exec, fakeClock(), { maxPerHostInflight: 50, maxConcurrency: 4 }).execute({ urls });
+  assert.ok(res.capBreaches.some((c) => c.startsWith("bulk_per_host_cap")), `failing-redirect victim counted + quarantined: ${res.capBreaches}`);
+  assert.ok(res.results.some((r) => r.codeText === "bulk_per_host_cap"), "some funnel seeds aborted after the victim crossed the cap");
 });

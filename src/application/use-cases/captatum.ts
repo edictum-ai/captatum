@@ -227,7 +227,6 @@ function rejectResult(
     result: rejected.message,
     schemaVersion: 1,
     finalUrl: request.url,
-    redirects: [],
     tier: "error",
     output: request.requestedOutput,
     platform: GENERIC_PLATFORM,
@@ -242,6 +241,9 @@ function rejectResult(
     }],
     contentType: "",
     timings: { totalMs, fetchMs },
+    // Preserve the redirect chain followed before the reject (e.g. a 302 to a host that then
+    // timed out) so the bulk orchestrator counts redirect-funnel victims on failed hops too.
+    redirects: rejected.redirects ?? [],
     errors: [{ code: rejected.code, message: rejected.message }],
     ...(fetchedAt !== undefined ? { fetchedAt } : {}),
   };

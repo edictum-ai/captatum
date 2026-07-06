@@ -115,7 +115,9 @@ export function normalizeBulkInput(value: unknown): NormalizedBulkInput {
   for (const raw of parsed.urls) {
     // Clip EVERY raw URL stored in a failure (not just the valid-but-too-long case) so a
     // multi-MB malformed URL can't be echoed into failures[] → structuredContent unchanged.
-    const safeRaw = raw.length > BULK_MAX_URL_LENGTH ? `${raw.slice(0, BULK_MAX_URL_LENGTH)}…` : raw;
+    // Also redact userinfo (https://user:pass@host) — normalizeContractUrl rejects userinfo
+    // BEFORE stripping it, so the raw carries credentials into the failure row otherwise.
+    const safeRaw = redactUserinfo(raw.length > BULK_MAX_URL_LENGTH ? `${raw.slice(0, BULK_MAX_URL_LENGTH)}…` : raw);
     try {
       const url = normalizeContractUrl(raw);
       if (url.length > BULK_MAX_URL_LENGTH) {
@@ -133,6 +135,12 @@ export function normalizeBulkInput(value: unknown): NormalizedBulkInput {
 }
 
 type ParsedBulkInput = z.infer<typeof bulkInputSchema>;
+
+/** Strip `user:pass@` from a URL stored in a failure row so credentials are never echoed
+ *  (normalizeContractUrl rejects userinfo BEFORE stripping it). */
+function redactUserinfo(u: string): string {
+  return u.replace(/^(https?:\/\/)[^/?#]+@/i, "$1");
+}
 
 function parseInput(value: unknown): ParsedBulkInput {
   const result = bulkInputSchema.safeParse(value);

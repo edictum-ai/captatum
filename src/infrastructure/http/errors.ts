@@ -1,4 +1,4 @@
-import type { RejectResult } from "../../application/ports/fetcher.ts";
+import type { Redirect, RejectResult } from "../../application/ports/fetcher.ts";
 
 export class GuardedFetchError extends Error {
   readonly code: string;
@@ -14,18 +14,17 @@ export function reject(code: string, message: string): never {
   throw new GuardedFetchError(code, message);
 }
 
-export function toRejectResult(error: unknown): RejectResult {
-  if (error instanceof GuardedFetchError) {
-    return { rejected: true, code: error.code, message: error.message };
-  }
-  if (isAbortError(error)) {
-    return { rejected: true, code: "timeout", message: "Fetch timed out" };
-  }
-  return {
-    rejected: true,
-    code: "network_error",
-    message: "Fetch failed before a safe response was available",
-  };
+export function toRejectResult(error: unknown, redirects?: Redirect[]): RejectResult {
+  const base = (() => {
+    if (error instanceof GuardedFetchError) {
+      return { code: error.code, message: error.message };
+    }
+    if (isAbortError(error)) {
+      return { code: "timeout", message: "Fetch timed out" };
+    }
+    return { code: "network_error", message: "Fetch failed before a safe response was available" };
+  })();
+  return { rejected: true, ...base, ...(redirects && redirects.length > 0 ? { redirects } : {}) };
 }
 
 export function throwIfAborted(signal: AbortSignal): void {

@@ -74,6 +74,11 @@ export interface RejectResult {
   rejected: true;
   code: string;
   message: string;
+  /** Redirect chain followed before the reject (e.g. a 302 to a host that then timed out or
+   *  was SSRF-rejected). Carried so the orchestrator can count redirect-funnel victims even
+   *  when the final hop failed (directed-DoS accounting). Absent/empty when the reject happened
+   *  before any redirect (e.g. a private-address literal at initial resolve). */
+  redirects?: Redirect[];
 }
 
 /**
