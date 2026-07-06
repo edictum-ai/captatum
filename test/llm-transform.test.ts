@@ -857,6 +857,24 @@ test("noneReason: zero candidates reports 'unconfigured' even when the sensitive
   assert.equal(noneReason({ localOnly: true }, 1), "sensitive_content_no_local_provider");
 });
 
+test("4xx/5xx response: output summary short-circuits to raw so the real error body reaches the agent (#127 0.11.3, codex r8)", async () => {
+  // A 4xx body is an error page — return it raw (don't summarize) so the agent reads the
+  // server's actual message. The transform is skipped (no LLM call on an error body).
+  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), { text: "SUMMARY OF THE ERROR PAGE" });
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await createCaptatumUseCase({
+    fetcher: new FakeFetcher({ ...fetchResult({ html: "<main>404 Not Found</main>" }), status: 404 }),
+    extractHtml: new FakeExtractor(extraction({ text: "404 Not Found" })).extract,
+    transformer,
+    clock: new FakeClock([0, 4, 5, 5]),
+  }).execute({ url: "https://missing.test/", output: "summary" });
+  assert.equal(result.output, "raw", "a 4xx short-circuits summary to raw");
+  assert.equal(result.code, 404);
+  assert.match(result.result, /404 Not Found/, "the actual error body is returned");
+  assert.doesNotMatch(result.result, /SUMMARY OF THE ERROR PAGE/, "the error body is not summarized");
+  assert.equal(provider.calls.length, 0, "the transform is skipped on an error body");
+});
+
 class FakeClock implements ClockPort {
   private index = 0;
   private readonly ticks: number[];
