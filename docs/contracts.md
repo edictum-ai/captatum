@@ -140,7 +140,13 @@ eliminate, it (Known Risk).
 
 **In-flight discovery overshoot (honest bounds).** A victim host is only added
 to the union count AND the union-keyed token bucket AFTER a seed settles (the
-redirect target is unknown at dispatch). Two consequences, stated honestly:
+redirect target is unknown at dispatch). The count cap bounds **seeds touching a
+host**, not raw HTTP requests: a single seed's redirect chain (`maxHops=5`) can
+hit the same victim more than once (`victim.com/a → victim.com/b`), so the
+worst-case per-victim **request** count is the seed count below × `maxHops` — but
+that hop factor is bounded by `maxHops` and is the victim's own redirect config,
+not attacker amplification (the attacker amplifies via SEEDS, which the seed
+count cap bounds). Consequences of the discovery lag, stated honestly:
 - **Count:** up to `maxConcurrency - 1` seeds already in flight can reach a
   newly-discovered victim before the count cap aborts further dispatch, so the
   worst-case per-victim fetch count is `maxPerHostInBulk + maxConcurrency - 1`
