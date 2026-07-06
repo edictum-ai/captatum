@@ -107,3 +107,9 @@ test("bulk structured: signed query params are redacted in the rows (no presigne
   const bulk: BulkResult = { ...makeBulk(1, 50), results: [seed], count: 1, passed: 1 };
   assert.ok(!JSON.stringify(buildBulkStructuredContent(bulk)).includes("SECRET123"), "the presigned signature value is not in structuredContent");
 });
+
+test("bulk structured: signed query params are redacted in FAILURE rows too (failed/rejected presigned seeds)", () => {
+  const failures = [{ url: "https://bucket.s3.amazonaws.com/file?X-Amz-Signature=SECRET123", code: "fetch_error", message: "fail" }];
+  const bulk: BulkResult = { ...makeBulk(0, 50), results: [], count: 0, passed: 0, failed: 1, status: "fail", ok: false, failures };
+  assert.ok(!JSON.stringify(buildBulkStructuredContent(bulk)).includes("SECRET123"), "presigned signature redacted from failure rows");
+});

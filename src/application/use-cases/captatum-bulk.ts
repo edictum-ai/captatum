@@ -25,15 +25,12 @@ import {
 import { resolveBulkGuard, type BulkOperatorConfig } from "../../domain/bulk-config.ts";
 import { type BulkResult, type BulkSeedResult } from "../../domain/bulk-result.ts";
 import type { Output } from "../../domain/tier.ts";
-import type { Platform } from "../../domain/platform.ts";
 import type { Result } from "../../domain/result.ts";
 import { normalizeBulkInput, type NormalizedBulkRequest } from "./bulk-input.ts";
 import { BudgetTracker, type BudgetCapReason } from "./bulk-budget.ts";
 import { PerHostGate, Semaphore } from "./bulk-concurrency.ts";
-import { abortedSeedResult, hostOf, raceWallAbort, toBulkSeedResult } from "./bulk-seed.ts";
+import { abortedSeedResult, hostOf, raceWallAbort, syntheticFail, toBulkSeedResult } from "./bulk-seed.ts";
 import { assembleBulkResult } from "./bulk-assemble.ts";
-
-const GENERIC_PLATFORM: Platform = { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" };
 
 export interface CaptatumBulkDeps {
   /** UNWRAPPED executor — per-seed fan-out takes NO admission slots (the bulk CALL holds
@@ -151,15 +148,19 @@ export class CaptatumBulkUseCase {
             return;
           }
           let effectiveOutput: Output = request.requestedOutput !== "raw" && before.runTransform ? request.requestedOutput : "raw";
-          // Serialize transforms (cap 1): the transform INPUT is unbounded, so one seed's actual
-          // cost can exceed perSeed; serializing lets the post-transform re-check gate each (overshoot
-          // ≤ 1 oversize). Re-check shortCircuit + costCapReached after acquiring the slot (the cap may
-          // have reached/breached while we waited) → fail-soft to raw.
+          // Serialize transforms (cap 1): the transform INPUT is unbounded, so one seed's actual cost
+          // can exceed perSeed; serializing lets the post-transform re-check gate each (overshoot ≤ 1
+          // oversize). After acquiring the slot: a wall-abort (acquire false) → bulk_deadline_exceeded;
+          // shortCircuit/costCapReached (cap reached/breached while waiting) → fail-soft to raw.
           let transformSlotHeld = false;
           if (effectiveOutput !== "raw") {
             transformSlotHeld = await transformSem.acquire(signal);
-            if (!transformSlotHeld || shortCircuit || budget.costCapReached()) {
-              if (transformSlotHeld) transformSem.release();
+            if (!transformSlotHeld) {
+              results[idx] = abortedSeedResult(seed, "bulk_deadline_exceeded", "wall deadline reached");
+              return;
+            }
+            if (shortCircuit || budget.costCapReached()) {
+              transformSem.release();
               transformSlotHeld = false;
               effectiveOutput = "raw";
             }
@@ -239,12 +240,4 @@ function failureCode(r: BulkSeedResult): string {
 
 /** A per-seed Result for an executor throw (unexpected — partial failure is normal, so the
  *  seed is marked tier:error fail, never propagated to a whole-call error). */
-function syntheticFail(seed: ValidatedSeed, err: unknown): Result {
-  const message = err instanceof Error ? err.message : String(err);
-  return {
-    url: seed.url, bytes: 0, code: 0, codeText: "SEED_ERROR", durationMs: 0, result: message,
-    schemaVersion: 1, finalUrl: seed.url, redirects: [], tier: "error", output: "raw",
-    platform: GENERIC_PLATFORM, jsRequired: false, resolvedVia: "seed-error", attempts: [],
-    contentType: "", timings: { totalMs: 0, fetchMs: 0 }, errors: [{ code: "seed_error", message }],
-  };
-}
+

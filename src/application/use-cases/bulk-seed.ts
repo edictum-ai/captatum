@@ -122,3 +122,16 @@ export async function raceWallAbort(p: Promise<Result>, signal: AbortSignal, see
     new Promise<Result>((resolve) => signal.addEventListener("abort", () => resolve(wallAbandonedResult(seed)), { once: true })),
   ]);
 }
+
+/** A per-seed Result for an executor throw (unexpected — partial failure is normal, so the seed
+ *  is marked tier:error fail, never propagated to a whole-call error). */
+export function syntheticFail(seed: ValidatedSeed, err: unknown): Result {
+  const message = err instanceof Error ? err.message : String(err);
+  return {
+    url: seed.url, bytes: 0, code: 0, codeText: "SEED_ERROR", durationMs: 0, result: message,
+    schemaVersion: 1, finalUrl: seed.url, redirects: [], tier: "error", output: "raw",
+    platform: { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" },
+    jsRequired: false, resolvedVia: "seed-error", attempts: [], contentType: "",
+    timings: { totalMs: 0, fetchMs: 0 }, errors: [{ code: "seed_error", message }],
+  };
+}

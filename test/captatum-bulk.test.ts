@@ -304,3 +304,20 @@ test("bulk: a redirect-funnel to a FAILING victim is still counted (redirects pr
   assert.ok(res.capBreaches.some((c) => c.startsWith("bulk_per_host_cap")), `failing-redirect victim counted + quarantined: ${res.capBreaches}`);
   assert.ok(res.results.some((r) => r.codeText === "bulk_per_host_cap"), "some funnel seeds aborted after the victim crossed the cap");
 });
+
+test("bulk: a seed wall-aborted while waiting for the transform slot is bulk_deadline_exceeded (not a raw re-run)", async () => {
+  // seed 1 acquires the (cap-1) transform slot + blocks in execute (never resolves). seed 2 waits
+  // on the slot; the wall (maxGlobalWallMs=1) fires during that wait → acquire returns false →
+  // bulk_deadline_exceeded (NOT a raw downgrade that re-runs against an aborted signal → "timeout").
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/block", okResult("https://a.test/block", { output: "summary" }));
+  exec.results.set("https://b.test/x", okResult("https://b.test/x", { output: "summary" }));
+  const realExec = exec.execute.bind(exec);
+  exec.execute = async (input: unknown, ctx?: CaptatumContext) => input && typeof input === "object" && (input as { url: string }).url.endsWith("/block")
+    ? new Promise<Result>(() => {}) // never resolves — holds the transform slot
+    : realExec(input, ctx);
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 2, maxGlobalWallMs: 1 }).execute({ urls: ["https://a.test/block", "https://b.test/x"], output: "summary" });
+  const seed2 = res.results.find((r) => r.url.includes("b.test"));
+  assert.ok(seed2, "seed 2 present");
+  assert.equal(seed2!.codeText, "bulk_deadline_exceeded", "the slot-waiting seed is deadline-marked, not a raw re-run/timeout");
+});

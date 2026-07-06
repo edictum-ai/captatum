@@ -41,20 +41,21 @@ function envelope(bulk: BulkResult, tier: RowTier, debug: boolean): Record<strin
     clamp: bulk.clamp,
     fenceToken: bulk.fenceToken,
     results: bulk.results.map((r) => leanRow(r, tier, debug)),
-    failures: tier === "compact" ? compactFailures(bulk.failures) : bulk.failures,
+    failures: safeFailures(bulk.failures, tier === "compact"),
     warnings: bulk.warnings,
     errors: bulk.errors,
   };
 }
 
-/** Compact tier: clip each failure URL + cap the row count so an all-rejected bulk (up to 200
- *  invalid/board/ashby URLs) can't overflow the 25 KB ceiling via failures[]. The envelope's
- *  `failed` count still reports the true total. */
-function compactFailures(failures: BulkResult["failures"]): BulkResult["failures"] {
-  return failures.slice(0, COMPACT_MAX_FAILURES).map((f) => ({
-    ...f,
-    url: f.url.length > COMPACT_URL_CHARS ? `${f.url.slice(0, COMPACT_URL_CHARS - 1)}…` : f.url,
-  }));
+/** Redact signed query params from EVERY failure URL (a failed/rejected presigned seed would
+ *  leak its signature into structuredContent otherwise — single-fetch redacts; bulk matches) +
+ *  clip + cap on the compact tier. The envelope's `failed` count still reports the true total. */
+function safeFailures(failures: BulkResult["failures"], compact: boolean): BulkResult["failures"] {
+  const out = failures.map((f) => {
+    const redacted = redactSignedQueryParams(f.url);
+    return { ...f, url: compact && redacted.length > COMPACT_URL_CHARS ? `${redacted.slice(0, COMPACT_URL_CHARS - 1)}…` : redacted };
+  });
+  return compact ? out.slice(0, COMPACT_MAX_FAILURES) : out;
 }
 
 function leanRow(r: BulkSeedResult, tier: RowTier, debug: boolean): Record<string, unknown> {
