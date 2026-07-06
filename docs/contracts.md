@@ -147,10 +147,11 @@ worst-case per-victim **request** count is the seed count below × `maxHops` —
 that hop factor is bounded by `maxHops` and is the victim's own redirect config,
 not attacker amplification (the attacker amplifies via SEEDS, which the seed
 count cap bounds). Consequences of the discovery lag, stated honestly:
-- **Count:** up to `maxConcurrency - 1` seeds already in flight can reach a
-  newly-discovered victim before the count cap aborts further dispatch, so the
-  worst-case per-victim fetch count is `maxPerHostInBulk + maxConcurrency - 1`
-  (= 13 at the defaults), not exactly `maxPerHostInBulk`.
+- **Count (seeds):** up to `maxConcurrency - 1` seeds already in flight can reach
+  a newly-discovered victim before the count cap aborts further dispatch, so the
+  worst-case per-victim SEED count is `maxPerHostInBulk + maxConcurrency - 1`
+  (= 13 at the defaults) — and the per-victim REQUEST count is that × `maxHops`
+  (= 13 × 5 = 65), the hop factor being victim-controlled per above.
 - **Rate:** the union-keyed `maxPerHostInflight` token bucket ALSO cannot gate a
   victim it has not seen yet. The first "discovery wave" (≤ `maxConcurrency`
   seeds on distinct seed hosts, all funnelling to the as-yet-undiscovered victim)
@@ -158,11 +159,11 @@ count cap bounds). Consequences of the discovery lag, stated honestly:
   NOT a polite rate. Only after the victim is discovered are SUBSEQUENT seeds
   rate-bounded by `maxPerHostInflight` + `crawlDelayMs`.
 
-Net: a redirect-funnel victim can see a one-time concurrent burst of ≤
-`maxConcurrency` and a total of ≤ `maxPerHostInBulk + maxConcurrency - 1`
-requests (both small at the defaults — 4 and 13). A future hardening
-(quarantine/serialize ALL unknown-egress dispatch once any seed discovers a
-victim) bounds the discovery wave too.
+Net: a redirect-funnel victim can see a one-time concurrent first-hop burst of ≤
+`maxConcurrency` (= 4) and a total of ≤ `maxPerHostInBulk + maxConcurrency - 1`
+SEEDS (≤ × `maxHops` REQUESTS — 13 seeds / ≤ 65 requests at the defaults). Both
+are bounded; a future hardening (quarantine/serialize ALL unknown-egress dispatch
+once any seed discovers a victim) bounds the discovery wave too.
 
 **Egress-byte accounting honesty (v1).** `maxGlobalEgressBytes` is summed from
 `result.bytes` (document bytes), which is exact for the raw-default Tier-1 path.
