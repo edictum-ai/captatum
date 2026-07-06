@@ -178,7 +178,10 @@ function signedUrlReason(sourceUrl: string, keys: Set<string> = SIGNED_QUERY_KEY
 function fragmentCredentialReason(sourceUrl: string, keys: Set<string>): string | undefined {
   const hash = sourceUrl.indexOf("#");
   if (hash === -1) return undefined;
-  for (const key of new URLSearchParams(sourceUrl.slice(hash + 1)).keys()) {
+  // Normalize HTML-escaped separators (&amp; / &#38; / &#x26;) the same way signedUrlReason
+  // does for query strings, else `#state=x&amp;access_token=…` parses as `amp;access_token`.
+  const fragment = sourceUrl.slice(hash + 1).replace(/&(amp|#38|#x26);/gi, "&");
+  for (const key of new URLSearchParams(fragment).keys()) {
     if (keys.has(key.toLowerCase())) return "signed_or_tokenized_url";
   }
   return undefined;

@@ -844,6 +844,7 @@ test("detectSensitiveTransformInput: loopback SOURCE url, internal hosts, and cr
   assert.equal(detectSensitiveTransformInput({ content: "see [http://10.0.0.5]" }).sensitive, true, "prose ']' after an internal host");
   assert.equal(detectSensitiveTransformInput({ content: "[http://10.0.0.5]." }).sensitive, true, "prose ']' + punctuation");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb#access_token=eyJhbGc" }).sensitive, true, "a loopback URL with a credential fragment is NOT exempt (codex r7)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb#state=x&amp;access_token=eyJhbGc" }).sensitive, true, "HTML-escaped '&amp;' fragment separator is normalized so the credential key is still seen (codex r7)");
 });
 
 test("noneReason: zero candidates reports 'unconfigured' even when the sensitive gate fired (#127 0.11.3)", () => {
