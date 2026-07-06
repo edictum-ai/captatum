@@ -829,23 +829,35 @@ test("a JWT present only in the source url is flagged (codex P2 on #47)", () => 
 });
 
 test("detectSensitiveTransformInput: a plain loopback URL in CONTENT (a docs example) is NOT flagged (#127 0.11.3)", () => {
-  // http://localhost:PORT (or 127.x) in fetched content — a README setup example — resolves to
-  // the reader's machine, not a leaked internal endpoint. Must not degrade summary to raw.
+  // A loopback host (localhost / 127.x / [::1]) in fetched content resolves to the reader's
+  // machine, not a leaked endpoint — must not degrade summary to raw. A NON-loopback ?code= is a
+  // coupon, not an OAuth code (code is treated as a credential only on loopback redirects).
   assert.equal(detectSensitiveTransformInput({ content: "Run: export ADDRESS=http://localhost:8000" }).sensitive, false);
   assert.equal(detectSensitiveTransformInput({ content: "Connect via http://127.0.0.1:9000" }).sensitive, false);
+  assert.equal(detectSensitiveTransformInput({ content: "see http://[::1]:8000" }).sensitive, false, "bracketed IPv6 loopback is exempt too");
+  assert.equal(detectSensitiveTransformInput({ content: "deal https://shop.example.com/?code=SAVE20" }).sensitive, false, "a non-loopback ?code= (coupon) is NOT flagged (code is loopback-OAuth only)");
+  assert.equal(detectSensitiveTransformInput({ content: "see https://developer.example.com/oauth2#access_token" }).sensitive, false, "a bare doc anchor #access_token (no value) is NOT flagged");
+  assert.equal(detectSensitiveTransformInput({ content: "git clone https://octocat@github.com/octocat/Hello-World.git" }).sensitive, false, "username-only userinfo (no password) is NOT flagged");
 });
 
-test("detectSensitiveTransformInput: loopback SOURCE url, internal hosts, and credential-bearing loopback URLs are still flagged (#127 0.11.3)", () => {
-  // The loopback exemption is CONTENT-only AND plain-loopback-only. A loopback SOURCE url (SSRF),
-  // RFC1918/metadata IPs in content, a prose ']' after an internal host, and a credential key in
-  // a loopback URL's FRAGMENT (a docs OAuth redirect) are all still flagged.
+test("detectSensitiveTransformInput: internal hosts (incl. IPv6) and credential-bearing URLs are still flagged (#127 0.11.3)", () => {
+  // The loopback exemption is content-only AND plain-loopback-only: internal hosts (incl. IPv6),
+  // a credential anywhere (query / fragment / userinfo), and OAuth code/refresh_token on loopback.
   assert.equal(detectSensitiveTransformInput({ content: "plain body", sourceUrl: "http://localhost:8000/x" }).sensitive, true, "loopback source url (SSRF)");
   assert.equal(detectSensitiveTransformInput({ content: "internal api http://10.0.0.5/api" }).sensitive, true, "RFC1918 in content");
   assert.equal(detectSensitiveTransformInput({ content: "see [http://10.0.0.5]" }).sensitive, true, "prose ']' after an internal host");
   assert.equal(detectSensitiveTransformInput({ content: "[http://10.0.0.5]." }).sensitive, true, "prose ']' + punctuation");
-  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb#access_token=eyJhbGc" }).sensitive, true, "a loopback URL with a credential fragment is NOT exempt (codex r7)");
-  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb#state=x&amp;access_token=eyJhbGc" }).sensitive, true, "HTML-escaped '&amp;' fragment separator is normalized so the credential key is still seen (codex r7)");
-  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://client:secret@localhost:3000/cb" }).sensitive, true, "a loopback URL with userinfo credentials is NOT exempt (codex r9)");
+  assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]/secret" }).sensitive, true, "internal IPv6 + path (codex r12)");
+  assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]." }).sensitive, true, "internal IPv6 + prose '.' not absorbed");
+  assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]!" }).sensitive, true, "internal IPv6 + prose '!' not absorbed");
+  assert.equal(detectSensitiveTransformInput({ content: "[http://[fd00::1]]" }).sensitive, true, "markdown-bracketed internal IPv6");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://[::1]/cb#access_token=eyJhbGc" }).sensitive, true, "loopback IPv6 + credential fragment (codex r12)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb#access_token=eyJhbGc" }).sensitive, true, "loopback + credential fragment (codex r7)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb#state=x&amp;access_token=eyJhbGc" }).sensitive, true, "HTML-escaped '&amp;' fragment normalized (codex r7)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://client:secret@localhost:3000/cb" }).sensitive, true, "loopback + userinfo credentials (codex r9)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb?code=eyJhbGc" }).sensitive, true, "loopback OAuth code is flagged, not exempt (codex r11)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://admin:x@[::1]:8000/cb?access_token=eyJ" }).sensitive, true, "userinfo + IPv6 loopback + credential is flagged");
+  assert.equal(detectSensitiveTransformInput({ content: "debug http://[fe80::1%25eth0]:8080/admin" }).sensitive, true, "zone-id link-local IPv6 internal host is flagged (zone normalized before parse)");
 });
 
 test("noneReason: zero candidates reports 'unconfigured' even when the sensitive gate fired (#127 0.11.3)", () => {
