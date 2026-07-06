@@ -95,3 +95,15 @@ test("bulk text: long URLs are clipped in section headers (50 × 2048-char URLs 
   assert.ok(!text.includes("x".repeat(500)), "long URLs clipped in the section headers");
   assert.match(text, /summary \(fence=/, "the summary tail survives (not sliced off)");
 });
+
+test("bulk text: signed query params are redacted in section headers (no presigned-signature leak)", () => {
+  const seed = { ...makeSeed(0, 50), url: "https://bucket.s3.amazonaws.com/file?X-Amz-Signature=SECRET123&X-Amz-Expires=3600", finalUrl: "https://bucket.s3.amazonaws.com/file?X-Amz-Signature=SECRET123" };
+  const bulk: BulkResult = { ...makeBulk(1, 50), results: [seed], count: 1, passed: 1 };
+  assert.ok(!bulkResultToMcpText(bulk).includes("SECRET123"), "the presigned signature value is not in the text channel");
+});
+
+test("bulk structured: signed query params are redacted in the rows (no presigned-signature leak)", () => {
+  const seed = { ...makeSeed(0, 50), url: "https://bucket.s3.amazonaws.com/file?X-Amz-Signature=SECRET123", finalUrl: "https://bucket.s3.amazonaws.com/file?X-Amz-Signature=SECRET123" };
+  const bulk: BulkResult = { ...makeBulk(1, 50), results: [seed], count: 1, passed: 1 };
+  assert.ok(!JSON.stringify(buildBulkStructuredContent(bulk)).includes("SECRET123"), "the presigned signature value is not in structuredContent");
+});

@@ -118,3 +118,22 @@ test("normalizeBulkInput: userinfo is redacted even when the @ is beyond the 204
   assert.ok(!out.invalid[0].url.includes("secretpass"), "password redacted even past the clip point");
   assert.ok(!out.invalid[0].url.includes("user:"), "userinfo stripped before clipping");
 });
+
+test("normalizeBulkInput: leading whitespace + userinfo still redacted (anchor survives WHATWG trim)", () => {
+  // WHATWG trims leading whitespace before parsing, so these are rejected (as userinfo_url for
+  // space/tab, or crlf_url for newline) — but the raw carries the credential past the ^https?://
+  // anchor unless redactUserinfo trims first. The reject CODE varies; the redaction must not.
+  for (const ws of [" ", "\t", "\n  "]) {
+    const out = normalizeBulkInput({ urls: [`${ws}https://user:secretpass@example.test/x`] });
+    assert.equal(out.invalid.length, 1, `leading-whitespace variant (${JSON.stringify(ws)}) rejected`);
+    assert.ok(!out.invalid[0].url.includes("secretpass"), `password redacted despite leading ${JSON.stringify(ws)}`);
+  }
+});
+
+test("normalizeBulkInput: non-http(s) scheme userinfo redacted (ftp://user:pass@)", () => {
+  // normalizeContractUrl rejects unsupported schemes (ftp://) but the raw still carries the
+  // credential — redactUserinfo is scheme-independent so it's stripped regardless of scheme.
+  const out = normalizeBulkInput({ urls: ["ftp://user:secretpass@example.test/file"] });
+  assert.equal(out.invalid.length, 1);
+  assert.ok(!out.invalid[0].url.includes("secretpass"), "ftp userinfo password redacted");
+});

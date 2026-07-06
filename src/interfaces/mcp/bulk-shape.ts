@@ -8,6 +8,7 @@
 // under the ceiling. The domain BulkResult is the full internal record; this never mutates
 // it. See docs/contracts.md "MCP delivery".
 import type { BulkResult, BulkSeedResult } from "../../domain/bulk-result.ts";
+import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
 
 const MAX_STRUCTURED_CHARS = 25_000;
 const COMPACT_URL_CHARS = 100;
@@ -57,7 +58,11 @@ function compactFailures(failures: BulkResult["failures"]): BulkResult["failures
 }
 
 function leanRow(r: BulkSeedResult, tier: RowTier, debug: boolean): Record<string, unknown> {
-  const clip = (s: string): string => tier === "compact" && s.length > COMPACT_URL_CHARS ? `${s.slice(0, COMPACT_URL_CHARS - 1)}…` : s;
+  // Redact signed query params (presigned S3/Azure/access_token URLs) + clip on the compact tier.
+  const clip = (s: string): string => {
+    const redacted = redactSignedQueryParams(s);
+    return tier === "compact" && redacted.length > COMPACT_URL_CHARS ? `${redacted.slice(0, COMPACT_URL_CHARS - 1)}…` : redacted;
+  };
   const row: Record<string, unknown> = {
     url: clip(r.url),
     finalUrl: clip(r.finalUrl),

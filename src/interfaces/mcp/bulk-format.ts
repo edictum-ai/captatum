@@ -6,6 +6,7 @@
 // per-URL section; overflow degrades each section to a ≤500-char snippet + finalUrl, and a
 // final hard clip guards the total. See docs/contracts.md "MCP delivery".
 import type { BulkResult, BulkSeedResult } from "../../domain/bulk-result.ts";
+import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
 
 const MAX_TOTAL_TEXT_CHARS = 50_000;
 const SNIPPET_CHARS = 500;
@@ -36,16 +37,17 @@ function provenanceHeader(bulk: BulkResult): string {
   ].join(" ")} -->`;
 }
 
-/** Clip a URL for the text-channel section header/slim body so a 50×2048-char-URL bulk
- *  can't overflow the 50 KB text cap from headers alone (the full URL lives in structuredContent). */
+/** Redact signed query params (presigned S3/Azure/access_token URLs) + clip for the text-channel
+ *  section header/slim body so neither credentials nor a 50×2048-char-URL bulk overflow the 50 KB cap. */
 const TEXT_URL_CHARS = 200;
-function clipUrl(u: string): string {
-  return u.length <= TEXT_URL_CHARS ? u : `${u.slice(0, TEXT_URL_CHARS - 1)}…`;
+function safeTextUrl(u: string): string {
+  const redacted = redactSignedQueryParams(u);
+  return redacted.length <= TEXT_URL_CHARS ? redacted : `${redacted.slice(0, TEXT_URL_CHARS - 1)}…`;
 }
 
 function section(idx: number, total: number, r: BulkSeedResult, fence: string, slim: boolean): string {
-  const head = `=== [${idx + 1}/${total}] ${clipUrl(r.url)} (fence=${fence}) status=${r.status} tier=${r.tier} code=${r.code} bytes=${r.bytes} output=${r.output} ===`;
-  const body = slim ? `${r.result.slice(0, SNIPPET_CHARS)}${r.finalUrl !== r.url ? `\nfinalUrl: ${clipUrl(r.finalUrl)}` : ""}` : r.content;
+  const head = `=== [${idx + 1}/${total}] ${safeTextUrl(r.url)} (fence=${fence}) status=${r.status} tier=${r.tier} code=${r.code} bytes=${r.bytes} output=${r.output} ===`;
+  const body = slim ? `${r.result.slice(0, SNIPPET_CHARS)}${r.finalUrl !== r.url ? `\nfinalUrl: ${safeTextUrl(r.finalUrl)}` : ""}` : r.content;
   return `${head}\n${body}\n=== end (fence=${fence}) ===`;
 }
 
