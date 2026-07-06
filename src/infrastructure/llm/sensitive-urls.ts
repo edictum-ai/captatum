@@ -85,7 +85,9 @@ export function userinfoCredentialReason(sourceUrl: string): string | undefined 
 export function loopbackOAuthCredentialReason(sourceUrl: string): string | undefined {
   const flow = new Set(["code", "refresh_token"]);
   try {
-    const parsed = new URL(withoutZone(sourceUrl));
+    // Normalize HTML-escaped separators BEFORE parsing, else '&amp;code=' parses as 'amp;code'
+    // (the same normalization signedUrlReason/fragmentCredentialReason apply). Zone-id normalized too.
+    const parsed = new URL(withoutZone(sourceUrl.replace(/&(amp|#38|#x26);/gi, "&")));
     if (!isLoopback(parsed.hostname)) return undefined;
     for (const [key, value] of parsed.searchParams.entries()) {
       if (value && flow.has(key.toLowerCase())) return "loopback_oauth_credential";
