@@ -850,6 +850,8 @@ test("detectSensitiveTransformInput: a loopback SOURCE url is still flagged + in
   assert.equal(detectSensitiveTransformInput({ content: "[http://10.0.0.5]," }).sensitive, true, "prose ']' + comma is not absorbed (codex P2 round 2)");
   assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]." }).sensitive, true, "bracketed IPv6 + trailing '.' is trimmed + flagged (codex P2 round 3)");
   assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]:8000,," }).sensitive, true, "bracketed IPv6 + trailing commas is trimmed + flagged (codex P2 round 3)");
+  assert.equal(detectSensitiveTransformInput({ content: "[http://[fd00::1]]" }).sensitive, true, "a markdown-bracketed IPv6 internal URL's extra ']' is stripped (codex P2 r5)");
+  assert.equal(detectSensitiveTransformInput({ content: "[http://[::1]]" }).sensitive, false, "a markdown-bracketed IPv6 loopback is still exempt after the extra ']' strip");
 });
 
 test("noneReason: zero candidates reports 'unconfigured' even when the sensitive gate fired (#127 0.11.3)", () => {

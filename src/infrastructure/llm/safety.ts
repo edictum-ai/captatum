@@ -136,13 +136,18 @@ export function detectSensitiveTransformInput(input: {
     // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup example —
     // resolves to the READER's machine, not a leaked internal endpoint) must not be flagged.
     // RFC1918 / 169.254.169.254 / .corp / .internal / signed-URL keys are still flagged here.
-    // Strip trailing prose punctuation that new URL() would reject (')', '.', ',', ';', ':')
-    // — a single anchored replace, no per-char parse loop, so a page of URL-like tokens can't
-    // DoS the event loop. ']' is intentionally NOT stripped: the normal-URL branch already
-    // stops at ']' (prose brackets never reach here), and on the IPv6 branch the ']' closes
-    // the literal — stripping it would break the bracket. The host sits before the first
-    // path char, so trimming the tail never changes which host is scanned.
-    const url = match[0].replace(/[).,;:]+$/, "");
+    // Trim trailing prose so new URL() can read the host: (1) a single anchored strip of
+    // [).,;:] (no per-char parse loop — a page of malformed tokens can't DoS the event loop);
+    // ']' is not in that set because the normal-URL branch already stops at ']' and on the
+    // IPv6 branch the ']' closes the literal. (2) A markdown/prose wrapper's EXTRA ']'s around
+    // a bracketed IPv6 URL (e.g. "[http://[fd00::1]]" — one '[' balances one ']'; any ']' beyond
+    // that is prose) — strip trailing ']'s while they outnumber '['. Bounded string slices,
+    // no parsing. The host sits before the first path char, so trimming the tail never changes
+    // which host is scanned.
+    let url = match[0].replace(/[).,;:]+$/, "");
+    let opens = (url.match(/\[/g) ?? []).length;
+    let closes = (url.match(/\]/g) ?? []).length;
+    while (closes > opens && url.endsWith("]")) { url = url.slice(0, -1); closes--; }
     const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(url, true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
