@@ -160,7 +160,7 @@ to a legitimate host AND the directed-DoS bound against a victim:
 | Directed DoS to a victim (rate) | `maxPerHostInflight` (2, configurable) token-bucket burst + `crawlDelayMs` (1000, 500 floor) refill, union-keyed. Cross-domain: the global `maxConcurrency` (4) is shared across all hosts, lowering per-host rate when many hosts are in flight. |
 | Unbounded crawl | `maxUrls` (50 raw / 10 summary\|extract) total + seed-list-only (no discovery/recursion/`depth`) + per-host count cap. |
 | Egress amplification (bandwidth) | `maxGlobalEgressBytes` (100 MB), host-agnostic global sum. |
-| Browser time / OOM | `maxGlobalWallMs` (180 s, hard `AbortController`) + `maxRenderedSeeds` (10) + `allowRender:false` default. |
+| Browser time / OOM | `maxGlobalWallMs` (180 s) — dispatch-level wall in v1 (PR 2 makes it fetch-aborting via the `CaptatumContext.signal`); render-on-bulk is **rejected** in v1 (`bulk_render_not_supported`), so `maxRenderedSeeds` is inactive until render-on-bulk lands. |
 | Cost amplification (LLM $) | `maxTransformCostUsd` ($0.50, caller-set + clamped) re-checked after each transform + `perSeedTransformCostUsd` ($0.05) concurrent-overshoot bound + `maxUrls=10` for summary/extract. |
 
 **Union-keyed per-host gate (defeats redirect/Tier-2 host-evasion).** A directed
@@ -170,11 +170,11 @@ therefore keyed on the UNION of egress hosts, computed as each seed settles. Thi
 is the cross-domain directed-DoS control.
 
 **Egress-byte accounting honesty (v1).** `maxGlobalEgressBytes` is summed from
-`result.bytes` (document bytes) — the real egress for the raw-default Tier-1
-path. For `allowRender:true` bulks, Tier-3 subresource bytes are UNDERCOUNTED in
-v1 (the deep `egressBytes` plumbing into RenderRouteState is a follow-up);
-mitigated by `allowRender:false` default + `maxRenderedSeeds=10`. This is a
-documented Known Risk (below), not a silent one.
+`result.bytes` (document bytes) — exact for the raw-default Tier-1 path. v1
+structurally rejects `allowRender:true` on bulk (BULK-3), so no renders occur and
+there is no Tier-3 subresource byte path to undercount. The deep `egressBytes`
+plumbing (subresource bytes → `Result.egressBytes`) lands together with
+render-on-bulk so the byte cap stays honest on the render path.
 
 **No cross-seed content concatenation.** Per-seed transform isolation is a
 contract invariant: one LLM call per seed, never N bodies in one prompt (forbids
@@ -393,9 +393,11 @@ and a caller who fetches a presigned SOURCE url is still blocked at the source c
 - Tier-3 is **shell-gated**, not unconditional: `allowRender` defaults **true**,
   but a render fires only when Tier-1 extraction finds an empty JS shell
   (`jsRequired`) — a normal content-bearing page never spawns a browser. Set
-  `allowRender:false` to opt out (`render-blocked`). `captatum_bulk` defaults
-  `allowRender:false` (N browsers is qualitatively bigger blast radius; opt-in via
-  `maxRenderedSeeds`). The in-process launch keeps the OS sandbox ON
+  `allowRender:false` to opt out (`render-blocked`). `captatum_bulk` **rejects
+  `allowRender:true`** in v1 (`bulk_render_not_supported`) — the per-host union
+  gate does not yet cover Tier-3 subresource egress hosts (BULK-3), so render-on-
+  bulk is structurally closed, not merely defaulted false; it lands with the
+  render-egress-host union plumbing. The in-process launch keeps the OS sandbox ON
   (`chromiumSandbox` default true); `--no-sandbox` in-process is a release blocker.
   (Cleanup flag: `config.render.allowRenderDefault` is dead — never consumed; the
   live default is `DEFAULT_CAPTATUM_DEFAULTS.allowRender`. Either wire it or drop

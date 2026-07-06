@@ -136,11 +136,12 @@ token-bucket bounds the rate. Directed-DoS *relative to a victim* is inherent to
 any bulk tool — these caps bound, not eliminate, it (Known Risk).
 
 **Egress-byte accounting honesty (v1).** `maxGlobalEgressBytes` is summed from
-`result.bytes` (document bytes), which is the real egress for the raw-default
-Tier-1 path. For `allowRender:true` bulks, Tier-3 subresource bytes are
-**undercounted** in v1 (the deep `egressBytes` plumbing into RenderRouteState is
-a follow-up); mitigated by `allowRender=false` default + `maxRenderedSeeds=10`.
-This undercount is a documented Known Risk, not a silent one.
+`result.bytes` (document bytes), which is exact for the raw-default Tier-1 path.
+v1 structurally rejects `allowRender:true` on bulk (`bulk_render_not_supported` —
+see input table), so no renders occur and there is no Tier-3 subresource byte path
+to undercount. When render-on-bulk lands (with the render-egress-host union
+plumbing), it lands alongside the deep `egressBytes` accounting (subresource bytes
+→ `Result.egressBytes`) so the byte cap stays honest on the render path too.
 
 ### Input shaping (before any egress)
 
@@ -226,9 +227,12 @@ input-validation, auth, and admission `OverloadedError` (`-32050`) only.
 ### Recorded additive contract changes (not breaking)
 
 1. `CaptatumContext` gains optional `signal?: AbortSignal` (moved out of
-   `captatum.ts` to `src/application/ports/captatum-context.ts`; threaded into
-   `execute → fetcher.fetchGuarded` for v1 fetch-only abort). Existing callers
-   pass nothing — behavior unchanged.
+   `captatum.ts` to `src/application/ports/captatum-context.ts`). **RESERVED but
+   NOT YET CONSUMED** in this foundation PR — `execute` still passes only
+   maxBytes/timeoutMs/maxHops to `fetchGuarded`, so the bulk wall deadline is
+   dispatch-level only until PR 2 threads `signal` into `FetcherOptions` (composed
+   with the per-tier timeout) for fetch-aborting cancellation. Additive: existing
+   callers pass nothing and are unchanged.
 2. `ToolAuditEvent.tool` widens to `"captatum" | "captatum_bulk"` and gains
    optional `bulkId?: string`. Bulk emits **per-seed** events (one per seed,
    `tool:"captatum_bulk"` + `bulkId` + `url_host`) plus one **summary** event
