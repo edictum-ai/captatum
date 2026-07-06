@@ -22,11 +22,12 @@ const INTERNAL_HOST_SUFFIXES = [
   ...(process.env.INTERNAL_HOST_SUFFIXES ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
 ];
 
-/** Strip an RFC 6874 zone id from a bracketed IPv6 host so new URL() doesn't throw on it (Node's
- *  URL parser rejects [fe80::1%eth0] and the percent-encoded [fe80::1%25eth0]). Applied at the top
- *  of every helper that calls new URL() on a possibly-IPv6 source url. */
+/** Strip an RFC 6874 zone id from a bracketed IPv6 host so new URL() doesn't throw on it (Node
+ *  rejects [fe80::1%eth0], the percent-encoded [fe80::1%25eth0], and zones with '.'/'~' like
+ *  [fe80::1%25eth0.100]). The zone is everything from the first '%' to ']' — an IPv6 address never
+ *  contains '%', so this needs no zone-character enumeration. Applied at every new-URL call site. */
 function withoutZone(sourceUrl: string): string {
-  return sourceUrl.replace(/\[([^\]]*?)%[0-9a-zA-Z_-]+\]/, "[$1]");
+  return sourceUrl.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
 }
 
 /** Loopback (localhost, .localhost, 127.0.0.0/8, ::1 incl. bracketed [::1]) — a docs/example target

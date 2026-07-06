@@ -862,6 +862,7 @@ test("detectSensitiveTransformInput: internal hosts (incl. IPv6) and credential-
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/#/cb?access_token=eyJhbGc" }).sensitive, true, "hash-router loopback credential fragment is parsed");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://admin:x@[::1]:8000/cb?access_token=eyJ" }).sensitive, true, "userinfo + IPv6 loopback + credential is flagged");
   assert.equal(detectSensitiveTransformInput({ content: "debug http://[fe80::1%25eth0]:8080/admin" }).sensitive, true, "zone-id link-local IPv6 internal host is flagged (zone normalized before parse)");
+  assert.equal(detectSensitiveTransformInput({ content: "debug http://[fe80::1%25eth0.100]:8080/admin" }).sensitive, true, "zone id with '.' (RFC6874) is fully stripped (codex P2)");
 });
 
 test("noneReason: zero candidates reports 'unconfigured' even when the sensitive gate fired (#127 0.11.3)", () => {
