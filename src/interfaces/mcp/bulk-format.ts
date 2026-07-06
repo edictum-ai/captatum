@@ -36,9 +36,16 @@ function provenanceHeader(bulk: BulkResult): string {
   ].join(" ")} -->`;
 }
 
+/** Clip a URL for the text-channel section header/slim body so a 50×2048-char-URL bulk
+ *  can't overflow the 50 KB text cap from headers alone (the full URL lives in structuredContent). */
+const TEXT_URL_CHARS = 200;
+function clipUrl(u: string): string {
+  return u.length <= TEXT_URL_CHARS ? u : `${u.slice(0, TEXT_URL_CHARS - 1)}…`;
+}
+
 function section(idx: number, total: number, r: BulkSeedResult, fence: string, slim: boolean): string {
-  const head = `=== [${idx + 1}/${total}] ${r.url} (fence=${fence}) status=${r.status} tier=${r.tier} code=${r.code} bytes=${r.bytes} output=${r.output} ===`;
-  const body = slim ? `${r.result.slice(0, SNIPPET_CHARS)}${r.finalUrl !== r.url ? `\nfinalUrl: ${r.finalUrl}` : ""}` : r.content;
+  const head = `=== [${idx + 1}/${total}] ${clipUrl(r.url)} (fence=${fence}) status=${r.status} tier=${r.tier} code=${r.code} bytes=${r.bytes} output=${r.output} ===`;
+  const body = slim ? `${r.result.slice(0, SNIPPET_CHARS)}${r.finalUrl !== r.url ? `\nfinalUrl: ${clipUrl(r.finalUrl)}` : ""}` : r.content;
   return `${head}\n${body}\n=== end (fence=${fence}) ===`;
 }
 

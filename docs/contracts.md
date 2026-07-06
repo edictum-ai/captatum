@@ -115,7 +115,7 @@ Server ceilings are NOT caller-overridable; caller values for the cost knobs are
 | Cap | Default | Attack it bounds |
 | --- | --- | --- |
 | `maxUrls` | 50 (`raw`) / 10 (`summary`\|`extract`) | unbounded crawl (total across all hosts); over-ceiling → CLAMP + DISCLOSE |
-| `maxPerHostInBulk` | 10 | directed DoS — COUNT per victim; **union-keyed on egress hosts** (seed + redirect + finalUrl + Tier-2-resolved); truncate + disclose. Worst-case per-victim count is `maxPerHostInBulk + maxConcurrency - 1` (in-flight discovery overshoot; see § In-flight discovery overshoot). |
+| `maxPerHostInBulk` | 10 | directed DoS — COUNT per victim; **union-keyed on egress hosts** (seed + redirect + finalUrl + Tier-2-resolved); truncate + disclose + quarantine. Worst-case per-victim count is `maxPerHostInBulk + maxConcurrency` (redirect-discovery overshoot; pure-direct is `maxPerHostInBulk` via shaping — see § In-flight discovery overshoot). |
 | `maxGlobalEgressBytes` | 100 MB | egress amplification (host-agnostic global sum; v1 sums `result.bytes` — see honesty note) |
 | `maxGlobalWallMs` | 180 000 | browser-time / orphaned-call (hard, NOT caller-raisable). At the deadline a global `AbortController` fires: it aborts in-flight Tier-1 fetches via `CaptatumContext.signal` (composed with each fetch's per-tier timeout) AND the orchestrator stops dispatching, marking remaining seeds `bulk_deadline_exceeded`. (Render/transform abort is dispatch-level abandonment in v1, bounded by the post-transform cost re-check.) |
 | `maxConcurrency` | 4 | directed DoS — global fetch concurrency (shared across all hosts in a call) |
@@ -147,11 +147,17 @@ worst-case per-victim **request** count is the seed count below × `maxHops` —
 that hop factor is bounded by `maxHops` and is the victim's own redirect config,
 not attacker amplification (the attacker amplifies via SEEDS, which the seed
 count cap bounds). Consequences of the discovery lag, stated honestly:
-- **Count (seeds):** up to `maxConcurrency - 1` seeds already in flight can reach
-  a newly-discovered victim before the count cap aborts further dispatch, so the
-  worst-case per-victim SEED count is `maxPerHostInBulk + maxConcurrency - 1`
-  (= 13 at the defaults) — and the per-victim REQUEST count is that × `maxHops`
-  (= 13 × 5 = 65), the hop factor being victim-controlled per above.
+- **Count (seeds):** the redirect-discovery wave can be up to `maxConcurrency` wide
+  (the victim is undiscovered until the first funnel seed settles, by which time up to
+  `maxConcurrency` are in flight), so the worst-case per-victim SEED count is
+  `maxPerHostInBulk + maxConcurrency` (= 14 at the defaults; pure-direct floods are
+  tighter at `maxPerHostInBulk` via shaping, pure-redirect ≈ `+ maxConcurrency - 1`).
+  Once a redirect-discovered victim crosses the cap the orchestrator QUARANTINES (stops
+  dispatching the rest; in-flight finish). The per-victim REQUEST count is the seed
+  count × `maxHops` (victim-controlled redirects). Tightening the direct+redirect mix to
+  `+ maxConcurrency - 1` would require quarantining on ANY host reaching the cap
+  (including direct), which over-truncates legitimate multi-host bulks — not worth one
+  fewer seed at the victim.
 - **Rate:** the `maxPerHostInflight` token bucket is keyed on the SEED registrable
   domain (the only host known pre-egress), NOT on the union — so it rate-bounds a
   victim only when the victim IS a seed domain (a direct flood) or a previously-
@@ -160,14 +166,14 @@ count cap bounds). Consequences of the discovery lag, stated honestly:
   bucket in v1; its rate is bounded only by the GLOBAL `maxConcurrency` semaphore
   (≤ 4 concurrent), so the discovery wave + all subsequent funnel seeds hit the
   victim at ≤ `maxConcurrency`-wide concurrency with no per-victim crawl spacing.
-  True union-keyed rate spacing for undiscovered funnel victims requires the
-  quarantine/serialize-unknown-egress-dispatch hardening (future; bounds the
-  discovery wave too).
+  True union-keyed rate spacing for undiscovered funnel victims is the documented
+  future quarantine/serialize-unknown-egress-dispatch hardening.
 
 Net: a redirect-funnel victim can see a one-time concurrent first-hop burst of ≤
-`maxConcurrency` (= 4) and a total of ≤ `maxPerHostInBulk + maxConcurrency - 1`
-SEEDS (≤ × `maxHops` REQUESTS — 13 seeds / ≤ 65 requests at the defaults). Both
-are bounded; a future hardening (quarantine/serialize ALL unknown-egress dispatch
+`maxConcurrency` (= 4) and a total of ≤ `maxPerHostInBulk + maxConcurrency`
+SEEDS (≤ × `maxHops` REQUESTS — ≤ 14 seeds / ≤ 70 requests at the defaults). Both
+are bounded; the quarantine (stop dispatching once a redirect victim is discovered)
+is implemented in v1. A future hardening (serialize ALL unknown-egress dispatch
 once any seed discovers a victim) bounds the discovery wave too.
 
 **Egress-byte accounting honesty (v1).** `maxGlobalEgressBytes` is summed from

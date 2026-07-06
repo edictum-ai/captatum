@@ -83,3 +83,15 @@ test("bulk structured: an all-rejected bulk (200 × 2048-char invalid URLs) stay
   assert.equal(sc.failed, 200, "the true total is reported even when failure rows are capped");
   assert.ok((sc.failures as unknown[]).length <= 30, "failure rows capped in the compact tier");
 });
+
+test("bulk text: long URLs are clipped in section headers (50 × 2048-char URLs stays ≤ 50 KB)", () => {
+  // Without header clipping, 50 × 2048-char URL section headers alone would exceed the 50 KB
+  // text cap, forcing the final slice to drop sections + the summary tail.
+  const longUrl = `https://a.test/${"x".repeat(2030)}`;
+  const results = Array.from({ length: 50 }, (_, i) => ({ ...makeSeed(i, 100), url: `${longUrl}${i}`, finalUrl: `${longUrl}${i}` }));
+  const bulk: BulkResult = { ...makeBulk(1, 100), results, count: 50, passed: 50 };
+  const text = bulkResultToMcpText(bulk);
+  assert.ok(text.length <= 50_000, `text length ${text.length} exceeds the 50 KB cap`);
+  assert.ok(!text.includes("x".repeat(500)), "long URLs clipped in the section headers");
+  assert.match(text, /summary \(fence=/, "the summary tail survives (not sliced off)");
+});

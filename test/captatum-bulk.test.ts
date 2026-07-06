@@ -257,3 +257,16 @@ test("bulk: a summary seed whose transform fell back to raw reports the SETTLED 
   assert.equal(res.results[0].output, "raw", "settled output (raw fallback), not the requested summary");
   assert.equal(res.results[0].status, "partial");
 });
+
+test("bulk cost serialize: concurrent transforms are serialized so the cap re-check gates each (overshoot ≤ 1 oversize seed)", async () => {
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 4 }, (_, i) => `https://h${i}.test/p${i}`);
+  for (const u of urls) exec.results.set(u, okResult(u, { output: "summary", costUsd: 0.11 }));
+  // maxConcurrency 4 (all could dispatch concurrently), maxTransformCostUsd 0.10, each transform
+  // actually $0.11. Without serialization 4 would run concurrently (4×0.11 = $0.44) before the
+  // post-transform re-check. Serializing (transform cap 1) lets 1 run (breaches), and the rest,
+  // blocked on the slot, re-check the cap and fail-soft to raw. Spend bounded to ~1 oversize.
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4 }).execute({ urls, output: "summary", maxTransformCostUsd: 0.10 });
+  assert.ok(res.totals.transformCostUsd <= 0.11 + 1e-9, `cost overshoot bounded to ~1 oversize seed; got ${res.totals.transformCostUsd}`);
+  assert.equal(res.results.filter((r) => r.output === "summary").length, 1, "exactly 1 transform before the cap re-check gated the rest");
+});

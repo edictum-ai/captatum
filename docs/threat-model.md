@@ -426,13 +426,17 @@ and a caller who fetches a presigned SOURCE url is still blocked at the source c
   union that is NOT its own seed domain) crosses `maxPerHostInBulk`, the orchestrator
   QUARANTINES — it stops dispatching the remaining seeds (a one-time global pause on
   further dispatch; in-flight seeds finish). This bounds the per-victim SEED count at
-  `maxPerHostInBulk + maxConcurrency - 1` (= 13 at the defaults) for BOTH direct floods
-  (aborted pre-egress by the seed-domain cap) AND redirect-funnels (aborted post-discovery
-  by the quarantine). The bound is exact for the COUNT of seeds touching a victim; the
-  per-victim REQUEST count is that × `maxHops` (victim-controlled redirects). A legitimate
-  cross-domain bulk where each seed redirects to a DISTINCT destination is NOT quarantined
-  (no host crosses the cap). Residual (BULK-4): directed-DoS to a victim is inherent to any
-  bulk tool — these caps bound it to ≤ 13 seeds/call at a ≤ `maxConcurrency`-wide rate,
-  they do not eliminate it; and the quarantine is intentionally coarse (it pauses all
-  further dispatch once any victim is discovered, so innocent seeds in the same call may
-  also be aborted — the caller retries them).
+  `maxPerHostInBulk + maxConcurrency` (= 14 at the defaults) worst case: a redirect-
+  discovery wave can be up to `maxConcurrency` wide (the victim is undiscovered until the
+  first funnel seed settles, by which time up to `maxConcurrency` are in flight). Pure-
+  direct floods are tighter (`maxPerHostInBulk` via shaping + the pre-egress seed-domain
+  check); pure-redirect ≈ `maxPerHostInBulk + maxConcurrency - 1`. Tightening the mix case
+  to `+ maxConcurrency - 1` would require quarantining on ANY host reaching the cap
+  (including direct), which over-truncates legitimate multi-host bulks — not worth the UX
+  cost for one fewer seed at the victim. The per-victim REQUEST count is the seed count ×
+  `maxHops` (victim-controlled redirects). A legitimate cross-domain bulk where each seed
+  redirects to a DISTINCT destination is NOT quarantined (no host crosses the cap). Residual
+  (BULK-4): directed-DoS to a victim is inherent to any bulk tool — these caps bound it to
+  ≤ 14 seeds/call, they do not eliminate it; and the quarantine is intentionally coarse (it
+  pauses all further dispatch once any victim is discovered, so innocent seeds in the same
+  call may also be aborted — the caller retries them).

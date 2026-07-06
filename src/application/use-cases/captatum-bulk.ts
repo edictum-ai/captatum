@@ -111,6 +111,7 @@ export class CaptatumBulkUseCase {
       maxTransformCostUsd: guard.maxTransformCostUsd, perSeedTransformCostUsd: guard.perSeedTransformCostUsd, perSeedMaxBytes: request.maxBytes,
     });
     const sem = new Semaphore(guard.maxConcurrency);
+    const transformSem = new Semaphore(1); // serialize transforms (cost-cap honesty — see below)
     const gate = new PerHostGate(guard.maxPerHostInflight, guard.crawlDelayMs, this.deps.clock);
     const hostCounts = new Map<string, number>();
     const capBreaches: string[] = [];
@@ -149,10 +150,21 @@ export class CaptatumBulkUseCase {
             results[idx] = abortedSeedResult(seed, "bulk_budget_exceeded", `budget cap reached (${before.reason})`);
             return;
           }
-          const effectiveOutput: Output = request.requestedOutput !== "raw" && before.runTransform ? request.requestedOutput : "raw";
-          // A non-raw request downgraded to raw by the cost cap (before.runTransform false) is a
-          // degradation to surface (Fix B), not a silent pass.
-          const downgradedByCost = request.requestedOutput !== "raw" && !before.runTransform;
+          let effectiveOutput: Output = request.requestedOutput !== "raw" && before.runTransform ? request.requestedOutput : "raw";
+          // Serialize transforms (cap 1): the transform INPUT is unbounded, so one seed's actual
+          // cost can exceed its perSeed reservation — serializing lets the post-transform re-check
+          // gate each transform (overshoot ≤ 1 oversize seed, then the rest fail-soft to raw). Re-check
+          // the cost cap after acquiring the slot; if it breached while we waited, fail-soft to raw.
+          let transformSlotHeld = false;
+          if (effectiveOutput !== "raw") {
+            transformSlotHeld = await transformSem.acquire(signal);
+            if (!transformSlotHeld || shortCircuit) {
+              if (transformSlotHeld) transformSem.release();
+              transformSlotHeld = false;
+              effectiveOutput = "raw";
+            }
+          }
+          const downgradedByCost = request.requestedOutput !== "raw" && effectiveOutput === "raw";
           let seedResult: Result;
           try {
             seedResult = await this.deps.executor.execute(
@@ -161,6 +173,8 @@ export class CaptatumBulkUseCase {
             );
           } catch (err) {
             seedResult = syntheticFail(seed, err);
+          } finally {
+            if (transformSlotHeld) transformSem.release();
           }
           // transformReserved mirrors before.runTransform (the exact predicate beforeSeed reserved
           // under) so the cost reservation is always released on the seed it was taken for — never
