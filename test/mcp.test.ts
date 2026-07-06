@@ -46,12 +46,17 @@ test("POST /mcp rejects unauthenticated hosted calls before captatum runs", asyn
   const response = await ctx.rpc({ arguments: { url: "https://fixture.test/", output: "raw" } }, undefined);
 
   assert.equal(response.statusCode, 401);
-  assert.match(String(response.headers["www-authenticate"]), /Bearer/);
-  assert.deepEqual(response.json(), {
-    jsonrpc: "2.0",
-    error: { code: -32001, message: "invalid_token: Bearer token is required" },
-    id: null,
-  });
+  // #104: a non-OAuth Streamable HTTP client gets a RFC 6750 Bearer challenge with
+  // error + error_description (not a bare "Bearer"), plus an actionable JSON-RPC
+  // message naming the remedy (/oauth/token).
+  const wwwAuth = String(response.headers["www-authenticate"]);
+  assert.match(wwwAuth, /^Bearer realm="captatum", error="invalid_token", error_description=/);
+  assert.match(wwwAuth, /\/oauth\/token/, "error_description points to the remedy");
+  const body = response.json();
+  assert.equal(body.id, null);
+  assert.equal(body.error.code, -32001);
+  assert.match(body.error.message, /^invalid_token: OAuth Bearer access token required/);
+  assert.match(body.error.message, /\/oauth\/token/, "message names how to obtain a token");
   assert.equal(ctx.fetcher.calls.length, 0);
   await ctx.app.close();
 });

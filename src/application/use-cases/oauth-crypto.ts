@@ -156,7 +156,11 @@ export async function verifyAccessToken(
     });
     return accessClaims(payload);
   } catch {
-    throw new OAuthError("invalid_token", "Bearer token is invalid", 401);
+    throw new OAuthError(
+      "invalid_token",
+      "OAuth Bearer access token is invalid or expired — re-authenticate via /oauth/token",
+      401,
+    );
   }
 }
 
