@@ -108,3 +108,13 @@ test("normalizeBulkInput: userinfo credentials are redacted from the failure row
   assert.ok(!out.invalid[0].url.includes("secretpass"), "the password is not echoed");
   assert.ok(!out.invalid[0].url.includes("user@"), "the userinfo is stripped");
 });
+
+test("normalizeBulkInput: userinfo is redacted even when the @ is beyond the 2048 clip point", () => {
+  // A long URL whose userinfo is near the start but padding pushes the total over the 2048 cap.
+  // Redact-first strips the credential BEFORE clipping; clip-first would lose the @ and leak it.
+  const long = "https://user:secretpass@example.test/" + "x".repeat(2100);
+  const out = normalizeBulkInput({ urls: [long] });
+  assert.equal(out.invalid.length, 1);
+  assert.ok(!out.invalid[0].url.includes("secretpass"), "password redacted even past the clip point");
+  assert.ok(!out.invalid[0].url.includes("user:"), "userinfo stripped before clipping");
+});

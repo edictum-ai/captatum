@@ -113,11 +113,11 @@ export function normalizeBulkInput(value: unknown): NormalizedBulkInput {
   const invalid: BulkInputFailure[] = [];
   const seeds: ValidatedSeed[] = [];
   for (const raw of parsed.urls) {
-    // Clip EVERY raw URL stored in a failure (not just the valid-but-too-long case) so a
-    // multi-MB malformed URL can't be echoed into failures[] → structuredContent unchanged.
-    // Also redact userinfo (https://user:pass@host) — normalizeContractUrl rejects userinfo
-    // BEFORE stripping it, so the raw carries credentials into the failure row otherwise.
-    const safeRaw = redactUserinfo(raw.length > BULK_MAX_URL_LENGTH ? `${raw.slice(0, BULK_MAX_URL_LENGTH)}…` : raw);
+    // Redact userinfo FIRST (a URL whose `@` is beyond the 2048 clip point would lose it when
+    // clipped, leaking the credential prefix), then clip — so neither credentials nor a multi-MB
+    // malformed URL are echoed into failures[] → structuredContent.
+    const redacted = redactUserinfo(raw);
+    const safeRaw = redacted.length > BULK_MAX_URL_LENGTH ? `${redacted.slice(0, BULK_MAX_URL_LENGTH)}…` : redacted;
     try {
       const url = normalizeContractUrl(raw);
       if (url.length > BULK_MAX_URL_LENGTH) {
