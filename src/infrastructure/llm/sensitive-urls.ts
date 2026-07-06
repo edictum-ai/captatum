@@ -34,7 +34,11 @@ function withoutZone(sourceUrl: string): string {
  *  CONTENT-embedded scan (allowLoopback); kept on the SOURCE-url scan. Reuses domain/policy's
  *  isLoopbackHost (bracket/zone stripping) so IPv6 loopback classifies correctly. */
 export function isLoopback(host: string): boolean {
-  return isLoopbackHost(host) || host.endsWith(".localhost");
+  // Tolerate a trailing-dot FQDN form (localhost.) — new URL().hostname keeps it, and without
+  // stripping it a credential-bearing loopback redirect (http://localhost.:3000/cb?code=…)
+  // would skip the OAuth-code check and then be exempted by internalHostReason (which strips it).
+  const h = host.replace(/\.$/, "");
+  return isLoopbackHost(h) || h.endsWith(".localhost");
 }
 
 /** Host-agnostic query-credential check: extracts the query substring directly (between '?' and the
