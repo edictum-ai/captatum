@@ -40,10 +40,20 @@ export function resolveBulkGuard(args: {
     args.caller?.maxTransformCostUsd ?? BULK_GUARD_DEFAULTS.maxTransformCostUsd,
     BULK_GUARD_CEILINGS.maxTransformCostUsd, "maxTransformCostUsd", clamped,
   );
-  const perSeedTransformCostUsd = clampMax(
+  let perSeedTransformCostUsd = clampMax(
     args.caller?.perSeedTransformCostUsd ?? BULK_GUARD_DEFAULTS.perSeedTransformCostUsd,
     BULK_GUARD_CEILINGS.perSeedTransformCostUsd, "perSeedTransformCostUsd", clamped,
   );
+  // The per-seed cap is a SUB-BOUND of the global cap: a single seed must never
+  // be able to spend more than the whole-call ceiling. Without this, a caller
+  // who lowers only maxTransformCostUsd (e.g. $0.01) would still leave
+  // perSeedTransformCostUsd at the $0.05 default, so the first in-flight
+  // transform could spend 5x the caller's total budget before the global cap is
+  // re-checked. Clamp + disclose so the caller's lower ceiling is actually honored.
+  if (perSeedTransformCostUsd > maxTransformCostUsd) {
+    perSeedTransformCostUsd = maxTransformCostUsd;
+    clamped.push("perSeedTransformCostUsd");
+  }
   const maxPerHostInflight = Math.max(1, op.maxPerHostInflight ?? BULK_GUARD_DEFAULTS.maxPerHostInflight);
   const crawlDelayMs = Math.max(
     BULK_GUARD_CEILINGS.crawlDelayMsFloor, op.crawlDelayMs ?? BULK_GUARD_DEFAULTS.crawlDelayMs,

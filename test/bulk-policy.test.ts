@@ -136,6 +136,25 @@ test("resolveBulkGuard: operator concurrency capped at the default (never wider)
   assert.equal(g.maxConcurrency, 4);
 });
 
+test("resolveBulkGuard: per-seed cost clamped to the global cap (a single seed can never exceed the whole-call ceiling)", () => {
+  // Caller lowers ONLY the global cap to $0.01. The default per-seed is $0.05;
+  // if left alone, the first in-flight transform could spend 5x the caller's
+  // total budget before the global cap re-checks. perSeed must clamp to $0.01.
+  const out = resolveBulkGuard({ operator: {}, output: "raw", caller: { maxTransformCostUsd: 0.01 } });
+  assert.equal(out.guard.maxTransformCostUsd, 0.01);
+  assert.equal(out.guard.perSeedTransformCostUsd, 0.01, "per-seed must be ≤ the global cap");
+  assert.ok(out.clamped.includes("perSeedTransformCostUsd"), "the per-seed clamp is disclosed");
+  // A per-seed UNDER the global (and the ceiling) is honored unchanged.
+  const out2 = resolveBulkGuard({ operator: {}, output: "raw", caller: { perSeedTransformCostUsd: 0.04 } });
+  assert.equal(out2.guard.perSeedTransformCostUsd, 0.04);
+  assert.equal(out2.guard.maxTransformCostUsd, 0.5);
+  assert.ok(!out2.clamped.includes("perSeedTransformCostUsd"));
+  // And a caller setting per-seed above their own global gets clamped to the global.
+  const out3 = resolveBulkGuard({ operator: {}, output: "raw", caller: { maxTransformCostUsd: 0.03, perSeedTransformCostUsd: 0.04 } });
+  assert.equal(out3.guard.perSeedTransformCostUsd, 0.03);
+  assert.equal(out3.guard.maxTransformCostUsd, 0.03);
+});
+
 test("unionEgressHosts: seed + redirects + finalUrl; defeats the redirect-funnel attack", () => {
   // The cross-domain directed-DoS vector: a seed on site1.com 302→victim.com.
   // Keyed on the SEED host alone, victim is invisible; the union must include it.

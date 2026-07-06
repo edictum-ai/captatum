@@ -123,7 +123,7 @@ Server ceilings are NOT caller-overridable; caller values for the cost knobs are
 | `maxPerHostInflight` | 2 (CONFIGURABLE) | directed DoS — per-host token-bucket **burst** (union-keyed); tune empirically |
 | `crawlDelayMs` | 1000 (500 floor, server-clamped) | per-host token-bucket **refill** (politeness per victim) |
 | `maxTransformCostUsd` | 0.50 (CONFIGURABLE per-call; clamped) | cost amplification — global, re-checked after each transform |
-| `perSeedTransformCostUsd` | 0.05 (CONFIGURABLE per-call; clamped) | cost amplification — concurrent-overshoot bound |
+| `perSeedTransformCostUsd` | 0.05 (CONFIGURABLE per-call; clamped) | cost amplification — concurrent-overshoot bound. **Always ≤ `maxTransformCostUsd`** (clamped + disclosed): a single seed must never spend more than the whole-call ceiling, or a caller who lowers only the global cap could have the first in-flight transform exceed it before the re-check. |
 
 **Cross-domain directed-DoS model.** In same-domain the per-host caps were
 politeness to one host; in cross-domain they ARE the directed-DoS bound, and a
