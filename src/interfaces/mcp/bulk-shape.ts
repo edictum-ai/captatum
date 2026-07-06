@@ -11,6 +11,7 @@ import type { BulkResult, BulkSeedResult } from "../../domain/bulk-result.ts";
 
 const MAX_STRUCTURED_CHARS = 25_000;
 const COMPACT_URL_CHARS = 100;
+const COMPACT_MAX_FAILURES = 30; // bounds the compact-tier failures[] (an all-rejected bulk)
 type RowTier = "full" | "lean" | "compact";
 
 export function buildBulkStructuredContent(bulk: BulkResult, debug = false): Record<string, unknown> {
@@ -18,7 +19,9 @@ export function buildBulkStructuredContent(bulk: BulkResult, debug = false): Rec
   if (JSON.stringify(full).length <= MAX_STRUCTURED_CHARS) return full;
   const lean = envelope(bulk, "lean", debug);
   if (JSON.stringify(lean).length <= MAX_STRUCTURED_CHARS) return lean;
-  return envelope(bulk, "compact", debug); // clip url/finalUrl + drop heavy fields
+  const compact = envelope(bulk, "compact", debug);
+  if (JSON.stringify(compact).length <= MAX_STRUCTURED_CHARS) return compact;
+  return { ...compact, failures: [] }; // final hard fallback (defensive): drop failures entirely
 }
 
 function envelope(bulk: BulkResult, tier: RowTier, debug: boolean): Record<string, unknown> {
@@ -37,10 +40,20 @@ function envelope(bulk: BulkResult, tier: RowTier, debug: boolean): Record<strin
     clamp: bulk.clamp,
     fenceToken: bulk.fenceToken,
     results: bulk.results.map((r) => leanRow(r, tier, debug)),
-    failures: bulk.failures,
+    failures: tier === "compact" ? compactFailures(bulk.failures) : bulk.failures,
     warnings: bulk.warnings,
     errors: bulk.errors,
   };
+}
+
+/** Compact tier: clip each failure URL + cap the row count so an all-rejected bulk (up to 200
+ *  invalid/board/ashby URLs) can't overflow the 25 KB ceiling via failures[]. The envelope's
+ *  `failed` count still reports the true total. */
+function compactFailures(failures: BulkResult["failures"]): BulkResult["failures"] {
+  return failures.slice(0, COMPACT_MAX_FAILURES).map((f) => ({
+    ...f,
+    url: f.url.length > COMPACT_URL_CHARS ? `${f.url.slice(0, COMPACT_URL_CHARS - 1)}…` : f.url,
+  }));
 }
 
 function leanRow(r: BulkSeedResult, tier: RowTier, debug: boolean): Record<string, unknown> {

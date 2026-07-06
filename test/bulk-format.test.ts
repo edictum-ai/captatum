@@ -71,3 +71,15 @@ test("bulk structured: 50 × 2048-char URLs stays ≤ 25 KB via the compact tier
   assert.ok(rows.every((r) => r.url.length <= 101), "urls clipped in the compact tier");
   assert.ok(rows.every((r) => r.status !== undefined && r.tier !== undefined), "core fields retained");
 });
+
+test("bulk structured: an all-rejected bulk (200 × 2048-char invalid URLs) stays ≤ 25 KB (compact failures)", () => {
+  // 200 malformed URLs (each clipped to ~2 KB at input) → 200 failure rows. The compact tier
+  // caps + clips failures so the structuredContent stays bounded; the `failed` count is honest.
+  const longInvalid = "x".repeat(2048);
+  const failures = Array.from({ length: 200 }, (_, i) => ({ url: `${longInvalid}${i}`, code: "invalid_url", message: "URL is invalid" }));
+  const bulk: BulkResult = { ...makeBulk(1, 100), results: [], count: 0, passed: 0, failed: 200, status: "fail", ok: false, failures };
+  const sc = buildBulkStructuredContent(bulk);
+  assert.ok(JSON.stringify(sc).length <= 25_000, `compact-failures length ${JSON.stringify(sc).length} exceeds the 25 KB ceiling`);
+  assert.equal(sc.failed, 200, "the true total is reported even when failure rows are capped");
+  assert.ok((sc.failures as unknown[]).length <= 30, "failure rows capped in the compact tier");
+});

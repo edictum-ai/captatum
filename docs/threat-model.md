@@ -422,12 +422,17 @@ and a caller who fetches a presigned SOURCE url is still blocked at the source c
   `src/dev/bulk-probe.ts` (49 real URLs → 7.88 MB egress, ~79–111 s wall, under
   the 100 MB / 180 s caps; per-host cap truncated a 13-seed host to 10). (e)
   (`LimitingFetcher` + `BulkQuotaPort`) remains the hosted-enablement gate — PR 3.
-  **Funnel-bound honesty:** v1's per-host count cap ABORTS direct directed-DoS
-  (seeds whose own registrable domain is the victim) at `maxPerHostInBulk` +
-  `maxConcurrency - 1`; a pure redirect-funnel (distinct seed domains → victim)
-  cannot be aborted at dispatch (the victim is undiscovered until a seed settles),
-  so its per-victim egress is bounded by `maxUrls` (50) per call and the overshoot
-  past `maxPerHostInBulk` is DISCLOSED in `capBreaches`. A quarantine hardening
-  (serialize/peek unknown-egress dispatch once a victim is discovered) tightens the
-  funnel bound and is the documented future improvement; v1 bounds, does not
-  eliminate, funnel directed-DoS (BULK-4).
+  **Funnel bound (quarantine):** once a REDIRECT-discovered victim (a host in a seed's
+  union that is NOT its own seed domain) crosses `maxPerHostInBulk`, the orchestrator
+  QUARANTINES — it stops dispatching the remaining seeds (a one-time global pause on
+  further dispatch; in-flight seeds finish). This bounds the per-victim SEED count at
+  `maxPerHostInBulk + maxConcurrency - 1` (= 13 at the defaults) for BOTH direct floods
+  (aborted pre-egress by the seed-domain cap) AND redirect-funnels (aborted post-discovery
+  by the quarantine). The bound is exact for the COUNT of seeds touching a victim; the
+  per-victim REQUEST count is that × `maxHops` (victim-controlled redirects). A legitimate
+  cross-domain bulk where each seed redirects to a DISTINCT destination is NOT quarantined
+  (no host crosses the cap). Residual (BULK-4): directed-DoS to a victim is inherent to any
+  bulk tool — these caps bound it to ≤ 13 seeds/call at a ≤ `maxConcurrency`-wide rate,
+  they do not eliminate it; and the quarantine is intentionally coarse (it pauses all
+  further dispatch once any victim is discovered, so innocent seeds in the same call may
+  also be aborted — the caller retries them).

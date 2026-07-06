@@ -140,17 +140,32 @@ test("bulk wall: a deadline-crossing clock marks every seed bulk_deadline_exceed
   assert.equal(exec.calls, 0, "no seed fetched — the wall aborted before dispatch");
 });
 
-test("bulk redirect-funnel: distinct seed domains → victim → post-settle union count disclosed", async () => {
-  // 13 seeds on DISTINCT domains all redirect to victim.test. The pre-egress seed-domain cap
-  // cannot see the funnel (each seed domain is fresh), so all 13 fetch; the post-settle union
-  // count crosses maxPerHostInBulk (10) and the overshoot is DISCLOSED in capBreaches. The
-  // egress overshoot is the documented discovery-lag risk; the disclosure is the accounting.
+test("bulk redirect-funnel quarantine: a redirect victim crossing the cap aborts remaining seeds (bound ≤ 13)", async () => {
+  // 20 distinct-domain seeds all redirect to victim.test. The pre-egress seed-domain check
+  // can't see the funnel, but once the post-settle union count crosses maxPerHostInBulk (10),
+  // the quarantine stops dispatching the rest — bounding victim-touching seeds at
+  // maxPerHostInBulk + maxConcurrency - 1 = 13 (in-flight finish, the rest abort).
   const exec = new FakeExecutor();
-  const urls = Array.from({ length: 13 }, (_, i) => `https://src${i}.test/p`);
+  const urls = Array.from({ length: 20 }, (_, i) => `https://src${i}.test/p`);
   for (const u of urls) exec.results.set(u, okResult(u, { redirects: [`https://victim.test/x`], finalUrl: "https://victim.test/x" }));
-  const res = await makeBulk(exec).execute({ urls });
-  assert.equal(res.count, 13, "distinct seed domains are all processed (the funnel is not pre-egress detectable)");
-  assert.ok(res.capBreaches.some((c) => c === "bulk_per_host_cap:victim.test"), `victim overshoot disclosed: ${res.capBreaches}`);
+  const res = await makeBulk(exec, fakeClock(), { maxPerHostInflight: 50, maxConcurrency: 4 }).execute({ urls });
+  const touched = res.results.filter((r) => r.resolvedVia !== "bulk-shortcut").length; // seeds that actually fetched victim
+  assert.ok(touched >= 10, `at least maxPerHostInBulk fetched before the quarantine; got ${touched}`);
+  assert.ok(touched <= 13, `victim-touching seed count ${touched} exceeds the maxPerHostInBulk + maxConcurrency - 1 = 13 bound`);
+  assert.ok(res.capBreaches.some((c) => c.startsWith("bulk_per_host_cap")), `cap disclosed: ${res.capBreaches}`);
+  assert.ok(res.results.some((r) => r.codeText === "bulk_per_host_cap"), "some funnel seeds aborted after the quarantine");
+});
+
+test("bulk redirect-funnel: a legitimate cross-domain bulk (no shared victim) is NOT quarantined", async () => {
+  // 20 seeds on 20 distinct hosts, each redirecting to a DIFFERENT final host — no victim
+  // crosses the cap, so the quarantine must NOT fire (all 20 process).
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 20 }, (_, i) => `https://src${i}.test/p`);
+  for (let i = 0; i < 20; i++) exec.results.set(urls[i], okResult(urls[i], { redirects: [`https://dest${i}.test/x`], finalUrl: `https://dest${i}.test/x` }));
+  const res = await makeBulk(exec, fakeClock(), { maxPerHostInflight: 50, maxConcurrency: 4 }).execute({ urls });
+  assert.equal(res.count, 20);
+  assert.equal(res.failed, 0, "no quarantine — each destination host got exactly 1 seed");
+  assert.ok(!res.capBreaches.some((c) => c.startsWith("bulk_per_host_cap")), "no per-host cap breach");
 });
 
 test("bulk: 0-count result when every URL is invalid (not a tool-level error)", async () => {

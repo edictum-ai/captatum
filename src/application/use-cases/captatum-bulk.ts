@@ -171,12 +171,18 @@ export class CaptatumBulkUseCase {
             record(`bulk_budget_exceeded:${after.reason}`);
           }
           // Post-settle union-egress-host count — the cross-domain directed-DoS accounting.
-          // A victim discovered via redirect is counted here (disclosed in capBreaches); the
-          // pre-egress seed-domain check cannot see it (the documented discovery overshoot).
+          // A victim discovered via redirect is counted here. The pre-egress seed-domain check
+          // can't see a fresh-domain funnel seed, so once a REDIRECT-discovered victim (h !==
+          // seedKey) crosses the cap we QUARANTINE: stop dispatching the rest. That bounds the
+          // per-victim seed count at maxPerHostInBulk + maxConcurrency - 1 (in-flight finish).
           for (const h of unionEgressHosts({ seedRegistrable: registrableDomain(hostOf(seed.url)) ?? hostOf(seed.url), redirects: seedResult.redirects.map((r) => r.url), finalUrl: seedResult.finalUrl })) {
             const next = (hostCounts.get(h) ?? 0) + 1;
             hostCounts.set(h, next);
             if (next > guard.maxPerHostInBulk) record(`bulk_per_host_cap:${h}`);
+            if (h !== seedKey && next >= guard.maxPerHostInBulk && !shortCircuit) {
+              shortCircuit = { code: "bulk_per_host_cap", message: `discovered redirect victim ${h} reached the per-bulk cap — remaining seeds aborted` };
+              record("bulk_per_host_cap");
+            }
           }
           // Use the SETTLED Result.output (Fix F): a summary/extract seed whose transform fell
           // back to raw (provider none) reports raw, not the requested output. A cost-cap
