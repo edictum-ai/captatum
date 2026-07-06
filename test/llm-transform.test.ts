@@ -856,6 +856,8 @@ test("detectSensitiveTransformInput: internal hosts (incl. IPv6) and credential-
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb#state=x&amp;access_token=eyJhbGc" }).sensitive, true, "HTML-escaped '&amp;' fragment normalized (codex r7)");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://client:secret@localhost:3000/cb" }).sensitive, true, "loopback + userinfo credentials (codex r9)");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb?code=eyJhbGc" }).sensitive, true, "loopback OAuth code is flagged, not exempt (codex r11)");
+  assert.equal(detectSensitiveTransformInput({ content: "dev http://localhost:3000/cb?token=sekret" }).sensitive, true, "loopback generic token key (?token=) is flagged, not exempt (codex P2)");
+  assert.equal(detectSensitiveTransformInput({ content: "dev http://localhost:3000/cb?key=sekret" }).sensitive, true, "loopback generic key (?key=) is flagged");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb?state=x&amp;code=eyJhbGc" }).sensitive, true, "loopback OAuth code after an HTML-escaped '&amp;' separator is still seen (codex P1)");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost.:3000/cb?code=eyJhbGc" }).sensitive, true, "trailing-dot loopback FQDN (localhost.) still gets the OAuth-code check (codex P2)");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/#/callback?code=eyJhbGc" }).sensitive, true, "hash-router loopback OAuth code (#/path?code=) is parsed (codex P2)");

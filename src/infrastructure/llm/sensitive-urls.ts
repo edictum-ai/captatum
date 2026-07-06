@@ -90,12 +90,12 @@ export function userinfoCredentialReason(sourceUrl: string): string | undefined 
   return undefined;
 }
 
-/** OAuth authorization-code / refresh-token (with a value) on a LOOPBACK url. code/refresh_token
- *  are too generic to flag on every content URL (coupon ?code=SAVE20), but on a loopback redirect
- *  they ARE credentials (captatum's own OAuth uses loopback redirects). Checked in query AND
- *  fragment (implicit flow). Zone-id hosts normalized. */
+/** OAuth code/refresh_token AND the generic token keys (token/key/auth — source-only elsewhere to
+ *  avoid the #44 ad-noise false positive, but on a loopback dev/OAuth redirect they ARE credentials)
+ *  on a LOOPBACK url, with a non-empty value. (`expires` is excluded — it's a timestamp, not a
+ *  credential.) Checked in query AND fragment (implicit flow); escaped separators normalized. */
 export function loopbackOAuthCredentialReason(sourceUrl: string): string | undefined {
-  const flow = new Set(["code", "refresh_token"]);
+  const flow = new Set(["code", "refresh_token", "token", "key", "auth"]);
   try {
     // Normalize HTML-escaped separators BEFORE parsing, else '&amp;code=' parses as 'amp;code'
     // (the same normalization signedUrlReason/fragmentCredentialReason apply). Zone-id normalized too.
