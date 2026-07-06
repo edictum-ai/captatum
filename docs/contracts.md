@@ -115,7 +115,7 @@ Server ceilings are NOT caller-overridable; caller values for the cost knobs are
 | Cap | Default | Attack it bounds |
 | --- | --- | --- |
 | `maxUrls` | 50 (`raw`) / 10 (`summary`\|`extract`) | unbounded crawl (total across all hosts); over-ceiling → CLAMP + DISCLOSE |
-| `maxPerHostInBulk` | 10 | directed DoS — COUNT per victim; **union-keyed on egress hosts** (seed + redirect + finalUrl + Tier-2-resolved); truncate + disclose |
+| `maxPerHostInBulk` | 10 | directed DoS — COUNT per victim; **union-keyed on egress hosts** (seed + redirect + finalUrl + Tier-2-resolved); truncate + disclose. Worst-case per-victim count is `maxPerHostInBulk + maxConcurrency - 1` (in-flight discovery overshoot; see § In-flight discovery overshoot). |
 | `maxGlobalEgressBytes` | 100 MB | egress amplification (host-agnostic global sum; v1 sums `result.bytes` — see honesty note) |
 | `maxGlobalWallMs` | 180 000 | browser-time / orphaned-call (hard, NOT caller-raisable). **Dispatch-level in v1** — at the deadline the orchestrator stops dispatching new seeds and marks the rest `bulk_deadline_exceeded` (in-flight seeds finish or hit their per-seed timeout); PR 2 threads `CaptatumContext.signal` so in-flight fetches abort at the deadline too. |
 | `maxConcurrency` | 4 | directed DoS — global fetch concurrency (shared across all hosts in a call) |
@@ -134,6 +134,17 @@ floods); post-egress a running count aborts further seeds to any union host that
 crosses the cap (`status:"fail"`, code `bulk_per_host_cap`). The per-host
 token-bucket bounds the rate. Directed-DoS *relative to a victim* is inherent to
 any bulk tool — these caps bound, not eliminate, it (Known Risk).
+
+**In-flight discovery overshoot (honest count bound).** A victim host is only
+added to the union count AFTER a seed settles (the redirect target is unknown at
+dispatch). So up to `maxConcurrency - 1` seeds already in flight can reach a
+newly-discovered victim before the count cap aborts further dispatch. The
+worst-case per-victim fetch count is therefore **`maxPerHostInBulk + maxConcurrency - 1`**
+(= 13 at the defaults), not exactly `maxPerHostInBulk`. This overshoot is
+**rate-bounded independently** by the union-keyed `maxPerHostInflight` +
+`crawlDelayMs` token bucket (13 fetches arrive at a polite rate, not a burst).
+A future hardening (reserve/serialize unknown-egress discovery) tightens the
+count bound to exactly `maxPerHostInBulk`.
 
 **Egress-byte accounting honesty (v1).** `maxGlobalEgressBytes` is summed from
 `result.bytes` (document bytes), which is exact for the raw-default Tier-1 path.

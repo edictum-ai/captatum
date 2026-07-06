@@ -12,7 +12,11 @@ export interface CaptatumExecutorPort {
    *  UNWRAPPED executor (no per-seed admission) + the bulk wall-deadline signal
    *  threaded via context. */
   execute(input: unknown, context?: CaptatumContext): Promise<Result>;
-  /** The executor's default output (provider-conditional) — used to resolve the
-   *  bulk default before the caller's `output` is applied. */
+  /** The executor's SINGLE-FETCH default output (provider-conditional — `summary`
+   *  on hosted, `raw` without a provider). Carried so the admission-wrapped use
+   *  case satisfies this port's shape. It does NOT drive the BULK default: bulk
+   *  defaults to `raw` (founder decision 2), resolved independently in bulk-input
+   *  — never derived from this, or an omitted-output hosted bulk would silently
+   *  run N transforms under the 10-URL summary cap. */
   readonly defaultOutput: "summary" | "raw" | "extract";
 }
