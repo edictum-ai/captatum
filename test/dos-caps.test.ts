@@ -55,7 +55,7 @@ test("toMcpError maps OverloadedError to a distinct retryable JSON-RPC code, lea
   assert.equal(err.retryable, true);
 
   const mapped = toMcpError(err);
-  assert.equal(mapped.code, -32050, "distinct from auth -32001 and SDK InternalError -32603");
+  assert.equal(mapped.code, -32050, "distinct from auth -32003 and SDK InternalError -32603");
   assert.equal(mapped.data?.retryable, true);
   assert.match(mapped.message, /overloaded/);
 

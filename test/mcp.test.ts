@@ -55,7 +55,7 @@ test("POST /mcp rejects unauthenticated hosted calls before captatum runs", asyn
   assert.doesNotMatch(wwwAuth, /error=/, "no error attr when no credentials were presented");
   const body = response.json();
   assert.equal(body.id, null);
-  assert.equal(body.error.code, -32001);
+  assert.equal(body.error.code, -32003);
   assert.match(body.error.message, /^invalid_token: OAuth Bearer access token required/);
   assert.match(body.error.message, /\/oauth\/token/, "message names how to obtain a token");
   assert.equal(ctx.fetcher.calls.length, 0);
@@ -80,7 +80,7 @@ test("POST /mcp with a malformed Bearer token returns a 401 with the actionable 
   assert.match(wwwAuth, /\/oauth\/token/, "error_description carries the remedy");
   assert.ok(!wwwAuth.includes("—"), "em dash is ASCII-sanitized out of the header value");
   const body = response.json();
-  assert.equal(body.error.code, -32001);
+  assert.equal(body.error.code, -32003);
   assert.match(body.error.message, /invalid_token: .*invalid or expired/);
   assert.match(body.error.message, /\/oauth\/token/);
   assert.equal(ctx.fetcher.calls.length, 0);
@@ -109,7 +109,7 @@ test("authenticated call without fetch:transform cannot perform summary output",
 
   assert.equal(response.statusCode, 200, response.body);
   const body = response.json() as RpcError;
-  assert.equal(body.error.code, -32001);
+  assert.equal(body.error.code, -32003);
   assert.match(body.error.message, /insufficient_scope/);
   assert.equal(ctx.fetcher.calls.length, 0);
   assert.equal(transformer.calls.length, 0);

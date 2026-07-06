@@ -1,5 +1,6 @@
 import type { FastifyReply } from "fastify";
 import { OAuthError, bearerChallenge, oauthErrorBody } from "../../application/use-cases/oauth-errors.ts";
+import { AUTH_JSONRPC_CODE } from "../jsonrpc-error-codes.ts";
 
 export function sendHttpError(reply: FastifyReply, error: unknown): void {
   const oauthError = error instanceof OAuthError ? error : undefined;
@@ -21,7 +22,7 @@ export function sendMcpAuthError(reply: FastifyReply, error: unknown): void {
   if (oauthError.status === 401) reply.header("www-authenticate", bearerChallenge(oauthError));
   reply.code(oauthError.status).send({
     jsonrpc: "2.0",
-    error: { code: -32001, message: `${oauthError.code}: ${oauthError.message}` },
+    error: { code: AUTH_JSONRPC_CODE, message: `${oauthError.code}: ${oauthError.message}` },
     id: null,
   });
 }
