@@ -96,7 +96,7 @@ Input (v0):
 | `output` | no | **DEFAULT `raw`** for bulk (flipped from single-fetch's provider-conditional default). `summary`/`extract` run the Transform router once per seed and drop the URL cap to 10. |
 | `schema` | no | Uniform JSON schema for `output: extract`. |
 | `budget`, `transform`, `maxBytes`, `timeoutMs`, `debug` | no | Uniform; same semantics as single-fetch. Bulk `timeoutMs` default **8 s** (per-seed Tier-1/2). |
-| `allowRender` | no | **DEFAULT `false`** for bulk (flipped from hosted single-fetch's `true`). N Chromium sessions is qualitatively bigger blast radius; render-on-bulk is opt-in and capped by `maxRenderedSeeds`. |
+| `allowRender` | no | **v1 REJECTS `true` on bulk** (per-call `invalid_input`: `bulk_render_not_supported`). Bulk is raw-extraction-first; render-on-bulk lands in a follow-up WITH the render-egress-host union plumbing (so Tier-3 subresource egresses are counted in the per-host caps) + deep `egressBytes`. Today the per-host union gate only sees seed/redirect/finalUrl hosts — it would NOT bind a render-path directed victim (BULK-3), so render-on-bulk is structurally closed off rather than merely defaulted false. |
 | `maxTransformCostUsd` | no | Per-call transform cost ceiling (USD). Caller-set, clamped to the server ceiling `$0.50`. Over-ceiling caller value is clamped + disclosed. |
 | `perSeedTransformCostUsd` | no | Per-seed transform cost ceiling (USD). Caller-set, clamped to the server ceiling `$0.05`. Bounds concurrent overshoot. |
 
@@ -119,7 +119,7 @@ Server ceilings are NOT caller-overridable; caller values for the cost knobs are
 | `maxGlobalEgressBytes` | 100 MB | egress amplification (host-agnostic global sum; v1 sums `result.bytes` — see honesty note) |
 | `maxGlobalWallMs` | 180 000 | browser-time / orphaned-call (hard, `AbortController`-tied, NOT caller-raisable) |
 | `maxConcurrency` | 4 | directed DoS — global fetch concurrency (shared across all hosts in a call) |
-| `maxRenderedSeeds` | 10 | Tier-3 OOM (count of seeds that escalate to render) |
+| `maxRenderedSeeds` | 10 | Tier-3 OOM (count of seeds that escalate to render). **Inactive in v1** — bulk rejects `allowRender:true`, so zero seeds render; this cap activates when render-on-bulk lands. |
 | `maxPerHostInflight` | 2 (CONFIGURABLE) | directed DoS — per-host token-bucket **burst** (union-keyed); tune empirically |
 | `crawlDelayMs` | 1000 (500 floor, server-clamped) | per-host token-bucket **refill** (politeness per victim) |
 | `maxTransformCostUsd` | 0.50 (CONFIGURABLE per-call; clamped) | cost amplification — global, re-checked after each transform |
@@ -540,8 +540,9 @@ reject (Tier-1 pre-download) and a **non-fatal advisory** entry inside a
 not a tool-level error — partial failure is normal): `bulk_per_host_cap`,
 `tier2_board_not_supported_in_bulk`, `bulk_deadline_exceeded`,
 `bulk_budget_exceeded`, `bulk_render_cap_exceeded`. Tool-level errors for bulk are
-limited to input validation (`invalid_input` / `invalid_url` / `bulk_urls_empty`),
-auth, and admission `OverloadedError` (`-32050`).
+limited to input validation (`invalid_input` / `invalid_url` / `bulk_urls_empty` /
+`bulk_render_not_supported` — v1 rejects `allowRender:true`), auth, and admission
+`OverloadedError` (`-32050`).
 
 ## Audit event
 

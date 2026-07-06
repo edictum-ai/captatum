@@ -137,11 +137,16 @@ export function shapeBulkInput(validated: readonly ValidatedSeed[], guard: BulkG
   };
 }
 
-/** The union of egress registrable hosts a seed touched: its seed host + every
- *  redirect host + the finalUrl host. The post-egress per-host count + rate caps
- *  key on this UNION so a redirect-funnel attack (N seeds on N distinct domains
- *  all 302→victim) cannot evade the per-host bound. Pure: extracts hosts from
- *  URLs only (no fetch). */
+/** The union of egress hosts a seed touched: its seed host + every redirect host
+ *  + the finalUrl host. The post-egress per-host count + rate caps key on this
+ *  UNION so a redirect-funnel attack (N seeds on N distinct domains all
+ *  302→victim) cannot evade the per-host bound. Pure: extracts hosts from URLs
+ *  only (no fetch).
+ *
+ *  IP-literal / PSL-unresolvable egress hosts (e.g. a 302 to `https://8.8.8.8`)
+ *  are preserved via the bare-host fallback — consistent with seedRegistrableKey
+ *  — so a redirect-funnel to a public-IP victim IS counted (dropping null would
+ *  let an IP-victim evade the per-host cap, a directed-DoS gap). */
 export function unionEgressHosts(args: {
   seedRegistrable: string | null;
   redirects: readonly string[];
@@ -150,12 +155,17 @@ export function unionEgressHosts(args: {
   const hosts = new Set<string>();
   if (args.seedRegistrable) hosts.add(args.seedRegistrable);
   for (const u of args.redirects) {
-    const r = registrableDomain(hostOf(u));
-    if (r) hosts.add(r);
+    hosts.add(egressHostKey(u));
   }
-  const fr = registrableDomain(hostOf(args.finalUrl));
-  if (fr) hosts.add(fr);
+  hosts.add(egressHostKey(args.finalUrl));
   return [...hosts];
+}
+
+/** Per-egress-host key: the registrable domain, or the bare hostname when PSL
+ *  cannot resolve it (IP literal / single-label / unknown). Never null/dropped. */
+function egressHostKey(url: string): string {
+  const h = hostOf(url);
+  return registrableDomain(h) ?? h;
 }
 
 export type BulkStatus = "pass" | "partial" | "fail";
@@ -181,10 +191,9 @@ export function generateFenceToken(): string {
 
 /** The per-host key for a SEED: its registrable domain, or its bare hostname
  *  when PSL cannot resolve it (IP literal / single-label / unknown) — distinct
- *  IPs stay distinct buckets. */
+ *  IPs stay distinct buckets. Same fallback rule as unionEgressHosts. */
 export function seedRegistrableKey(seed: ValidatedSeed): string {
-  const r = registrableDomain(hostOf(seed.url));
-  return r ?? hostOf(seed.url);
+  return egressHostKey(seed.url);
 }
 
 function hostOf(url: string): string {

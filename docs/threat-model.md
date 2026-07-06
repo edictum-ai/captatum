@@ -283,11 +283,18 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
   cap (`LimitingFetcher`) + `BulkQuotaPort` land and OOM/admission behavior is
   monitored.** Local flavor ships ON (single-user; a user saturating their own
   machine is their own concern, and per-call caps bound each call).
-- **`captatum_bulk` — Tier-3 fan-out is the highest-risk path (BULK-3).** An all-SPA
-  bulk with `allowRender:true` is the worst case: bounded to `maxRenderedSeeds=10`
-  at the render-limiter cap (2 slots, bulk sub-capped), so ~10 renders complete
-  within the wall cap and the rest truncate. `allowRender:false` default keeps this
-  off the common path.
+- **`captatum_bulk` — Tier-3 fan-out + the render-path union gap (BULK-3).** The
+  per-host union gate keys on a seed's seed/redirect/finalUrl hosts. On a Tier-3
+  render, the browser also egresses script/xhr/fetch **subresources** through
+  `fetchGuarded`, and those hosts never reach the orchestrator's union accounting.
+  A malicious seed that rendered could therefore direct many small subresource
+  requests at a victim the union never sees — a render-path directed-DoS the
+  `maxPerHostInBulk`/`maxPerHostInflight` caps would NOT bind. **v1 structurally
+  closes this by REJECTING `allowRender:true` on bulk** (`bulk_render_not_supported`,
+  a tool-level input-validation reject) — not merely defaulting it false. Render-on-
+  bulk lands only WITH the render-egress-host union plumbing (subresource hosts fed
+  into the per-host gate) + deep `egressBytes`. `maxRenderedSeeds` is thus inactive
+  in v1 (zero renders) and activates with that plumbing.
 - **`captatum_bulk` — directed-DoS to a victim is inherent (BULK-4).** Any bulk
   fetch tool can be aimed at a victim host; the per-host count + rate caps bound
   but do not eliminate it. Residual: captatum's egress IPs could be blacklisted by
@@ -296,11 +303,11 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
   caller-authorizes-ToS stance (captatum is a targeted agent fetcher, not an open
   crawler). robots.txt respect is deferred to the future `captatum_crawl`.
 - **`captatum_bulk` — render-subresource egress undercount (BULK-5).** v1 sums
-  `result.bytes` (document bytes) against `maxGlobalEgressBytes`; for
-  `allowRender:true` bulks the Tier-3 subresource bytes (scripts/styles/images
-  fetched by the browser) are undercounted until the deep `egressBytes` plumbing
-  lands. Mitigated by `allowRender:false` default + `maxRenderedSeeds=10` + the
-  render-byte pool that already bounds Tier-3 bytes per render.
+  `result.bytes` (document bytes) against `maxGlobalEgressBytes`. This is exact for
+  the raw-default Tier-1 path; Tier-3 subresource bytes would be undercounted — but
+  v1 rejects `allowRender:true` on bulk (BULK-3), so no renders occur and the
+  undercount is dormant. It re-activates when render-on-bulk lands alongside the
+  deep `egressBytes` plumbing (subresource bytes → `Result.egressBytes`).
 
 ## Sensitive-content detection
 

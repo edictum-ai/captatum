@@ -9,8 +9,12 @@
 export interface CaptatumContext {
   /** Caller-injected ISO timestamp (no Date.now() in core). Carried onto Result.fetchedAt. */
   fetchedAt?: string;
-  /** Optional abort signal. Today only captatum_bulk ties this to the per-call
-   *  wall deadline (maxGlobalWallMs) so in-flight fetches abort on expiry. The
-   *  single-fetch path passes nothing. */
+  /** Optional abort signal. RESERVED but NOT YET CONSUMED by CaptatumUseCase in
+   *  the foundation PR — `execute` still passes only maxBytes/timeoutMs/maxHops
+   *  to fetchGuarded (which makes its own per-tier timeout controller). PR 2
+   *  threads this into FetcherOptions (composed with the per-tier timeout) so a
+   *  captatum_bulk wall-deadline abort actually cancels in-flight fetches; until
+   *  then the wall cap is dispatch-level only. Additive: single-fetch passes
+   *  nothing and is unchanged. */
   signal?: AbortSignal;
 }

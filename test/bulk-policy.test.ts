@@ -171,6 +171,23 @@ test("unionEgressHosts: multi-tenant redirect hosts stay distinct (no github.io 
   assert.notEqual(hosts.find((h) => h === "github.io"), "github.io", "must NOT collapse to the bare suffix");
 });
 
+test("unionEgressHosts: IP-literal redirect/final victim IS counted (no drop on PSL-null)", () => {
+  // The codex-caught directed-DoS gap: a redirect-funnel to a public IP victim.
+  // registrableDomain("8.8.8.8") === null; the bare-host fallback must preserve
+  // "8.8.8.8" so the per-host count/rate cap can bind it.
+  const hosts = unionEgressHosts({
+    seedRegistrable: "site1.com",
+    redirects: ["https://8.8.8.8/lander"],
+    finalUrl: "https://8.8.8.8/page",
+  });
+  assert.ok(hosts.includes("8.8.8.8"), "an IP-literal egress victim MUST be in the union (not dropped)");
+  assert.ok(hosts.includes("site1.com"));
+  // distinct IP victims stay distinct buckets
+  const two = unionEgressHosts({ seedRegistrable: "a.com", redirects: ["https://8.8.8.8/x", "https://8.8.4.4/x"], finalUrl: "https://a.com/" });
+  assert.ok(two.includes("8.8.8.8"));
+  assert.ok(two.includes("8.8.4.4"));
+});
+
 test("classifyBulkStatus: pass / partial / fail / empty", () => {
   assert.equal(classifyBulkStatus(["pass", "pass"]), "pass");
   assert.equal(classifyBulkStatus(["pass", "fail"]), "partial");
