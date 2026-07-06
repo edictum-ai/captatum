@@ -53,9 +53,11 @@ const SENSITIVE_HEADER_PATTERNS = [
  *  path/query/fragment that MUST start with '/', '?', or '#' — so prose immediately after the
  *  literal ('.', ',', '!', a markdown ']') is never absorbed, while a real path/query/fragment
  *  (incl. a credential fragment) is captured. The userinfo is '@'-anchored so it can't absorb
- *  non-userinfo prose. (2) a normal URL that excludes '[' and ']' so prose brackets around it
- *  stop cleanly. Bounded (char classes + caps) vs ReDoS. */
-const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[@\/]*)?@)?\[[^\]\s]{1,79}\](?::\d{1,5})?(?:[\/?#][^\s"'<>)\]]*)?|https?:\/\/[^\s"'<>)\]\[]{1,512}/gi;
+ *  non-userinfo prose. (2) a normal URL that excludes ']' (so a prose bracket around it stops
+ *  cleanly) but ALLOWS '[' — a literal '[' in a path before a credential query (e.g.
+ *  https://files.example/a[draft?access_token=…) must not truncate the match. The IPv6 alternation
+ *  owns '[' at the host position, so allowing it in a normal path is safe. Bounded vs ReDoS. */
+const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[@\/]*)?@)?\[[^\]\s]{1,79}\](?::\d{1,5})?(?:[\/?#][^\s"'<>)\]]*)?|https?:\/\/[^\s"'<>)\]]{1,512}/gi;
 /** Cap the embedded-URL scan to the head of the content. The high-confidence
  *  credential/header patterns below scan the FULL content regardless of size;
  *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
