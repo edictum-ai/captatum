@@ -57,15 +57,22 @@ export function signedUrlReason(sourceUrl: string, keys: Set<string> = SIGNED_QU
   return undefined;
 }
 
+/** Parse a fragment's params, tolerating a hash-router form ("#/path?query") by taking the part
+ *  after the first '?'. A plain OAuth implicit-flow fragment ("#access_token=…") has no '?'. */
+function fragmentParams(fragment: string): URLSearchParams {
+  const q = fragment.indexOf("?");
+  return new URLSearchParams(q === -1 ? fragment : fragment.slice(q + 1));
+}
+
 /** A credential key in the URL FRAGMENT with a non-empty value (#access_token=…). signedUrlReason
  *  only checks query params, so without this a tokenized fragment (e.g. a loopback OAuth redirect)
  *  would egress. A bare anchor (#access_token, a docs TOC link) carries no value — not flagged.
- *  HTML-escaped separators normalized the same way. */
+ *  HTML-escaped separators normalized; a hash-router form (#/cb?access_token=…) is parsed too. */
 export function fragmentCredentialReason(sourceUrl: string, keys: Set<string>): string | undefined {
   const hash = sourceUrl.indexOf("#");
   if (hash === -1) return undefined;
   const fragment = sourceUrl.slice(hash + 1).replace(/&(amp|#38|#x26);/gi, "&");
-  for (const [key, value] of new URLSearchParams(fragment).entries()) {
+  for (const [key, value] of fragmentParams(fragment).entries()) {
     if (value && keys.has(key.toLowerCase())) return "signed_or_tokenized_url";
   }
   return undefined;
@@ -96,7 +103,7 @@ export function loopbackOAuthCredentialReason(sourceUrl: string): string | undef
     for (const [key, value] of parsed.searchParams.entries()) {
       if (value && flow.has(key.toLowerCase())) return "loopback_oauth_credential";
     }
-    for (const [key, value] of new URLSearchParams((parsed.hash || "").slice(1)).entries()) {
+    for (const [key, value] of fragmentParams((parsed.hash || "").slice(1)).entries()) {
       if (value && flow.has(key.toLowerCase())) return "loopback_oauth_credential";
     }
   } catch { /* ignore unparseable URLs */ }

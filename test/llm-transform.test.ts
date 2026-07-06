@@ -858,6 +858,8 @@ test("detectSensitiveTransformInput: internal hosts (incl. IPv6) and credential-
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb?code=eyJhbGc" }).sensitive, true, "loopback OAuth code is flagged, not exempt (codex r11)");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb?state=x&amp;code=eyJhbGc" }).sensitive, true, "loopback OAuth code after an HTML-escaped '&amp;' separator is still seen (codex P1)");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost.:3000/cb?code=eyJhbGc" }).sensitive, true, "trailing-dot loopback FQDN (localhost.) still gets the OAuth-code check (codex P2)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/#/callback?code=eyJhbGc" }).sensitive, true, "hash-router loopback OAuth code (#/path?code=) is parsed (codex P2)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/#/cb?access_token=eyJhbGc" }).sensitive, true, "hash-router loopback credential fragment is parsed");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://admin:x@[::1]:8000/cb?access_token=eyJ" }).sensitive, true, "userinfo + IPv6 loopback + credential is flagged");
   assert.equal(detectSensitiveTransformInput({ content: "debug http://[fe80::1%25eth0]:8080/admin" }).sensitive, true, "zone-id link-local IPv6 internal host is flagged (zone normalized before parse)");
 });
