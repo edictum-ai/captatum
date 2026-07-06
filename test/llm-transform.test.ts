@@ -7,6 +7,7 @@ import type { HtmlExtraction, HtmlExtractionInput } from "../src/application/use
 import { TransformError } from "../src/application/ports/transformer.ts";
 import { validateJsonSchema } from "../src/infrastructure/llm/json-schema.ts";
 import { LlmTransformer, ModelRouter } from "../src/infrastructure/llm/model-router.ts";
+import { noneReason } from "../src/infrastructure/llm/router-helpers.ts";
 import { detectSensitiveTransformInput } from "../src/infrastructure/llm/safety.ts";
 import type { LlmGenerateInput, LlmGenerateResult, LlmModelCandidate, LlmProvider } from "../src/infrastructure/llm/types.ts";
 
@@ -825,6 +826,79 @@ test("a JWT present only in the source url is flagged (codex P2 on #47)", () => 
   const r = detectSensitiveTransformInput({ content: "plain body, no credential", sourceUrl: "https://files.example.com/d/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig12345678" });
   assert.equal(r.sensitive, true);
   assert.equal(r.reason, "source_credential_signal");
+});
+
+test("detectSensitiveTransformInput: a plain loopback URL in CONTENT (a docs example) is NOT flagged (#127 0.11.3)", () => {
+  // A loopback host (localhost / 127.x / [::1]) in fetched content resolves to the reader's
+  // machine, not a leaked endpoint — must not degrade summary to raw. A NON-loopback ?code= is a
+  // coupon, not an OAuth code (code is treated as a credential only on loopback redirects).
+  assert.equal(detectSensitiveTransformInput({ content: "Run: export ADDRESS=http://localhost:8000" }).sensitive, false);
+  assert.equal(detectSensitiveTransformInput({ content: "Connect via http://127.0.0.1:9000" }).sensitive, false);
+  assert.equal(detectSensitiveTransformInput({ content: "see http://[::1]:8000" }).sensitive, false, "bracketed IPv6 loopback is exempt too");
+  assert.equal(detectSensitiveTransformInput({ content: "deal https://shop.example.com/?code=SAVE20" }).sensitive, false, "a non-loopback ?code= (coupon) is NOT flagged (code is loopback-OAuth only)");
+  assert.equal(detectSensitiveTransformInput({ content: "see https://developer.example.com/oauth2#access_token" }).sensitive, false, "a bare doc anchor #access_token (no value) is NOT flagged");
+  assert.equal(detectSensitiveTransformInput({ content: "git clone https://octocat@github.com/octocat/Hello-World.git" }).sensitive, false, "username-only userinfo (no password) is NOT flagged");
+});
+
+test("detectSensitiveTransformInput: internal hosts (incl. IPv6) and credential-bearing URLs are still flagged (#127 0.11.3)", () => {
+  // The loopback exemption is content-only AND plain-loopback-only: internal hosts (incl. IPv6),
+  // a credential anywhere (query / fragment / userinfo), and OAuth code/refresh_token on loopback.
+  assert.equal(detectSensitiveTransformInput({ content: "plain body", sourceUrl: "http://localhost:8000/x" }).sensitive, true, "loopback source url (SSRF)");
+  assert.equal(detectSensitiveTransformInput({ content: "internal api http://10.0.0.5/api" }).sensitive, true, "RFC1918 in content");
+  assert.equal(detectSensitiveTransformInput({ content: "see [http://10.0.0.5]" }).sensitive, true, "prose ']' after an internal host");
+  assert.equal(detectSensitiveTransformInput({ content: "[http://10.0.0.5]." }).sensitive, true, "prose ']' + punctuation");
+  assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]/secret" }).sensitive, true, "internal IPv6 + path (codex r12)");
+  assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]." }).sensitive, true, "internal IPv6 + prose '.' not absorbed");
+  assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]!" }).sensitive, true, "internal IPv6 + prose '!' not absorbed");
+  assert.equal(detectSensitiveTransformInput({ content: "[http://[fd00::1]]" }).sensitive, true, "markdown-bracketed internal IPv6");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://[::1]/cb#access_token=eyJhbGc" }).sensitive, true, "loopback IPv6 + credential fragment (codex r12)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb#access_token=eyJhbGc" }).sensitive, true, "loopback + credential fragment (codex r7)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb#state=x&amp;access_token=eyJhbGc" }).sensitive, true, "HTML-escaped '&amp;' fragment normalized (codex r7)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://client:secret@localhost:3000/cb" }).sensitive, true, "loopback + userinfo credentials (codex r9)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb?code=eyJhbGc" }).sensitive, true, "loopback OAuth code is flagged, not exempt (codex r11)");
+  assert.equal(detectSensitiveTransformInput({ content: "dev http://localhost:3000/cb?token=sekret" }).sensitive, true, "loopback generic token key (?token=) is flagged, not exempt (codex P2)");
+  assert.equal(detectSensitiveTransformInput({ content: "dev http://localhost:3000/cb?key=sekret" }).sensitive, true, "loopback generic key (?key=) is flagged");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb?state=x&amp;code=eyJhbGc" }).sensitive, true, "loopback OAuth code after an HTML-escaped '&amp;' separator is still seen (codex P1)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost.:3000/cb?code=eyJhbGc" }).sensitive, true, "trailing-dot loopback FQDN (localhost.) still gets the OAuth-code check (codex P2)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/#/callback?code=eyJhbGc" }).sensitive, true, "hash-router loopback OAuth code (#/path?code=) is parsed (codex P2)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/#/cb?access_token=eyJhbGc" }).sensitive, true, "hash-router loopback credential fragment is parsed");
+  assert.equal(detectSensitiveTransformInput({ content: "presigned https://files.example/a[draft?access_token=eyJhbGc" }).sensitive, true, "a '[' in the path before a credential query does not truncate the scan (codex P2 r8)");
+  assert.equal(detectSensitiveTransformInput({ content: "presigned https://files.example/a[draft]?access_token=eyJhbGc" }).sensitive, true, "a BALANCED path bracket [draft] before a credential query is kept (codex P2)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost/cb(v2)?code=eyJhbGc" }).sensitive, true, "a balanced parenthesized path cb(v2) before a credential query is kept (codex P2)");
+  assert.equal(detectSensitiveTransformInput({ content: "see (http://10.0.0.5)" }).sensitive, true, "a prose ')' (no matching opener) is stripped so the internal host is flagged");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://[::1]/cb(v2)?code=eyJhbGc" }).sensitive, true, "IPv6 + balanced paren path cb(v2) + credential query (codex P2)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://[::1]/a[draft]?access_token=eyJhbGc" }).sensitive, true, "IPv6 + balanced bracket path [draft] + credential query");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://admin:x@[::1]:8000/cb?access_token=eyJ" }).sensitive, true, "userinfo + IPv6 loopback + credential is flagged");
+  assert.equal(detectSensitiveTransformInput({ content: "debug http://[fe80::1%25eth0]:8080/admin" }).sensitive, true, "zone-id link-local IPv6 internal host is flagged (zone normalized before parse)");
+  assert.equal(detectSensitiveTransformInput({ content: "debug http://[fe80::1%25eth0.100]:8080/admin" }).sensitive, true, "zone id with '.' (RFC6874) is fully stripped (codex P2)");
+});
+
+test("noneReason: zero candidates reports 'unconfigured' even when the sensitive gate fired (#127 0.11.3)", () => {
+  // The local binary builds the router with zero candidates; when the sensitive gate also
+  // fires (localOnly), noneReason used to mis-attribute 'sensitive_content_no_local_provider'.
+  // Order is now configuredCount===0 first.
+  assert.equal(noneReason({ localOnly: true }, 0), "unconfigured");
+  assert.equal(noneReason({}, 0), "unconfigured");
+  // Hosted flavor (a candidate exists) + localOnly still reports the sensitive cause.
+  assert.equal(noneReason({ localOnly: true }, 1), "sensitive_content_no_local_provider");
+});
+
+test("4xx/5xx response: output summary short-circuits to raw so the real error body reaches the agent (#127 0.11.3, codex r8)", async () => {
+  // A 4xx body is an error page — return it raw (don't summarize) so the agent reads the
+  // server's actual message. The transform is skipped (no LLM call on an error body).
+  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), { text: "SUMMARY OF THE ERROR PAGE" });
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await createCaptatumUseCase({
+    fetcher: new FakeFetcher({ ...fetchResult({ html: "<main>404 Not Found</main>" }), status: 404 }),
+    extractHtml: new FakeExtractor(extraction({ text: "404 Not Found" })).extract,
+    transformer,
+    clock: new FakeClock([0, 4, 5, 5]),
+  }).execute({ url: "https://missing.test/", output: "summary" });
+  assert.equal(result.output, "raw", "a 4xx short-circuits summary to raw");
+  assert.equal(result.code, 404);
+  assert.match(result.result, /404 Not Found/, "the actual error body is returned");
+  assert.doesNotMatch(result.result, /SUMMARY OF THE ERROR PAGE/, "the error body is not summarized");
+  assert.equal(provider.calls.length, 0, "the transform is skipped on an error body");
 });
 
 class FakeClock implements ClockPort {

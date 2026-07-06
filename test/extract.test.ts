@@ -1088,6 +1088,28 @@ test("preferredTitle uses a content-bearing JSON-LD title when <title> is generi
   assert.equal(preferredTitle(undefined, {}), undefined);
 });
 
+test("4xx/5xx response: body returned, jsRequired forced false (no false render-blocked) [GUARD, was GAP]", async () => {
+  // A thin text/html 404 (nginx default / SSG error page) used to fail the shell-gate's
+  // hasContent check -> empty-spa-shell -> jsRequired:true -> render-blocked with a false
+  // gateReason. Now a 4xx/5xx forces jsRequired:false + resolvedVia "tier1-error" + an
+  // http_error provenance warning; the body is still returned for the agent to read.
+  const body = "<html><body>Not Found</body></html>";
+  const result = await extractTier1FromFetchResult({
+    requestedUrl: "https://example.test/missing",
+    fetchResult: { ...fetchResult("https://example.test/missing", body), status: 404 },
+    extractHtml,
+    durationMs: 50,
+    fetchMs: 40,
+    output: "raw",
+  });
+  assert.equal(result.tier, 1, "an error response stays at Tier-1 (not render-blocked)");
+  assert.equal(result.jsRequired, false, "a 4xx is not a JS shell — never escalate to render");
+  assert.equal(result.resolvedVia, "tier1-error");
+  assert.equal(result.code, 404);
+  assert.ok(result.errors.some((e) => e.code === "http_error"), "http_error provenance warning recorded");
+  assert.ok((result.result ?? "").length > 0, "the error body is still returned");
+});
+
 function fixture(name: string): string {
   return readFileSync(join(FIXTURE_DIR, name), "utf8");
 }

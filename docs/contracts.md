@@ -127,7 +127,7 @@ Default (lean) `structuredContent`:
   result,                              // summary text | raw content | extracted JSON (string)
   tier, code, codeText, bytes,         // kept for existing consumers
   resolvedVia, platform, jsRequired,
-  access: { mainContentAccessible, gated, gateReason: "paywall"|"js-required"|"captcha"|"byte_cap"|"none" },
+  access: { mainContentAccessible, gated, gateReason: "paywall"|"js-required"|"captcha"|"byte_cap"|"http_error"|"none" },
   provenance: { tier, resolvedVia, code, bytes },     // convenience envelope
   warnings: [{ code, message }],       // non-fatal (tier !== "error"): advisories, render-failed-but-tier1-ok, byte-cap truncation, extract_schema_invalid, transform_truncated
   images: ["https://…"],               // bounded absolute http(s) URLs for optional multimodal vision fetch
@@ -138,8 +138,8 @@ Default (lean) `structuredContent`:
 
 Rules:
 - **errors vs warnings:** fatal ⟺ `tier === "error"` (per the note above: "advisory entries never set `tier: error`"). Everything else in `Result.errors` becomes a `warning`.
-- **status:** `fail` when `tier === "error"` or no body content was returned; `partial` when content was returned but warnings exist or the summary/extract transform fell back to raw (`transform.provider === "none"`); else `pass`. A successful candidate-MODEL fallback is a `pass` (not `partial`) — the failed-primary list rides on `transform.fallbackFrom` (debug + audit only), not a warning (#82).
-- **access.gateReason:** `paywall` when JSON-LD declares `isAccessibleForFree: false`; `byte_cap` when the response was truncated at the cap; `js-required` when no content was returned on a page that needed JS we could not run (render-blocked/render-unavailable/`jsRequired`); else `none`.
+- **status:** `fail` when `tier === "error"`, the response was 4xx/5xx (the body is an error page, not usable content), or no body content was returned; `partial` when content was returned but warnings exist or the summary/extract transform fell back to raw (`transform.provider === "none"`); else `pass`. A successful candidate-MODEL fallback is a `pass` (not `partial`) — the failed-primary list rides on `transform.fallbackFrom` (debug + audit only), not a warning (#82).
+- **access.gateReason:** `paywall` when JSON-LD declares `isAccessibleForFree: false`; `byte_cap` when the response was truncated at the cap; `js-required` when no content was returned on a page that needed JS we could not run (render-blocked/render-unavailable/`jsRequired`); `http_error` when the response was 4xx/5xx (an error page — the body is still returned in `result` for the agent to read the server's message); else `none`.
 - **contentType:** `json` when the response's HTTP content-type is `application/json` (or a `+json` suffix); else `pin` for pinterest.*/pin.it hosts; else from the first content-bearing JSON-LD `@type` (`JobPosting`→job, `Product`→product, Article family→article); else `og:type`; else `spa` when `jsRequired`; else `unknown`.
 - **images:** never fetched by this service — surfaced for the calling agent's optional vision fetch. Private/loopback hosts are stripped (string check, no DNS).
 - **result:** snippeted to ~2000 chars in `structuredContent` when large; the full text is always delivered as MCP `content[0].text` (the primary agent channel), so mirroring a huge body in the structured payload would only duplicate tokens. Summaries are small and pass through unchanged.

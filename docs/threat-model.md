@@ -219,11 +219,21 @@ High-confidence signals (still flagged — in the source url AND embedded in con
   (`&amp;`/`&#38;`/`&#x26;` → `&`) before the credential-key check.
 - Internal hosts — `.local`/`.internal`/`.corp`/`.localhost`/`.priv` suffixes and
   private/reserved IP literals (`isPrivate`, incl. cloud-metadata `169.254.169.254`).
-- URL-embedded credentials — query params that make a url itself a credential,
-  matched on the source url AND any url embedded in content: cloud presigned
-  signatures (`x-amz-signature`/`x-amz-credential`/`x-amz-security-token`,
-  `x-goog-signature`), Azure Blob SAS (`sig`), generic/Alibaba JWS (`signature`),
-  Tencent COS (`q-signature`), and OAuth/API tokens (`access_token`, `api_key`).
+  **Loopback content exemption (#127):** a loopback host (`localhost`/`127.0.0.0/8`/`::1`)
+  *embedded in fetched content* is NOT flagged — a README/docs setup example resolves to the
+  reader's machine, not a leaked internal endpoint. The exemption is **content-only** (a loopback
+  SOURCE url is still flagged — captatum never fetches a loopback target) and **plain-loopback-only**:
+  it does not apply when the URL carries a credential anywhere (query key, fragment key, or
+  userinfo `user:pass@`), so a loopback OAuth redirect (`…#access_token=…`,
+  `http://client:secret@localhost…`) is still flagged.
+- URL-embedded credentials — a url that is itself a credential, matched on the source url AND
+  any url embedded in content, in all three locations: QUERY params (cloud presigned signatures
+  `x-amz-signature`/`x-amz-credential`/`x-amz-security-token`, `x-goog-signature`, Azure Blob
+  SAS `sig`, JWS `signature`, Tencent COS `q-signature`, OAuth/API tokens `access_token`/`api_key`),
+  the FRAGMENT (`#access_token=…`, with HTML-escaped `&amp;`/`&#38;`/`&#x26;` separators normalized
+  before the key check), and the USERINFO (`user:pass@host`). The fragment + userinfo checks are
+  load-bearing for the loopback content exemption — without them a loopback OAuth redirect could
+  egress (#127 codex review).
 
 Deliberately NOT flagged (the #44 regression: news pages such as `estadao.com.br`
 were mis-flagged, which skipped the transform and silently dumped raw):

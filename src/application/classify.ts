@@ -12,7 +12,7 @@ export type ContentType = "article" | "job" | "json" | "pin" | "product" | "spa"
 export interface AccessInfo {
   mainContentAccessible: boolean;
   gated: boolean;
-  gateReason: "paywall" | "js-required" | "captcha" | "byte_cap" | "none";
+  gateReason: "paywall" | "js-required" | "captcha" | "byte_cap" | "http_error" | "none";
   /** The anti-bot vendor when gateReason is "captcha" (#41 Half A). */
   challengeProvider?: string;
 }
@@ -102,6 +102,12 @@ export function classifyAccess(result: Result): AccessInfo {
   // interstitial, not page content. Takes precedence — never silently pass it.
   if (result.challengeProvider) {
     return { mainContentAccessible: false, gated: true, gateReason: "captcha", challengeProvider: result.challengeProvider };
+  }
+  // HTTP error (4xx/5xx): the fetch returned an error page, not accessible content. Takes
+  // precedence over paywall/byte_cap/js-required so the receipt never presents an error
+  // response as a successful, public, non-gated fetch. The body is still in result.result.
+  if (Number(result.code) >= 400) {
+    return { mainContentAccessible: false, gated: true, gateReason: "http_error" };
   }
   if (isPaywalled(result.structured?.jsonLd)) {
     return { mainContentAccessible, gated: true, gateReason: "paywall" };

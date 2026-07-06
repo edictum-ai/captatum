@@ -135,8 +135,8 @@ export class CaptatumUseCase {
     startMs: number,
     fetchMs: number,
   ): Promise<Result> {
-    // #41 Half A: never summarize a challenge interstitial as page content.
-    if (base.challengeProvider || request.requestedOutput === "raw") {
+    // #41 Half A + 4xx/5xx: a challenge interstitial OR an error page is returned raw, not summarized.
+    if (base.challengeProvider || request.requestedOutput === "raw" || Number(base.code) >= 400) {
       base.output = "raw";
       stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);
       return base;

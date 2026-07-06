@@ -55,6 +55,12 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
     : undefined;
   const output = input.output ?? "raw";
   const title = preferredTitle(extraction.title, extraction.structured);
+  // HTTP error gate (4xx/5xx): the body is an error page, not a JS shell. Force jsRequired
+  // false so a thin text/html 404 (nginx default, SSG error page) never escalates to render /
+  // surfaces a false gateReason, and record an honest http_error provenance warning. The body
+  // is still returned so the agent can read the server's message.
+  const httpErrorStatus = input.fetchResult.status >= 400 ? input.fetchResult.status : undefined;
+  const jsRequired = httpErrorStatus ? false : extraction.shellGate.jsRequired;
 
   return {
     url: input.requestedUrl,
@@ -69,16 +75,16 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
     tier: 1,
     output,
     platform: { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" },
-    jsRequired: extraction.shellGate.jsRequired,
-    resolvedVia: resolvedVia(extraction, input.fetchResult.contentType),
+    jsRequired,
+    resolvedVia: httpErrorStatus ? "tier1-error" : resolvedVia(extraction, input.fetchResult.contentType),
     attempts: [{
       step: 1,
       tier: 1,
-      outcome: extraction.shellGate.jsRequired ? "escalate" : "ok",
+      outcome: jsRequired ? "escalate" : "ok",
       status: input.fetchResult.status,
       durationMs: input.fetchMs ?? input.durationMs,
       bytes: input.fetchResult.bytes,
-      reason: extraction.shellGate.reason,
+      reason: httpErrorStatus ? "http-error" : extraction.shellGate.reason,
     }],
     contentType: input.fetchResult.contentType,
     title,
@@ -87,6 +93,9 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
     timings: { totalMs: input.durationMs, fetchMs: input.fetchMs ?? input.durationMs },
     errors: [
       ...extraction.errors,
+      ...(httpErrorStatus
+        ? [{ code: "http_error", message: `HTTP ${httpErrorStatus} ${STATUS_CODES[httpErrorStatus] ?? ""}`.trim() } as ProvenanceError]
+        : []),
       ...(input.fetchResult.truncated
         ? [{ code: "max_bytes", message: "Content truncated at the byte cap" }]
         : []),

@@ -123,14 +123,23 @@ function promoteRenderedResult(
   renderMs: number,
   controlAttempts: AttemptTrace[],
 ): Result {
-  rendered.tier = 3;
+  // A 4xx/5xx returned by the browser navigation already carries the Tier-1 http-error gate
+  // (jsRequired:false, resolvedVia:"tier1-error", http_error warning). Don't clobber it by
+  // marking the page JS-required / a successful render — only promote to tier3-playwright when
+  // the render genuinely produced a page (non-error status).
+  const httpError = Number(rendered.code) >= 400;
   rendered.output = "raw";
-  rendered.platform = { ...rendered.platform, detectedFrom: "tier3" };
-  rendered.jsRequired = true;
-  rendered.resolvedVia = "tier3-playwright";
+  if (!httpError) {
+    // The render genuinely produced a page — promote to Tier 3.
+    rendered.tier = 3;
+    rendered.platform = { ...rendered.platform, detectedFrom: "tier3" };
+    rendered.jsRequired = true;
+    rendered.resolvedVia = "tier3-playwright";
+  }
+  // A 4xx/5xx keeps the Tier-1 http-error gate (tier:1, resolvedVia:"tier1-error", jsRequired:false).
   rendered.attempts = [
     ...base.attempts,
-    renderAttempt(3, "ok", renderMs, "rendered", rendered.code, rendered.bytes),
+    renderAttempt(3, httpError ? "error" : "ok", renderMs, httpError ? "http-error" : "rendered", rendered.code, rendered.bytes),
     ...controlAttempts,
   ];
   rendered.errors = [...base.errors, ...rendered.errors];

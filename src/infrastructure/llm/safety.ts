@@ -10,7 +10,15 @@
  * (token prefixes, PEM headers, signed URLs) without flagging discussion text.
  * Security-relevant change — reflect in docs/threat-model.md.
  */
-import { isPrivate } from "../../domain/policy.ts";
+import {
+  CONTENT_CREDENTIAL_QUERY_KEYS,
+  fragmentCredentialReason,
+  internalHostReason,
+  loopbackOAuthCredentialReason,
+  SIGNED_QUERY_KEYS,
+  signedUrlReason,
+  userinfoCredentialReason,
+} from "./sensitive-urls.ts";
 
 const SENSITIVE_CREDENTIAL_PATTERNS = [
   /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/i,
@@ -40,49 +48,16 @@ const SENSITIVE_HEADER_PATTERNS = [
   /set-cookie:\s*[^=\s;]{1,64}=[^;\s<]{16,}/i,
 ];
 
-/** Query-param keys whose presence on a URL means the URL itself carries a real
- *  credential — checked on BOTH the source url AND any url embedded in fetched
- *  content. These are NOT ad-tracker noise: a presigned cloud URL or an OAuth
- *  bearer link egressed to a hosted LLM is a genuine secret leak.
- *  - AWS / GCS presigned-URL signing params.
- *  - Azure Blob SAS (`sig`), generic/Alibaba JWS (`signature`), Tencent COS
- *    (`q-signature`) signing signatures.
- *  - OAuth bearer (`access_token`) and API-key (`api_key`) tokens. */
-const CONTENT_CREDENTIAL_QUERY_KEYS = new Set([
-  "x-amz-credential",
-  "x-amz-signature",
-  "x-amz-security-token",
-  "x-goog-signature",
-  "sig",
-  "signature",
-  "q-signature",
-  "access_token",
-  "api_key",
-]);
-
-/** Adds the generic keys ad/CDN trackers abuse (`token`, `key`, `auth`, `expires`)
- *  for the SOURCE-url check ONLY. Fetching a url that carries one is suspicious
- *  (it may be a signed/tokenized fetch), so it is still flagged. But a public page
- *  that merely LINKS one (the #44 false-positive class — e.g. an estadao.com.br
- *  search template `?token={…}`) is NOT, because on content those keys are
- *  ordinary ad/CDN noise, not credentials. Real URL credentials use the keys in
- *  CONTENT_CREDENTIAL_QUERY_KEYS above. */
-const SIGNED_QUERY_KEYS = new Set([
-  ...CONTENT_CREDENTIAL_QUERY_KEYS,
-  "token",
-  "key",
-  "auth",
-  "expires",
-]);
-
-const INTERNAL_HOST_SUFFIXES = [
-  ".local", ".internal", ".corp", ".intranet", ".localhost", ".priv",
-  ...(process.env.INTERNAL_HOST_SUFFIXES ?? "")
-    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
-];
-
-/** Bounded URL-literal scan for embedded signed/internal URLs in content. */
-const SIGNED_URL_IN_CONTENT = /https?:\/\/[^\s"'<>)\]]{1,512}/gi;
+/** Bounded URL-literal scan for embedded signed/internal URLs in content. Two alternations:
+ *  (1) an OPTIONAL userinfo (user:pass@) then a bracketed IPv6 host, optional port, and a
+ *  path/query/fragment that MUST start with '/', '?', or '#' — so prose immediately after the
+ *  literal ('.', ',', '!', a markdown ']') is never absorbed, while a real path/query/fragment
+ *  (incl. a credential fragment) is captured. The userinfo is '@'-anchored so it can't absorb
+ *  non-userinfo prose. (2) a normal URL that excludes ']' (so a prose bracket around it stops
+ *  cleanly) but ALLOWS '[' — a literal '[' in a path before a credential query (e.g.
+ *  https://files.example/a[draft?access_token=…) must not truncate the match. The IPv6 alternation
+ *  owns '[' at the host position, so allowing it in a normal path is safe. Bounded vs ReDoS. */
+const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[@\/]*)?@)?\[[^\]\s]{1,79}\](?::\d{1,5})?(?:[\/?#][^\s"'<>]*)?|https?:\/\/[^\s"'<>]{1,512}/gi;
 /** Cap the embedded-URL scan to the head of the content. The high-confidence
  *  credential/header patterns below scan the FULL content regardless of size;
  *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
@@ -94,6 +69,22 @@ const MAX_CONTENT_SCAN = 500_000;
 export interface SensitivitySignal {
   sensitive: boolean;
   reason?: string;
+}
+
+/** Strip trailing ']' and ')' that are unbalanced — a prose bracket/paren around the URL
+ *  ([http://host], (http://host)) has no matching opener in the match; a balanced path delimiter
+ *  (a[draft], cb(v2)) stays so the URL parses. O(n): excess computed once, then a backward scan. */
+function stripTrailingProseClosers(url: string): string {
+  const excessSq = Math.max(0, (url.match(/\]/g) ?? []).length - (url.match(/\[/g) ?? []).length);
+  const excessPa = Math.max(0, (url.match(/\)/g) ?? []).length - (url.match(/\(/g) ?? []).length);
+  let end = url.length, skipSq = excessSq, skipPa = excessPa;
+  while (end > 0) {
+    const c = url[end - 1];
+    if (c === "]" && skipSq > 0) { skipSq--; end--; continue; }
+    if (c === ")" && skipPa > 0) { skipPa--; end--; continue; }
+    break;
+  }
+  return url.slice(0, end);
 }
 
 export function detectSensitiveTransformInput(input: {
@@ -121,56 +112,34 @@ export function detectSensitiveTransformInput(input: {
   for (const pattern of SENSITIVE_HEADER_PATTERNS) {
     if (pattern.test(content)) return { sensitive: true, reason: "content_header_dump" };
   }
-  // A public page that merely LINKS a cloud-presigned / OAuth / signed URL or an
-  // internal host must not egress to a hosted LLM. Bounded scan (REDOS/DoS
-  // hygiene). Only real credential keys are matched here
-  // (CONTENT_CREDENTIAL_QUERY_KEYS) — not the generic ad/CDN keys (`token`/`key`/
-  // `auth`/`expires`) that caused the #44 news-page false-positive regression.
-  // The credential/header patterns above already scanned the FULL content.
+  // A public page that merely LINKS a cloud-presigned / OAuth / signed URL or an internal host
+  // must not egress to a hosted LLM. Bounded scan (ReDoS/DoS hygiene). Only real credential keys
+  // are matched (CONTENT_CREDENTIAL_QUERY_KEYS) — not the generic ad/CDN keys (`token`/`key`/
+  // `auth`/`expires`) that caused the #44 news-page false-positive regression. The credential
+  // patterns above already scanned the FULL content.
   const head = content.length > MAX_CONTENT_SCAN ? content.slice(0, MAX_CONTENT_SCAN) : content;
   for (const match of head.matchAll(SIGNED_URL_IN_CONTENT)) {
-    const reason = signedUrlReason(match[0], CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(match[0]);
+    // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup example — resolves
+    // to the READER's machine, not a leaked endpoint) is not flagged. RFC1918 / 169.254.169.254 /
+    // .corp / .internal are. A credential ANYWHERE on the URL — query key, fragment key (HTML-escaped
+    // &amp; normalized), userinfo (user:pass@), or an OAuth code/refresh_token on a loopback redirect
+    // — is checked BEFORE the exemption. Trim trailing prose punctuation a normal URL picked up
+    // (no ']' — the IPv6 close + the path's [/?#] boundary keep brackets out of the match).
+    // Prose-trim trailing punctuation, then strip trailing ']'s that are UNBALANCED (a prose
+    // bracket like [http://host]) — a balanced ']' (in a path like a[draft]) stays so the URL
+    // parses and the query/fragment after it is scanned. Bounded string slices, no parse loop.
+    // Prose-trim trailing punctuation, then strip trailing ']' / ')' that are UNBALANCED (a prose
+    // bracket/paren around the URL has no matching opener in the match; a balanced path delimiter
+    // like a[draft] or cb(v2) stays so the URL parses + a query/fragment after it is scanned).
+    let url = stripTrailingProseClosers(match[0].replace(/[.,;:!?]+$/, ""));
+    const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
+      ?? fragmentCredentialReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
+      ?? userinfoCredentialReason(url)
+      ?? loopbackOAuthCredentialReason(url)
+      ?? internalHostReason(url, true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
   return { sensitive: false };
-}
-
-function signedUrlReason(sourceUrl: string, keys: Set<string> = SIGNED_QUERY_KEYS): string | undefined {
-  let parsed: URL;
-  try {
-    // HTML-escaped separators (`&amp;`, `&#38;`, `&#x26;`) would prefix parsed
-    // query keys with "amp;"/etc. and hide a presigned key (e.g. an embedded
-    // `&amp;X-Amz-Signature=`); normalize them to `&` before parsing.
-    parsed = new URL(sourceUrl.replace(/&(amp|#38|#x26);/gi, "&"));
-  } catch {
-    return undefined;
-  }
-
-  for (const key of parsed.searchParams.keys()) {
-    if (keys.has(key.toLowerCase())) return "signed_or_tokenized_url";
-  }
-  // NOTE: a path-segment "opaque token" heuristic used to run here but was removed
-  // (#44) — no length/alphabet rule reliably separates a real opaque token from a
-  // long news-article slug (e.g. `brasil-japao-ao-vivo-copa-do-mundo-2026-06-29`)
-  // or a CDN asset hash, so it caused repeated false-positives on public pages,
-  // deterministically on any article with a long slug. Real path-embedded
-  // credentials are still caught elsewhere: JWTs by the credential-value patterns
-  // above, presigned URLs by the query-key check, internal hosts by
-  // internalHostReason. See docs/threat-model.md "Sensitive-content detection".
-  return undefined;
-}
-
-function internalHostReason(sourceUrl: string): string | undefined {
-  try {
-    const host = new URL(sourceUrl).hostname.toLowerCase().replace(/\.$/, "");
-    if (host === "localhost" || INTERNAL_HOST_SUFFIXES.some((s) => host === s.slice(1) || host.endsWith(s))) {
-      return "internal_host";
-    }
-    // Private/reserved IP literals (169.254.169.254 metadata, RFC1918, etc.) — reuse
-    // the same classification as the fetch/browser SSRF guards.
-    if (isPrivate(host)) return "internal_host";
-  } catch { /* ignore unparseable URLs */ }
-  return undefined;
 }
 
 /** Redact signed/tokenized query-param values from a URL before display (INFOLEAK-1). */
