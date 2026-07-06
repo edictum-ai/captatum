@@ -61,6 +61,31 @@ test("POST /mcp rejects unauthenticated hosted calls before captatum runs", asyn
   await ctx.app.close();
 });
 
+test("POST /mcp with a malformed Bearer token returns a 401 with the actionable invalid/expired message (#104)", async () => {
+  // Exercises verifyAccessToken (oauth-crypto.ts) — the stale/expired-token path, a
+  // more common real-world 401 than "no token at all". The prior test sends NO
+  // Authorization header (bearerToken path); this sends a bad one so the actionable
+  // "invalid or expired … /oauth/token" message is asserted end-to-end, including its
+  // em-dash safety in the WWW-Authenticate header.
+  const ctx = await setup();
+  const response = await ctx.rpc(
+    { arguments: { url: "https://fixture.test/", output: "raw" } },
+    undefined,
+    { authorization: "Bearer not-a-real-jwt" },
+  );
+  assert.equal(response.statusCode, 401);
+  const wwwAuth = String(response.headers["www-authenticate"]);
+  assert.match(wwwAuth, /error="invalid_token"/);
+  assert.match(wwwAuth, /\/oauth\/token/, "error_description carries the remedy");
+  assert.ok(!wwwAuth.includes("—"), "em dash is ASCII-sanitized out of the header value");
+  const body = response.json();
+  assert.equal(body.error.code, -32001);
+  assert.match(body.error.message, /invalid_token: .*invalid or expired/);
+  assert.match(body.error.message, /\/oauth\/token/);
+  assert.equal(ctx.fetcher.calls.length, 0);
+  await ctx.app.close();
+});
+
 test("authenticated fetch:read call can perform output raw", async () => {
   const ctx = await setup();
   const response = await ctx.rpc({ arguments: { url: "https://fixture.test/path?x=1", output: "raw" } }, ["fetch:read"]);
