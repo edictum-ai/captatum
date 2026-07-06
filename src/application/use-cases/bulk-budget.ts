@@ -78,11 +78,13 @@ export class BudgetTracker {
     return this.opts.clock.nowMs() >= this.deadlineMs;
   }
 
-  /** Has the settled transform spend reached the global cost cap? (A transform landing exactly
-   *  at the cap doesn't exceed it, so `afterSeed`'s strict `>` doesn't trip — but no FURTHER
-   *  transform should run. Queued seeds re-check this after acquiring the transform slot.) */
+  /** Does the in-flight cost wave (settled + outstanding reservations) exceed the global cap?
+   *  A queued seed re-checks this after acquiring the transform slot: an earlier transform may
+   *  have overspent its reservation (settled grew faster than reserved shrank), so even though
+   *  settled alone is under the cap, settled + the still-outstanding reservations can exceed it.
+   *  (Also trips when settled alone reaches the cap, since reserved ≥ the queued seed's own.) */
   costCapReached(): boolean {
-    return this.costSettled >= this.opts.maxTransformCostUsd;
+    return this.costSettled + this.costReserved > this.opts.maxTransformCostUsd;
   }
 
   /** Reserve per-seed byte + cost budget before dispatching. See file header. */

@@ -118,10 +118,11 @@ export class CaptatumBulkUseCase {
 
     await Promise.all(seeds.map(async (seed, idx) => {
       const acquired = await sem.acquire(signal);
-      if (!acquired) { results[idx] = abortedSeedResult(seed, "bulk_deadline_exceeded", "wall deadline reached"); return; }
+      if (!acquired) { record("bulk_deadline_exceeded"); results[idx] = abortedSeedResult(seed, "bulk_deadline_exceeded", "wall deadline reached"); return; }
       try {
         if (shortCircuit || signal.aborted || budget.wallExceeded()) {
           const wall = signal.aborted || budget.wallExceeded();
+          if (wall) record("bulk_deadline_exceeded");
           results[idx] = abortedSeedResult(seed, wall ? "bulk_deadline_exceeded" : shortCircuit!.code, wall ? "wall deadline reached" : shortCircuit!.message);
           return;
         }
@@ -137,6 +138,7 @@ export class CaptatumBulkUseCase {
           // have fired mid-acquire, and without this the seed would run with an aborted signal
           // (fail "timeout") instead of the honest bulk_deadline_exceeded.
           if (signal.aborted || budget.wallExceeded()) {
+            record("bulk_deadline_exceeded");
             results[idx] = abortedSeedResult(seed, "bulk_deadline_exceeded", "wall deadline reached");
             return;
           }
@@ -156,6 +158,7 @@ export class CaptatumBulkUseCase {
           if (effectiveOutput !== "raw") {
             transformSlotHeld = await transformSem.acquire(signal);
             if (!transformSlotHeld) {
+              record("bulk_deadline_exceeded");
               results[idx] = abortedSeedResult(seed, "bulk_deadline_exceeded", "wall deadline reached");
               return;
             }

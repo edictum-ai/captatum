@@ -139,6 +139,7 @@ test("bulk wall: a deadline-crossing clock marks every seed bulk_deadline_exceed
   assert.equal(res.results[0].codeText, "bulk_deadline_exceeded");
   assert.equal(res.results[1].codeText, "bulk_deadline_exceeded");
   assert.equal(exec.calls, 0, "no seed fetched — the wall aborted before dispatch");
+  assert.ok(res.capBreaches.includes("bulk_deadline_exceeded"), "the wall breach is disclosed in capBreaches");
 });
 
 test("bulk redirect-funnel quarantine: a redirect victim crossing the cap aborts remaining seeds (bound ≤ 13)", async () => {
@@ -277,10 +278,22 @@ test("bulk cost: a transform landing EXACTLY at the cap blocks queued transforms
   const urls = Array.from({ length: 4 }, (_, i) => `https://h${i}.test/p${i}`);
   for (const u of urls) exec.results.set(u, okResult(u, { output: "summary", costUsd: 0.10 }));
   // Each transform costs exactly the $0.10 cap. The first lands at costSettled=0.10 (not > 0.10,
-  // so no shortCircuit), but costCapReached (>=) makes the queued seeds fail-soft to raw.
+  // so no shortCircuit), but costCapReached makes the queued seeds fail-soft to raw.
   const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4 }).execute({ urls, output: "summary", maxTransformCostUsd: 0.10 });
   assert.equal(res.results.filter((r) => r.output === "summary").length, 1, "only the first transform runs (lands exactly at the cap)");
   assert.equal(res.results.filter((r) => r.output === "raw").length, 3, "queued seeds fail-soft to raw once the cap is reached");
+});
+
+test("bulk cost: an oversize transform UNDER the cap still blocks queued seeds (settled + reserved check)", async () => {
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 4 }, (_, i) => `https://h${i}.test/p${i}`);
+  for (const u of urls) exec.results.set(u, okResult(u, { output: "summary", costUsd: 0.08 })); // oversize vs perSeed 0.025, under cap 0.10
+  // seed 1 transforms ($0.08, oversize). The 3 queued reservations (3×0.025=$0.075) + settled $0.08
+  // = $0.155 > cap → costCapReached (settled+reserved) fail-softs the queued seeds. Spend bounded
+  // to the 1 oversize seed (was: costCapReached checked settled only → queued seeds ran → ~$0.16+).
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4 }).execute({ urls, output: "summary", maxTransformCostUsd: 0.10 });
+  assert.equal(res.results.filter((r) => r.output === "summary").length, 1, "only the first (oversize) transform runs");
+  assert.ok(res.totals.transformCostUsd <= 0.08 + 1e-9, `spend bounded to the 1 oversize seed; got ${res.totals.transformCostUsd}`);
 });
 
 test("raceWallAbort: an aborted wall signal abandons a slow in-flight transform (dispatch-level)", async () => {
