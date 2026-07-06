@@ -117,7 +117,7 @@ Server ceilings are NOT caller-overridable; caller values for the cost knobs are
 | `maxUrls` | 50 (`raw`) / 10 (`summary`\|`extract`) | unbounded crawl (total across all hosts); over-ceiling → CLAMP + DISCLOSE |
 | `maxPerHostInBulk` | 10 | directed DoS — COUNT per victim; **union-keyed on egress hosts** (seed + redirect + finalUrl + Tier-2-resolved); truncate + disclose |
 | `maxGlobalEgressBytes` | 100 MB | egress amplification (host-agnostic global sum; v1 sums `result.bytes` — see honesty note) |
-| `maxGlobalWallMs` | 180 000 | browser-time / orphaned-call (hard, `AbortController`-tied, NOT caller-raisable) |
+| `maxGlobalWallMs` | 180 000 | browser-time / orphaned-call (hard, NOT caller-raisable). **Dispatch-level in v1** — at the deadline the orchestrator stops dispatching new seeds and marks the rest `bulk_deadline_exceeded` (in-flight seeds finish or hit their per-seed timeout); PR 2 threads `CaptatumContext.signal` so in-flight fetches abort at the deadline too. |
 | `maxConcurrency` | 4 | directed DoS — global fetch concurrency (shared across all hosts in a call) |
 | `maxRenderedSeeds` | 10 | Tier-3 OOM (count of seeds that escalate to render). **Inactive in v1** — bulk rejects `allowRender:true`, so zero seeds render; this cap activates when render-on-bulk lands. |
 | `maxPerHostInflight` | 2 (CONFIGURABLE) | directed DoS — per-host token-bucket **burst** (union-keyed); tune empirically |
@@ -217,7 +217,7 @@ BulkResult {
 
 `bulk_per_host_cap` (directed-DoS count bound, union-keyed),
 `tier2_board_not_supported_in_bulk` (board-root seed rejected per-entry),
-`bulk_deadline_exceeded` (wall-cap abort of remaining seeds),
+`bulk_deadline_exceeded` (wall deadline — remaining seeds marked failed; dispatch-level in v1),
 `bulk_budget_exceeded` (egress-bytes or transform-cost cap bit — reason names
 which), `bulk_render_cap_exceeded` (maxRenderedSeeds). Partial failure is
 NORMAL — a per-seed SSRF block / 404 / timeout / captcha is one `fail` entry +
