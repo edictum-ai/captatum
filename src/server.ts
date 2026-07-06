@@ -2,6 +2,8 @@ import type { AuditLoggerPort, AuthAuditEvent, ToolAuditEvent } from "./applicat
 import type { ClockPort } from "./application/ports/clock.ts";
 import { loadAuthRuntimeConfig, type AuthRuntimeConfig } from "./application/use-cases/oauth-config.ts";
 import { createCaptatumUseCase } from "./application/use-cases/captatum.ts";
+import { createCaptatumBulkUseCase } from "./application/use-cases/captatum-bulk.ts";
+import { createAdapterRegistry } from "./application/adapters.ts";
 import { config } from "./config.ts";
 import { extractHtml } from "./infrastructure/extract/index.ts";
 import { createWreqGuardedFetcher } from "./infrastructure/wreq/requester.ts";
@@ -47,8 +49,24 @@ const captatum = createCaptatumUseCase({
   renderer: createRenderer(),
   clock,
 });
+// captatum_bulk: hosted ships BEHIND CAPTATUM_BULK_ENABLED (default off — BULK-GATE: no
+// global fetch-concurrency cap across concurrent bulks yet). Built with the UNWRAPPED captatum
+// executor so the route's one-slot admission wrap bounds the whole call, not per-seed fan-out.
+const bulk = config.bulk.enabled()
+  ? createCaptatumBulkUseCase({
+    executor: captatum,
+    adapters: createAdapterRegistry(),
+    clock,
+    operator: {
+      maxPerHostInflight: config.bulk.maxPerHostInflight(),
+      crawlDelayMs: config.bulk.crawlDelayMs(),
+      maxConcurrency: config.bulk.maxConcurrency(),
+    },
+  })
+  : undefined;
 const app = await createHttpApp({
   captatum,
+  ...(bulk !== undefined ? { bulk } : {}),
   runtime,
   clock,
   audit,

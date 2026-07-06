@@ -6,9 +6,10 @@ import type { Tier, Output } from "./tier.ts";
 import type { BulkGuard, BulkStatus, PerHostTruncation } from "./bulk-policy.ts";
 
 /** One per processed seed, INPUT ORDER preserved. `result` is a hard snippet
- *  (<=500 chars) or a per-entry reject message; the full content lives in the
- *  MCP text channel. `redirectHosts` + `contentSha256` are the anti-tamper /
- *  re-fetch handles. */
+ *  (<=500 chars) or a per-entry reject message (used in structuredContent + failures[]);
+ *  `content` is the fuller text-channel body (<=8 KB) framed by the fence token in
+ *  content[0].text. `redirectHosts` + `contentSha256` are the anti-tamper / re-fetch
+ *  handles. */
 export interface BulkSeedResult {
   url: string;
   finalUrl: string;
@@ -25,7 +26,8 @@ export interface BulkSeedResult {
   redirectHosts: string[];
   contentSha256?: string;
   result: string;
-  transform?: { provider: string; model?: string; reason?: string };
+  content: string;
+  transform?: { provider: string; model?: string; reason?: string; costUsd?: number; inTokens?: number; outTokens?: number };
   warnings: { code: string; message: string }[];
   errors: { code: string; message: string }[];
 }
@@ -51,7 +53,7 @@ export interface BulkClamp {
   afterDedupe: number;
   afterPerHostCap: number;
   processed: number;
-  perHostTruncated: PerHostTruncation[];
+  perHostTruncated: readonly PerHostTruncation[];
   totalClampedTo: number | null;
 }
 

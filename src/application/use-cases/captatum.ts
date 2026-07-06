@@ -73,19 +73,20 @@ export class CaptatumUseCase {
     // Re-base the Tier-1 timer after the Tier-2 short-circuit, so a miss that did a real API fetch (404/truncated/timeout) doesn't inflate the Tier-1 attempt's fetchMs. `startMs` stays the total baseline.
     const fetchStartMs = this.clock.nowMs();
     // Tier-2: resolve Ashby-embed careers pages (?ashby_jid=…) to the direct Ashby job URL (clean JobPosting JSON-LD at Tier-1).
-    const ashbyResolved = await resolveAshbyEmbedUrl(request.url, this.fetcher, {
+    // `context.signal` (the bulk wall deadline) threads into both live fetches below; the Tier-2 board short-circuit above does no fetch for a non-board URL (bulk pre-rejects board roots).
+    // Shared fetch opts for both live fetches below. `signal` is included ONLY when present so a
+    // single-fetch call (no context.signal) produces byte-identical opts (additive guarantee).
+    const fetchOpts = {
       maxBytes: request.maxBytes,
       timeoutMs: request.timeoutMs,
       maxHops: request.maxHops,
-    });
+      ...(context.signal ? { signal: context.signal } : {}),
+    };
+    const ashbyResolved = await resolveAshbyEmbedUrl(request.url, this.fetcher, fetchOpts);
     const fetchUrl = ashbyResolved ?? request.url;
     let fetched: FetcherResult | RejectResult;
     try {
-      fetched = await this.fetcher.fetchGuarded(fetchUrl, {
-        maxBytes: request.maxBytes,
-        timeoutMs: request.timeoutMs,
-        maxHops: request.maxHops,
-      });
+      fetched = await this.fetcher.fetchGuarded(fetchUrl, fetchOpts);
     } catch (error) {
       fetched = unexpectedReject(error);
     }

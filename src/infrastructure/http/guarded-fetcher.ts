@@ -40,11 +40,20 @@ export class GuardedHttpFetcher implements FetcherPort {
     try {
       const timeoutMs = positive(opts.timeoutMs, "timeout");
       timeout = setTimeout(() => controller.abort(), timeoutMs);
+      // Compose the caller-supplied signal (e.g. the captatum_bulk wall deadline)
+      // with this fetch's own per-tier timeout controller, so EITHER firing aborts
+      // the in-flight request. The composed signal flows through throwIfAborted /
+      // withAbort / resolvePublicAddress exactly like the per-tier timeout, so an
+      // external abort surfaces as the same `code:"timeout"` reject. AbortSignal.any
+      // is already-aborted if `opts.signal` is, and throwIfAborted handles that on
+      // the next line of fetchWithRedirects. Omitted → falls back to the timeout
+      // controller alone (single-fetch behavior, unchanged).
+      const signal = opts.signal ? AbortSignal.any([controller.signal, opts.signal]) : controller.signal;
       return await this.fetchWithRedirects(
         normalizeInitialUrl(url),
         opts,
         timeoutMs,
-        controller.signal,
+        signal,
         postInit,
       );
     } catch (error) {

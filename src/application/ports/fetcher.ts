@@ -5,6 +5,12 @@ export interface FetcherOptions {
   timeoutMs: number;
   /** Maximum redirect hops, each re-validated against SSRF guards. */
   maxHops: number;
+  /** Optional external abort signal (e.g. the `captatum_bulk` wall deadline). When
+   *  present, the guarded fetcher composes it with its own per-tier timeout
+   *  controller via `AbortSignal.any`, so EITHER firing aborts the in-flight
+   *  request (surfaced as a `code:"timeout"` reject, same as a per-tier timeout).
+   *  Additive + optional: single-fetch callers omit it and behavior is unchanged. */
+  signal?: AbortSignal;
 }
 
 /**

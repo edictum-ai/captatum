@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { AuditLoggerPort } from "../../application/ports/audit.ts";
 import type { ClockPort } from "../../application/ports/clock.ts";
+import type { CaptatumContext } from "../../application/ports/captatum-context.ts";
 import { OAuthError } from "../../application/use-cases/oauth-errors.ts";
 import { requireScope, requiredScopeForCaptatum } from "../../application/use-cases/oauth-scopes.ts";
 import type { RequestAuthResult } from "../../application/use-cases/request-auth.ts";
@@ -17,9 +18,12 @@ import {
   CaptatumInputError,
 } from "../../application/use-cases/captatum-input.ts";
 import type { Result } from "../../domain/result.ts";
+import type { BulkResult } from "../../domain/bulk-result.ts";
 import { resultToMcpText } from "./format.ts";
 import { buildStructuredContent } from "./shape.ts";
 import { CAPTATUM_SERVER_INSTRUCTIONS, CAPTATUM_TOOL_NAME, captatumToolDefinition } from "./schema.ts";
+import { CAPTATUM_BULK_TOOL_NAME, captatumBulkToolDefinition } from "./bulk-schema.ts";
+import { callBulk } from "./bulk-handler.ts";
 import { config } from "../../config.ts";
 import { parseClientProfileMap, resolveClientProfile, type ClientProfile } from "../../application/client-profile.ts";
 import { AUTH_JSONRPC_CODE, OVERLOADED_JSONRPC_CODE } from "../jsonrpc-error-codes.ts";
@@ -39,11 +43,18 @@ export class OverloadedError extends Error {
   }
 }
 
+/** The captatum_bulk executor shape (the bulk use case, admission-wrapped on hosted). */
+export interface CaptatumBulkMcpExecutor {
+  execute(input: unknown, context?: CaptatumContext): Promise<BulkResult>;
+}
+
 export interface CaptatumMcpServerDeps {
   captatum: Pick<CaptatumUseCase, "execute" | "defaultOutput">;
   auth: RequestAuthResult;
   audit: AuditLoggerPort;
   clock: ClockPort;
+  /** Present when captatum_bulk is enabled (local always; hosted only when CAPTATUM_BULK_ENABLED). */
+  bulk?: CaptatumBulkMcpExecutor;
 }
 
 export function createCaptatumMcpServer(deps: CaptatumMcpServerDeps): Server {
@@ -56,14 +67,17 @@ export function createCaptatumMcpServer(deps: CaptatumMcpServerDeps): Server {
   });
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({
-    tools: [captatumToolDefinition],
+    tools: deps.bulk ? [captatumToolDefinition, captatumBulkToolDefinition] : [captatumToolDefinition],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
-    if (request.params.name !== CAPTATUM_TOOL_NAME) {
-      throw new McpError(ErrorCode.InvalidParams, `Tool ${request.params.name} not found`);
+    const name = request.params.name;
+    if (name === CAPTATUM_TOOL_NAME) return await callCaptatum(request.params.arguments, deps, profile);
+    if (name === CAPTATUM_BULK_TOOL_NAME) {
+      if (!deps.bulk) throw new McpError(ErrorCode.InvalidParams, `Tool ${name} is not enabled on this server`);
+      return await callBulk(request.params.arguments, deps);
     }
-    return await callCaptatum(request.params.arguments, deps, profile);
+    throw new McpError(ErrorCode.InvalidParams, `Tool ${name} not found`);
   });
 
   return server;

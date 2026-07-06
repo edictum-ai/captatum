@@ -110,6 +110,14 @@ export const config = {
      *  the optional scale path — set TIDB_HOST to select it. */
     sqlitePath: () => envString("CAPTATUM_SQLITE_PATH", "./data/captatum.sqlite"),
   },
+  bulk: {
+    /** Hosted captatum_bulk gate (BULK-GATE): OFF until a global fetch-concurrency cap
+     *  (LimitingFetcher) + per-tenant BulkQuotaPort land. Local flavor ships ON regardless. */
+    enabled: () => envString("CAPTATUM_BULK_ENABLED", "false") === "true",
+    maxPerHostInflight: () => envPositiveInteger("CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT", 2),
+    crawlDelayMs: () => envPositiveInteger("CAPTATUM_BULK_CRAWL_DELAY_MS", 1000),
+    maxConcurrency: () => envPositiveInteger("CAPTATUM_BULK_MAX_CONCURRENCY", 4),
+  },
 };
 
 function envString(name: string, fallback: string): string {

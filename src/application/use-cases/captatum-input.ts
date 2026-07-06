@@ -6,7 +6,8 @@ const CRLF = /[\r\n]|%0d|%0a/i;
 const DEFAULT_PROMPT = "Provide a concise summary of the page.";
 
 const positiveInteger = z.number().int().positive();
-const transformOverrideSchema = z.object({
+/** Shared transform-override shape (exported so captatum_bulk mirrors it exactly). */
+export const transformOverrideSchema = z.object({
   model: z.string().min(1).optional(),
   provider: z.string().min(1).optional(),
 }).catchall(z.unknown());
@@ -128,7 +129,9 @@ function parseInput(value: unknown): CaptatumInput {
   throw new CaptatumInputError("invalid_input", "captatum input is invalid");
 }
 
-function normalizeContractUrl(input: string): string {
+/** Exported for captatum_bulk's per-entry URL validation (same scheme upgrade,
+ *  userinfo/CRLF strip, http→https). Throws CaptatumInputError on a bad URL. */
+export function normalizeContractUrl(input: string): string {
   if (CRLF.test(input)) {
     throw new CaptatumInputError("crlf_url", "URL contains a forbidden CRLF sequence");
   }

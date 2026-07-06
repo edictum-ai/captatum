@@ -10,6 +10,7 @@ import { createCloudflareAccessJwtVerifier } from "../../infrastructure/auth/clo
 import { registerOAuthRoutes } from "./oauth-routes.ts";
 import { registerMcpRoute } from "./mcp-route.ts";
 import { sendHttpError } from "./errors.ts";
+import type { CaptatumBulkMcpExecutor } from "../mcp/server.ts";
 
 export interface HttpAppDeps {
   captatum: Pick<CaptatumUseCase, "execute" | "defaultOutput">;
@@ -19,6 +20,8 @@ export interface HttpAppDeps {
   store?: StorePort;
   allowedHosts: string[];
   allowedOrigins: string[];
+  /** Raw captatum_bulk use case; absent when CAPTATUM_BULK_ENABLED is off (hosted). */
+  bulk?: CaptatumBulkMcpExecutor;
 }
 
 /**
@@ -87,6 +90,7 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
     hosted: deps.runtime.flavor === "hosted",
     allowedHosts: deps.allowedHosts,
     allowedOrigins: deps.allowedOrigins,
+    ...(deps.bulk !== undefined ? { bulk: deps.bulk } : {}),
   });
   return app;
 }

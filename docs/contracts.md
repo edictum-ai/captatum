@@ -117,10 +117,10 @@ Server ceilings are NOT caller-overridable; caller values for the cost knobs are
 | `maxUrls` | 50 (`raw`) / 10 (`summary`\|`extract`) | unbounded crawl (total across all hosts); over-ceiling → CLAMP + DISCLOSE |
 | `maxPerHostInBulk` | 10 | directed DoS — COUNT per victim; **union-keyed on egress hosts** (seed + redirect + finalUrl + Tier-2-resolved); truncate + disclose. Worst-case per-victim count is `maxPerHostInBulk + maxConcurrency - 1` (in-flight discovery overshoot; see § In-flight discovery overshoot). |
 | `maxGlobalEgressBytes` | 100 MB | egress amplification (host-agnostic global sum; v1 sums `result.bytes` — see honesty note) |
-| `maxGlobalWallMs` | 180 000 | browser-time / orphaned-call (hard, NOT caller-raisable). **Dispatch-level in v1** — at the deadline the orchestrator stops dispatching new seeds and marks the rest `bulk_deadline_exceeded` (in-flight seeds finish or hit their per-seed timeout); PR 2 threads `CaptatumContext.signal` so in-flight fetches abort at the deadline too. |
+| `maxGlobalWallMs` | 180 000 | browser-time / orphaned-call (hard, NOT caller-raisable). At the deadline a global `AbortController` fires: it aborts in-flight Tier-1 fetches via `CaptatumContext.signal` (composed with each fetch's per-tier timeout) AND the orchestrator stops dispatching, marking remaining seeds `bulk_deadline_exceeded`. (Render/transform abort is dispatch-level abandonment in v1, bounded by the post-transform cost re-check.) |
 | `maxConcurrency` | 4 | directed DoS — global fetch concurrency (shared across all hosts in a call) |
 | `maxRenderedSeeds` | 10 | Tier-3 OOM (count of seeds that escalate to render). **Inactive in v1** — bulk rejects `allowRender:true`, so zero seeds render; this cap activates when render-on-bulk lands. |
-| `maxPerHostInflight` | 2 (CONFIGURABLE) | directed DoS — per-host token-bucket **burst** (union-keyed); tune empirically |
+| `maxPerHostInflight` | 2 (CONFIGURABLE) | directed DoS — per-host token-bucket **burst**, keyed on the SEED registrable domain in v1 (the union-keyed rate gating of discovered funnel victims is deferred to the quarantine hardening); tune empirically |
 | `crawlDelayMs` | 1000 (500 floor, server-clamped) | per-host token-bucket **refill** (politeness per victim) |
 | `maxTransformCostUsd` | 0.50 (CONFIGURABLE per-call; clamped) | cost amplification — global, re-checked after each transform |
 | `perSeedTransformCostUsd` | 0.05 (CONFIGURABLE per-call; clamped) | cost amplification — concurrent-overshoot bound. **Clamped to `maxTransformCostUsd / maxConcurrency`** (disclosed): up to `maxConcurrency` transforms run before the post-transform global re-check, so sizing per-seed to `global / concurrency` keeps the first in-flight wave ≤ the caller's ceiling (the invariant `maxConcurrency × perSeed ≤ maxTransformCostUsd`). A runtime reservation in the budget tracker (PR 2) tightens this further. |
@@ -152,12 +152,17 @@ count cap bounds). Consequences of the discovery lag, stated honestly:
   worst-case per-victim SEED count is `maxPerHostInBulk + maxConcurrency - 1`
   (= 13 at the defaults) — and the per-victim REQUEST count is that × `maxHops`
   (= 13 × 5 = 65), the hop factor being victim-controlled per above.
-- **Rate:** the union-keyed `maxPerHostInflight` token bucket ALSO cannot gate a
-  victim it has not seen yet. The first "discovery wave" (≤ `maxConcurrency`
-  seeds on distinct seed hosts, all funnelling to the as-yet-undiscovered victim)
-  hits the victim CONCURRENTLY — a one-time burst of ≤ `maxConcurrency` (= 4),
-  NOT a polite rate. Only after the victim is discovered are SUBSEQUENT seeds
-  rate-bounded by `maxPerHostInflight` + `crawlDelayMs`.
+- **Rate:** the `maxPerHostInflight` token bucket is keyed on the SEED registrable
+  domain (the only host known pre-egress), NOT on the union — so it rate-bounds a
+  victim only when the victim IS a seed domain (a direct flood) or a previously-
+  discovered funnel source whose seed domain repeats. A pure cross-domain funnel's
+  victim (distinct seed domains, all → victim) is NOT rate-bounded by the token
+  bucket in v1; its rate is bounded only by the GLOBAL `maxConcurrency` semaphore
+  (≤ 4 concurrent), so the discovery wave + all subsequent funnel seeds hit the
+  victim at ≤ `maxConcurrency`-wide concurrency with no per-victim crawl spacing.
+  True union-keyed rate spacing for undiscovered funnel victims requires the
+  quarantine/serialize-unknown-egress-dispatch hardening (future; bounds the
+  discovery wave too).
 
 Net: a redirect-funnel victim can see a one-time concurrent first-hop burst of ≤
 `maxConcurrency` (= 4) and a total of ≤ `maxPerHostInBulk + maxConcurrency - 1`
@@ -267,12 +272,16 @@ input-validation, auth, and admission `OverloadedError` (`-32050`) only.
 ### Recorded additive contract changes (not breaking)
 
 1. `CaptatumContext` gains optional `signal?: AbortSignal` (moved out of
-   `captatum.ts` to `src/application/ports/captatum-context.ts`). **RESERVED but
-   NOT YET CONSUMED** in this foundation PR — `execute` still passes only
-   maxBytes/timeoutMs/maxHops to `fetchGuarded`, so the bulk wall deadline is
-   dispatch-level only until PR 2 threads `signal` into `FetcherOptions` (composed
-   with the per-tier timeout) for fetch-aborting cancellation. Additive: existing
-   callers pass nothing and are unchanged.
+   `captatum.ts` to `src/application/ports/captatum-context.ts`). **Consumed by the
+   bulk runtime** — `execute` threads `context.signal` into the Tier-1 `fetchGuarded`
+   + the Ashby-embed resolver (the two live fetch paths a bulk seed takes), and the
+   guarded fetcher composes it with its own per-tier timeout via `AbortSignal.any`
+   so the bulk wall deadline aborts in-flight fetches (surfaced as a per-seed
+   `code:"timeout"`). Render/transform abort stays dispatch-level in v1 (the
+   orchestrator stops dispatching + abandons in-flight transforms; bounded by the
+   post-transform cost re-check). The Tier-2 board short-circuit is not signal-
+   threaded (it does no fetch for a non-board URL, and bulk pre-rejects board roots).
+   Additive: single-fetch callers pass nothing and are unchanged.
 2. `ToolAuditEvent.tool` widens to `"captatum" | "captatum_bulk"` and gains
    optional `bulkId?: string`. Bulk emits **per-seed** events (one per seed,
    `tool:"captatum_bulk"` + `bulkId` + `url_host`) plus one **summary** event
