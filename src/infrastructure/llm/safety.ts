@@ -81,10 +81,12 @@ const INTERNAL_HOST_SUFFIXES = [
     .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
 ];
 
-/** Bounded URL-literal scan for embedded signed/internal URLs in content. `]` is allowed
- *  so bracketed IPv6 literals (`http://[fd00::1]:8000`, `http://[::1]:8000`) are scanned
- *  rather than truncated at the bracket (which silently skipped ALL IPv6 internal hosts). */
-const SIGNED_URL_IN_CONTENT = /https?:\/\/[^\s"'<>)]{1,512}/gi;
+/** Bounded URL-literal scan for embedded signed/internal URLs in content. Two alternations:
+ *  (1) a bracketed IPv6 host `[…]:port/path` — scanned as a whole so [::1]/[fd00::1] aren't
+ *  truncated at the bracket; (2) a normal URL, which EXCLUDES '[' and ']' so a prose bracket
+ *  like "[see http://10.0.0.5]." (and any trailing punctuation) stops cleanly at the ']' and
+ *  the internal host is still scanned. Bounded (char classes + length caps) against ReDoS. */
+const SIGNED_URL_IN_CONTENT = /https?:\/\/\[[^\]\s]{1,79}\][^\s"'<>)]{0,512}|https?:\/\/[^\s"'<>)\]\[]{1,512}/gi;
 /** Cap the embedded-URL scan to the head of the content. The high-confidence
  *  credential/header patterns below scan the FULL content regardless of size;
  *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
@@ -134,12 +136,7 @@ export function detectSensitiveTransformInput(input: {
     // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup example —
     // resolves to the READER's machine, not a leaked internal endpoint) must not be flagged.
     // RFC1918 / 169.254.169.254 / .corp / .internal / signed-URL keys are still flagged here.
-    // Trim a trailing ']' that is prose (e.g. "http://10.0.0.5]" in "[see http://10.0.0.5]")
-    // — not the closing bracket of a bracketed IPv6 literal (which has an opening '[') — so
-    // new URL() doesn't throw and the internal link is still scanned (codex P2 on #134).
-    let url = match[0];
-    if (!url.includes("[")) url = url.replace(/\]+$/, "");
-    const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(url, true);
+    const reason = signedUrlReason(match[0], CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(match[0], true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
   return { sensitive: false };
