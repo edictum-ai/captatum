@@ -109,17 +109,20 @@ export function normalizeBulkInput(value: unknown): NormalizedBulkInput {
   const invalid: BulkInputFailure[] = [];
   const seeds: ValidatedSeed[] = [];
   for (const raw of parsed.urls) {
+    // Clip EVERY raw URL stored in a failure (not just the valid-but-too-long case) so a
+    // multi-MB malformed URL can't be echoed into failures[] → structuredContent unchanged.
+    const safeRaw = raw.length > BULK_MAX_URL_LENGTH ? `${raw.slice(0, BULK_MAX_URL_LENGTH)}…` : raw;
     try {
       const url = normalizeContractUrl(raw);
       if (url.length > BULK_MAX_URL_LENGTH) {
-        invalid.push({ url: raw.length > BULK_MAX_URL_LENGTH ? `${raw.slice(0, BULK_MAX_URL_LENGTH)}…` : raw, code: "url_too_long", message: `URL exceeds the ${BULK_MAX_URL_LENGTH}-char bulk limit` });
+        invalid.push({ url: safeRaw, code: "url_too_long", message: `URL exceeds the ${BULK_MAX_URL_LENGTH}-char bulk limit` });
       } else {
         seeds.push({ url });
       }
     } catch (error) {
       const code = error instanceof CaptatumInputError ? error.body.error.code : "invalid_url";
       const message = error instanceof CaptatumInputError ? error.body.error.message : "URL is invalid";
-      invalid.push({ url: raw, code, message });
+      invalid.push({ url: safeRaw, code, message });
     }
   }
   return { request, seeds, invalid };

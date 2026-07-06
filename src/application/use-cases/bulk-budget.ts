@@ -85,9 +85,11 @@ export class BudgetTracker {
     }
     this.bytesReserved += this.opts.perSeedMaxBytes;
     // Fail-soft on cost: if the per-seed transform reservation does not fit the remaining
-    // global budget, the seed still fetches but runs RAW (no LLM bill). The reservation is
-    // made ONLY when it fits, so costReserved always reflects in-flight transform reservations.
-    const runTransform = this.costSettled + this.costReserved + this.opts.perSeedTransformCostUsd <= this.opts.maxTransformCostUsd;
+    // global budget, the seed still fetches but runs RAW (no LLM bill). `perSeed > 0` guards
+    // a declared $0 ceiling (maxTransformCostUsd 0 clamps perSeed to 0): without it, the
+    // `<=` would admit one paid transform at 0+0+0<=0 before afterSeed's re-check caught it.
+    const runTransform = this.opts.perSeedTransformCostUsd > 0
+      && this.costSettled + this.costReserved + this.opts.perSeedTransformCostUsd <= this.opts.maxTransformCostUsd;
     if (runTransform) this.costReserved += this.opts.perSeedTransformCostUsd;
     return { dispatch: true, runTransform };
   }

@@ -88,3 +88,14 @@ test("BudgetTracker: transformReserved false (raw seed) records bytes but no cos
   assert.equal(t.bytesUsed, 10);
   assert.equal(t.costUsed, 0);
 });
+
+test("BudgetTracker: a $0 cost cap (perSeed clamps to 0) skips the transform — no paid call slips through", () => {
+  // maxTransformCostUsd 0 → resolveBulkGuard clamps perSeed to 0; without the perSeed>0 guard,
+  // `0+0+0 <= 0` would admit one paid transform under a declared $0 ceiling. The guard fails-soft
+  // to raw so no LLM bill is ever incurred.
+  const clock = fakeClock();
+  const t = new BudgetTracker({ clock, maxGlobalEgressBytes: 1_000_000, maxGlobalWallMs: 5000, maxTransformCostUsd: 0, perSeedTransformCostUsd: 0, perSeedMaxBytes: 100 });
+  const b = t.beforeSeed();
+  assert.equal(b.dispatch, true, "the fetch still happens");
+  assert.equal(b.runTransform, false, "a $0 ceiling skips the transform entirely");
+});

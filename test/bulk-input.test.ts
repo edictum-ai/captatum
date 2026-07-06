@@ -79,3 +79,14 @@ test("normalizeBulkInput: a URL over 2048 chars → per-entry url_too_long (boun
   assert.equal(out.invalid.length, 1);
   assert.equal(out.invalid[0].code, "url_too_long");
 });
+
+test("normalizeBulkInput: a too-long INVALID url is clipped in failures[] (no multi-MB echo)", () => {
+  // A malformed URL over the cap must be clipped in the failure row too — not just the
+  // valid-but-too-long path — or it flows unclipped into failures[] → structuredContent.
+  const longBad = "x".repeat(2100); // not a URL → invalid_url, and over the 2048 cap
+  const out = normalizeBulkInput({ urls: ["https://good.test/x", longBad] });
+  assert.equal(out.seeds.length, 1);
+  assert.equal(out.invalid.length, 1);
+  assert.equal(out.invalid[0].code, "invalid_url");
+  assert.ok(out.invalid[0].url.length <= 2049, `clipped failure url length ${out.invalid[0].url.length} exceeds the cap+ellipsis`);
+});
