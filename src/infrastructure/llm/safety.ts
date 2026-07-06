@@ -136,14 +136,13 @@ export function detectSensitiveTransformInput(input: {
     // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup example —
     // resolves to the READER's machine, not a leaked internal endpoint) must not be flagged.
     // RFC1918 / 169.254.169.254 / .corp / .internal / signed-URL keys are still flagged here.
-    // A URL in prose may carry trailing punctuation (']', '.', ',', ')', ';') that new URL()
-    // rejects; strip from the end until it parses so the host/query are read correctly. Only
-    // rejecting tokens are trimmed, so a real URL is never shortened (trailing path chars do
-    // not change the host).
-    let url = match[0];
-    while (url.length > 8) {
-      try { new URL(url); break; } catch { url = url.slice(0, -1); }
-    }
+    // Strip trailing prose punctuation that new URL() would reject (')', '.', ',', ';', ':')
+    // — a single anchored replace, no per-char parse loop, so a page of URL-like tokens can't
+    // DoS the event loop. ']' is intentionally NOT stripped: the normal-URL branch already
+    // stops at ']' (prose brackets never reach here), and on the IPv6 branch the ']' closes
+    // the literal — stripping it would break the bracket. The host sits before the first
+    // path char, so trimming the tail never changes which host is scanned.
+    const url = match[0].replace(/[).,;:]+$/, "");
     const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(url, true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
