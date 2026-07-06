@@ -25,7 +25,10 @@ export interface ToolAuditEvent {
   occurredAt: string;
   subject?: string;
   clientId?: string;
-  tool: "captatum";
+  tool: "captatum" | "captatum_bulk";
+  /** Per-bulk-call correlation id when `tool === "captatum_bulk"`. Present on every
+   *  per-seed event in a bulk + the one summary event, so a sink can group them. */
+  bulkId?: string;
   url_host?: string;
   tier?: string | number;
   platform?: string;
