@@ -15,7 +15,6 @@ import type { CaptatumExecutorPort } from "../ports/captatum-executor.ts";
 import type { PlatformAdapterRegistry } from "../ports/platform-adapter.ts";
 import { registrableDomain } from "../../domain/registrable-domain.ts";
 import {
-  classifyBulkStatus,
   generateFenceToken,
   seedRegistrableKey,
   shapeBulkInput,
@@ -24,13 +23,7 @@ import {
   type ValidatedSeed,
 } from "../../domain/bulk-policy.ts";
 import { resolveBulkGuard, type BulkOperatorConfig } from "../../domain/bulk-config.ts";
-import {
-  type BulkClamp,
-  type BulkFailure,
-  type BulkResult,
-  type BulkSeedResult,
-  type BulkTotals,
-} from "../../domain/bulk-result.ts";
+import { type BulkResult, type BulkSeedResult } from "../../domain/bulk-result.ts";
 import type { Output } from "../../domain/tier.ts";
 import type { Platform } from "../../domain/platform.ts";
 import type { Result } from "../../domain/result.ts";
@@ -38,6 +31,7 @@ import { normalizeBulkInput, type NormalizedBulkRequest } from "./bulk-input.ts"
 import { BudgetTracker, type BudgetCapReason } from "./bulk-budget.ts";
 import { PerHostGate, Semaphore } from "./bulk-concurrency.ts";
 import { abortedSeedResult, hostOf, toBulkSeedResult } from "./bulk-seed.ts";
+import { assembleBulkResult } from "./bulk-assemble.ts";
 
 const GENERIC_PLATFORM: Platform = { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" };
 
@@ -69,7 +63,7 @@ export class CaptatumBulkUseCase {
         ...(normalized.request.perSeedTransformCostUsd !== undefined ? { perSeedTransformCostUsd: normalized.request.perSeedTransformCostUsd } : {}),
       },
     });
-    const { toProcess, boardRejected } = this.rejectBoards(normalized.seeds);
+    const { toProcess, boardRejected, ashbyRejected } = this.rejectPerEntry(normalized.seeds);
     const shaped = shapeBulkInput(toProcess, guard);
     const wallController = new AbortController();
     const wallTimer = setTimeout(() => wallController.abort(), guard.maxGlobalWallMs);
@@ -79,16 +73,29 @@ export class CaptatumBulkUseCase {
     } finally {
       clearTimeout(wallTimer);
     }
-    return this.assemble(`bulk-${randomUUID()}`, generateFenceToken(), guard, costClamped, shaped, toProcess.length, ran, normalized, boardRejected, startMs);
+    return assembleBulkResult({
+      bulkId: `bulk-${randomUUID()}`, fenceToken: generateFenceToken(), guard, costClamped, shaped, toProcessCount: toProcess.length,
+      ran, normalized, boardRejected, ashbyRejected, startMs, clock: this.deps.clock,
+    });
   }
 
-  /** Reject Tier-2 board-root seeds per-entry (roster-intact invariant). Per-JD URLs are
-   *  NOT detected (the adapters claim only board roots) and flow through to Tier-1. */
-  private rejectBoards(seeds: readonly ValidatedSeed[]): { toProcess: ValidatedSeed[]; boardRejected: ValidatedSeed[] } {
+  /** Per-entry rejection (roster-intact + egress-accounting invariants):
+   *  - Tier-2 board-root seeds (roster expander → forbidden in bulk — single-fetch the board).
+   *  - Ashby-embed (`?ashby_jid=`) seeds: the embed resolver performs an auxiliary host-page
+   *    fetch NOT captured by v1's result.bytes egress accounting (BULK-5), so a caller adding
+   *    ashby_jid to many URLs could spend up to another maxBytes/seed off the books. v1 closes
+   *    this structurally (like render) — single-fetch embeds, or bulk the direct ashby job URLs.
+   *  Per-JD URLs are not detected and flow through to Tier-1. */
+  private rejectPerEntry(seeds: readonly ValidatedSeed[]): { toProcess: ValidatedSeed[]; boardRejected: ValidatedSeed[]; ashbyRejected: ValidatedSeed[] } {
     const toProcess: ValidatedSeed[] = [];
     const boardRejected: ValidatedSeed[] = [];
-    for (const s of seeds) (this.deps.adapters.detect({ url: s.url }) ? boardRejected : toProcess).push(s);
-    return { toProcess, boardRejected };
+    const ashbyRejected: ValidatedSeed[] = [];
+    for (const s of seeds) {
+      if (this.deps.adapters.detect({ url: s.url })) boardRejected.push(s);
+      else if (ashbyJidOf(s.url) !== null) ashbyRejected.push(s);
+      else toProcess.push(s);
+    }
+    return { toProcess, boardRejected, ashbyRejected };
   }
 
   private async runPool(
@@ -143,6 +150,9 @@ export class CaptatumBulkUseCase {
             return;
           }
           const effectiveOutput: Output = request.requestedOutput !== "raw" && before.runTransform ? request.requestedOutput : "raw";
+          // A non-raw request downgraded to raw by the cost cap (before.runTransform false) is a
+          // degradation to surface (Fix B), not a silent pass.
+          const downgradedByCost = request.requestedOutput !== "raw" && !before.runTransform;
           let seedResult: Result;
           try {
             seedResult = await this.deps.executor.execute(
@@ -168,7 +178,15 @@ export class CaptatumBulkUseCase {
             hostCounts.set(h, next);
             if (next > guard.maxPerHostInBulk) record(`bulk_per_host_cap:${h}`);
           }
-          results[idx] = toBulkSeedResult(seed, seedResult, effectiveOutput);
+          // Use the SETTLED Result.output (Fix F): a summary/extract seed whose transform fell
+          // back to raw (provider none) reports raw, not the requested output. A cost-cap
+          // downgrade (Fix B) is surfaced as partial + a warning on an otherwise-passing seed.
+          const row = toBulkSeedResult(seed, seedResult, seedResult.output);
+          if (downgradedByCost && row.status === "pass") {
+            row.status = "partial";
+            row.warnings.push({ code: "transform_skipped_cost_cap", message: "Requested summary/extract ran as raw — the per-call transform cost cap was reached." });
+          }
+          results[idx] = row;
         } finally {
           gate.release(seedKey);
         }
@@ -178,49 +196,15 @@ export class CaptatumBulkUseCase {
     }));
     return { results, capBreaches, budget };
   }
-
-  private assemble(
-    bulkId: string, fenceToken: string, guard: BulkGuard, costClamped: string[], shaped: ReturnType<typeof shapeBulkInput>,
-    toProcessCount: number, ran: { results: BulkSeedResult[]; capBreaches: string[]; budget: BudgetTracker },
-    normalized: { invalid: { url: string; code: string; message: string }[] }, boardRejected: ValidatedSeed[], startMs: number,
-  ): BulkResult {
-    const { results, capBreaches, budget } = ran;
-    const failedSeeds = results.filter((r) => r.status === "fail");
-    const failures: BulkFailure[] = [
-      ...normalized.invalid.map((f) => ({ url: f.url, code: f.code, message: f.message })),
-      ...boardRejected.map((s) => ({ url: s.url, code: "tier2_board_not_supported_in_bulk", message: "Tier-2 board-root seeds are rejected per-entry — single-fetch the board roster, then bulk the per-JD URLs." })),
-      ...failedSeeds.map((r) => ({ url: r.url, code: failureCode(r), message: r.result })),
-    ];
-    const perHostDropped = shaped.perHostTruncated.reduce((n, t) => n + t.dropped, 0);
-    const clamp: BulkClamp = {
-      inputUrls: toProcessCount,
-      afterDedupe: toProcessCount - shaped.deduped,
-      afterPerHostCap: toProcessCount - shaped.deduped - perHostDropped,
-      processed: results.length,
-      perHostTruncated: shaped.perHostTruncated,
-      totalClampedTo: shaped.totalClampedTo,
-    };
-    const totals: BulkTotals = {
-      bytes: results.reduce((n, r) => n + r.bytes, 0),
-      egressBytes: results.reduce((n, r) => n + r.egressBytes, 0),
-      durationMs: Math.max(0, Math.round(this.deps.clock.nowMs() - startMs)),
-      transformInTokens: budget.transformInTokens,
-      transformOutTokens: budget.transformOutTokens,
-      transformCostUsd: Math.round(budget.costUsed * 1e6) / 1e6,
-    };
-    const status = classifyBulkStatus(results.map((r) => r.status));
-    return {
-      schemaVersion: 1, kind: "bulk", bulkId, ok: status !== "fail", status,
-      count: results.length, passed: results.length - failedSeeds.length, failed: failedSeeds.length,
-      truncated: perHostDropped, deduped: shaped.deduped, totals, guard, capBreaches, clamp, fenceToken,
-      results, failures,
-      warnings: costClamped.map((c) => ({ code: "bulk_cost_clamped", message: `${c} was clamped to the server ceiling` })),
-      errors: [],
-    };
-  }
 }
 
 function budgetMsg(reason: BudgetCapReason): ShortCircuit { return { code: "bulk_budget_exceeded", message: `bulk_budget_exceeded:${reason}` }; }
+
+/** Inline mirror of the Ashby-embed jid extractor (kept here to avoid an application→
+ *  infrastructure import; pure URL parsing). Non-null ⇒ an ashby-embed seed. */
+function ashbyJidOf(url: string): string | null {
+  try { return new URL(url).searchParams.get("ashby_jid"); } catch { return null; }
+}
 
 export function createCaptatumBulkUseCase(deps: CaptatumBulkDeps): CaptatumBulkUseCase {
   return new CaptatumBulkUseCase(deps);

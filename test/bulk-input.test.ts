@@ -90,3 +90,13 @@ test("normalizeBulkInput: a too-long INVALID url is clipped in failures[] (no mu
   assert.equal(out.invalid[0].code, "invalid_url");
   assert.ok(out.invalid[0].url.length <= 2049, `clipped failure url length ${out.invalid[0].url.length} exceeds the cap+ellipsis`);
 });
+
+test("normalizeBulkInput: > 200 urls (valid or malformed) → too_many_urls whole-call error", () => {
+  // The input array is capped so thousands of malformed/board URLs can't bypass the per-call
+  // delivery ceilings via failures[]/structuredContent.
+  const urls = Array.from({ length: 201 }, (_, i) => `https://a.test/${i}`);
+  assert.throws(
+    () => normalizeBulkInput({ urls }),
+    (e: unknown) => e instanceof CaptatumInputError && e.body.error.code === "too_many_urls",
+  );
+});

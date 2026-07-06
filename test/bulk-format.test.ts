@@ -57,3 +57,17 @@ test("bulk structured: large bulk drops per-entry snippets to stay under ~25 KB"
   assert.ok(rows.every((r) => r.result === undefined), "snippets dropped on overflow");
   assert.ok(rows.every((r) => r.url !== undefined && r.status !== undefined && r.finalUrl !== undefined), "core fields retained");
 });
+
+test("bulk structured: 50 × 2048-char URLs stays ≤ 25 KB via the compact tier (clips url/finalUrl)", () => {
+  // An adversarial max-URL input: even after dropping snippets, 50 × 2048-char url+finalUrl
+  // rows would be ~200 KB. The compact tier clips url/finalUrl + drops heavy fields.
+  const longUrl = `https://a.test/${"x".repeat(2030)}`; // ~2048 chars
+  const results = Array.from({ length: 50 }, (_, i) => ({ ...makeSeed(i, 100), url: `${longUrl}${i}`, finalUrl: `${longUrl}${i}` }));
+  const bulk: BulkResult = { ...makeBulk(1, 100), results, count: 50, passed: 50 };
+  const sc = buildBulkStructuredContent(bulk);
+  const len = JSON.stringify(sc).length;
+  assert.ok(len <= 25_000, `compact tier length ${len} exceeds the 25 KB ceiling`);
+  const rows = sc.results as Array<{ url: string; status: string; tier: string }>;
+  assert.ok(rows.every((r) => r.url.length <= 101), "urls clipped in the compact tier");
+  assert.ok(rows.every((r) => r.status !== undefined && r.tier !== undefined), "core fields retained");
+});

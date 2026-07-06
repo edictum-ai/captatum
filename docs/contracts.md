@@ -190,13 +190,25 @@ dispatch (analogous to the cost-cap reservation).
 
 ### Input shaping (before any egress)
 
-`validate → reject Tier-2 board URLs per-entry → dedupe → per-host cap (truncate
-+ disclose) → total clamp (maxUrls, clamp + disclose)`. There is NO same-domain
-scope check in v1 (cross-domain is the normal case); the per-host cap replaces
-it as the directed-DoS bound. Tier-2 board-root seeds are rejected per-entry
-(`tier2_board_not_supported_in_bulk`): the roster-intact invariant (a Tier-2
-roster must NOT be byte-sliced) is preserved, and the career-site wedge is
-single-fetch the board (roster) → bulk the per-JD URLs.
+The input `urls` array is hard-capped at **200 entries** (valid or malformed,
+`too_many_urls`) so thousands of bad/board URLs can't bypass the per-call delivery
+ceilings via `failures[]`/`structuredContent`. Then:
+
+`validate → reject Tier-2 board URLs per-entry → reject Ashby-embed seeds per-entry
+→ dedupe → per-host cap (truncate + disclose) → total clamp (maxUrls, clamp +
+disclose)`. There is NO same-domain scope check in v1 (cross-domain is the normal
+case); the per-host cap replaces it as the directed-DoS bound. Tier-2 board-root
+seeds are rejected per-entry (`tier2_board_not_supported_in_bulk`): the roster-intact
+invariant (a Tier-2 roster must NOT be byte-sliced) is preserved, and the career-site
+wedge is single-fetch the board (roster) → bulk the per-JD URLs. **Ashby-embed
+(`?ashby_jid=`) seeds are also rejected per-entry** (`ashby_embed_not_supported_in_bulk`):
+the embed resolver performs an auxiliary host-page fetch NOT captured by v1's
+`result.bytes` egress accounting (BULK-5), so bulk closes it structurally (like
+render) — single-fetch embeds, or bulk the direct `jobs.ashbyhq.com/<org>/<id>` URLs.
+
+Per-entry rejects (invalid URL / board root / ashby embed) count toward `failed` and
+the overall `status`, so a call with one success + N rejects reports `partial`, not
+`pass`.
 
 ### Admission-path (load-bearing wiring)
 

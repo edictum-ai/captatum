@@ -195,3 +195,50 @@ test("Semaphore: an aborted waiter doesn't permanently drop capacity (regression
   ]);
   assert.equal(got, true, "capacity was not lost to the aborted waiter (no deadlock)");
 });
+
+test("bulk: per-entry rejects (invalid URL) count toward status + failed (not a silent pass)", async () => {
+  const exec = new FakeExecutor();
+  exec.results.set("https://good.test/x", okResult("https://good.test/x"));
+  const res = await makeBulk(exec).execute({ urls: ["https://good.test/x", "bad-url", "alsobad"] });
+  assert.equal(res.count, 1, "1 processed seed");
+  assert.equal(res.failed, 2, "the 2 invalid URLs count as failed");
+  assert.equal(res.status, "partial", "rejects alongside a pass → partial, not pass");
+  assert.equal(res.failures.length, 2);
+});
+
+test("bulk: ashby-embed (?ashby_jid=) seeds rejected per-entry (host-page probe not in v1 egress accounting)", async () => {
+  const exec = new FakeExecutor();
+  exec.results.set("https://good.test/x", okResult("https://good.test/x"));
+  const res = await makeBulk(exec).execute({ urls: ["https://good.test/x", "https://careers.e2b.dev/?ashby_jid=abc-123"] });
+  assert.equal(res.count, 1);
+  assert.equal(res.failed, 1);
+  assert.equal(res.failures.find((f) => f.url.includes("ashby_jid"))?.code, "ashby_embed_not_supported_in_bulk");
+  assert.equal(exec.calls, 1, "the ashby-embed seed was NOT fetched (no uncounted host-page probe)");
+});
+
+test("bulk cost-skip: a summary seed downgraded to raw by the cost cap is partial + warned", async () => {
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 6 }, (_, i) => `https://h${i}.test/p${i}`);
+  for (const u of urls) exec.results.set(u, okResult(u, { output: "summary", costUsd: 0.0005 }));
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 2 }).execute({ urls, output: "summary", maxTransformCostUsd: 0.002 });
+  const downgraded = res.results.filter((r) => r.output === "raw");
+  assert.ok(downgraded.length >= 1, "≥1 seed downgraded to raw once the cost cap bit");
+  for (const r of downgraded) {
+    assert.equal(r.status, "partial", "a downgraded seed is partial, not pass");
+    assert.ok(r.warnings.some((w) => w.code === "transform_skipped_cost_cap"), "downgraded seed carries the warning");
+  }
+});
+
+test("bulk: a summary seed whose transform fell back to raw reports the SETTLED output (raw), not the request", async () => {
+  const exec = new FakeExecutor();
+  const fallback: Result = {
+    ...okResult("https://a.test/x"),
+    output: "raw",
+    transform: { provider: "none", reason: "unconfigured" },
+  };
+  exec.results.set("https://a.test/x", fallback);
+  const res = await makeBulk(exec).execute({ urls: ["https://a.test/x"], output: "summary" });
+  assert.equal(res.count, 1);
+  assert.equal(res.results[0].output, "raw", "settled output (raw fallback), not the requested summary");
+  assert.equal(res.results[0].status, "partial");
+});

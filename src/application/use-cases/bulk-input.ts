@@ -28,12 +28,16 @@ export const BULK_DEFAULT_TIMEOUT_MS = 8000;
  *  structuredContent rows) so an adversarial caller can't inflate the ~25 KB / 50 KB delivery
  *  ceilings with a handful of multi-KB-path URLs. Single-fetch is unaffected (scoped to bulk). */
 const BULK_MAX_URL_LENGTH = 2048;
+/** Hard cap on the INPUT urls array (valid OR malformed). maxUrls (50/10) bounds PROCESSED
+ *  seeds; this bounds the failures[]/structuredContent surface so a caller can't submit
+ *  thousands of malformed/board URLs and bypass the per-call delivery ceilings. */
+const BULK_MAX_INPUT_URLS = 200;
 const DEFAULT_PROMPT = "Provide a concise summary of the page.";
 
 const nonNegativeNumber = z.number().min(0);
 
 const bulkInputSchema = z.object({
-  urls: z.array(z.string().min(1)).min(1),
+  urls: z.array(z.string().min(1)).min(1).max(BULK_MAX_INPUT_URLS),
   prompt: z.string().optional(),
   output: z.enum(["summary", "raw", "extract"]).optional(),
   schema: z.unknown().optional(),
@@ -135,6 +139,9 @@ function parseInput(value: unknown): ParsedBulkInput {
   if (result.success) return result.data;
   const first = result.error.issues[0];
   if (first?.path[0] === "urls") {
+    if (first.code === "too_big") {
+      throw new CaptatumInputError("too_many_urls", `\`urls\` must not exceed ${BULK_MAX_INPUT_URLS} entries (valid or malformed)`);
+    }
     throw new CaptatumInputError("invalid_input", "`urls` must be a non-empty array of fully-formed http(s) URLs");
   }
   throw new CaptatumInputError("invalid_input", "captatum_bulk input is invalid");
