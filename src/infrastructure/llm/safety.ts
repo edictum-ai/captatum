@@ -57,7 +57,7 @@ const SENSITIVE_HEADER_PATTERNS = [
  *  cleanly) but ALLOWS '[' — a literal '[' in a path before a credential query (e.g.
  *  https://files.example/a[draft?access_token=…) must not truncate the match. The IPv6 alternation
  *  owns '[' at the host position, so allowing it in a normal path is safe. Bounded vs ReDoS. */
-const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[@\/]*)?@)?\[[^\]\s]{1,79}\](?::\d{1,5})?(?:[\/?#][^\s"'<>)\]]*)?|https?:\/\/[^\s"'<>)]{1,512}/gi;
+const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[@\/]*)?@)?\[[^\]\s]{1,79}\](?::\d{1,5})?(?:[\/?#][^\s"'<>)\]]*)?|https?:\/\/[^\s"'<>]{1,512}/gi;
 /** Cap the embedded-URL scan to the head of the content. The high-confidence
  *  credential/header patterns below scan the FULL content regardless of size;
  *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
@@ -69,6 +69,22 @@ const MAX_CONTENT_SCAN = 500_000;
 export interface SensitivitySignal {
   sensitive: boolean;
   reason?: string;
+}
+
+/** Strip trailing ']' and ')' that are unbalanced — a prose bracket/paren around the URL
+ *  ([http://host], (http://host)) has no matching opener in the match; a balanced path delimiter
+ *  (a[draft], cb(v2)) stays so the URL parses. O(n): excess computed once, then a backward scan. */
+function stripTrailingProseClosers(url: string): string {
+  const excessSq = Math.max(0, (url.match(/\]/g) ?? []).length - (url.match(/\[/g) ?? []).length);
+  const excessPa = Math.max(0, (url.match(/\)/g) ?? []).length - (url.match(/\(/g) ?? []).length);
+  let end = url.length, skipSq = excessSq, skipPa = excessPa;
+  while (end > 0) {
+    const c = url[end - 1];
+    if (c === "]" && skipSq > 0) { skipSq--; end--; continue; }
+    if (c === ")" && skipPa > 0) { skipPa--; end--; continue; }
+    break;
+  }
+  return url.slice(0, end);
 }
 
 export function detectSensitiveTransformInput(input: {
@@ -112,10 +128,10 @@ export function detectSensitiveTransformInput(input: {
     // Prose-trim trailing punctuation, then strip trailing ']'s that are UNBALANCED (a prose
     // bracket like [http://host]) — a balanced ']' (in a path like a[draft]) stays so the URL
     // parses and the query/fragment after it is scanned. Bounded string slices, no parse loop.
-    let url = match[0].replace(/[.,;:!?)]+$/, "");
-    let opens = (url.match(/\[/g) ?? []).length;
-    let closes = (url.match(/\]/g) ?? []).length;
-    while (closes > opens && url.endsWith("]")) { url = url.slice(0, -1); closes--; }
+    // Prose-trim trailing punctuation, then strip trailing ']' / ')' that are UNBALANCED (a prose
+    // bracket/paren around the URL has no matching opener in the match; a balanced path delimiter
+    // like a[draft] or cb(v2) stays so the URL parses + a query/fragment after it is scanned).
+    let url = stripTrailingProseClosers(match[0].replace(/[.,;:!?]+$/, ""));
     const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
       ?? fragmentCredentialReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
       ?? userinfoCredentialReason(url)
