@@ -828,30 +828,22 @@ test("a JWT present only in the source url is flagged (codex P2 on #47)", () => 
   assert.equal(r.reason, "source_credential_signal");
 });
 
-test("detectSensitiveTransformInput: a loopback URL in CONTENT (a docs example) is NOT flagged (#127 0.11.3)", () => {
-  // http://localhost:PORT (or 127.x / bracketed [::1]) in fetched content — a README setup
-  // example — resolves to the reader's machine, not a leaked internal endpoint. Must not
-  // degrade summary to raw on the hosted flavor.
+test("detectSensitiveTransformInput: a plain loopback URL in CONTENT (a docs example) is NOT flagged (#127 0.11.3)", () => {
+  // http://localhost:PORT (or 127.x) in fetched content — a README setup example — resolves to
+  // the reader's machine, not a leaked internal endpoint. Must not degrade summary to raw.
   assert.equal(detectSensitiveTransformInput({ content: "Run: export ADDRESS=http://localhost:8000" }).sensitive, false);
   assert.equal(detectSensitiveTransformInput({ content: "Connect via http://127.0.0.1:9000" }).sensitive, false);
-  assert.equal(detectSensitiveTransformInput({ content: "IPv6 loopback http://[::1]:8000/x" }).sensitive, false, "bracketed ::1 is loopback too");
 });
 
-test("detectSensitiveTransformInput: a loopback SOURCE url is still flagged + internal IPv6/RFC1918 in content still flagged (#127 0.11.3)", () => {
-  // The loopback exemption is CONTENT-only. A loopback SOURCE url means captatum would
-  // fetch a loopback target (SSRF) — still flagged. RFC1918 / link-local / metadata IPs —
-  // and now bracketed internal IPv6 (ULA/link-local, previously hidden by regex truncation)
-  // — in content are flagged (the exemption is loopback-only).
-  assert.equal(detectSensitiveTransformInput({ content: "plain body", sourceUrl: "http://localhost:8000/x" }).sensitive, true);
-  assert.equal(detectSensitiveTransformInput({ content: "internal api http://10.0.0.5/api" }).sensitive, true);
-  assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]:8000/api" }).sensitive, true, "bracketed unique-local IPv6 is internal, not loopback");
-  assert.equal(detectSensitiveTransformInput({ content: "see [http://10.0.0.5]" }).sensitive, true, "a prose trailing ']' is not absorbed so the internal host is still flagged");
-  assert.equal(detectSensitiveTransformInput({ content: "[http://10.0.0.5]." }).sensitive, true, "prose ']' + punctuation is not absorbed (codex P2 round 2)");
-  assert.equal(detectSensitiveTransformInput({ content: "[http://10.0.0.5]," }).sensitive, true, "prose ']' + comma is not absorbed (codex P2 round 2)");
-  assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]." }).sensitive, true, "bracketed IPv6 + trailing '.' is trimmed + flagged (codex P2 round 3)");
-  assert.equal(detectSensitiveTransformInput({ content: "ULA http://[fd00::1]:8000,," }).sensitive, true, "bracketed IPv6 + trailing commas is trimmed + flagged (codex P2 round 3)");
-  assert.equal(detectSensitiveTransformInput({ content: "[http://[fd00::1]]" }).sensitive, true, "a markdown-bracketed IPv6 internal URL's extra ']' is stripped (codex P2 r5)");
-  assert.equal(detectSensitiveTransformInput({ content: "[http://[::1]]" }).sensitive, false, "a markdown-bracketed IPv6 loopback is still exempt after the extra ']' strip");
+test("detectSensitiveTransformInput: loopback SOURCE url, internal hosts, and credential-bearing loopback URLs are still flagged (#127 0.11.3)", () => {
+  // The loopback exemption is CONTENT-only AND plain-loopback-only. A loopback SOURCE url (SSRF),
+  // RFC1918/metadata IPs in content, a prose ']' after an internal host, and a credential key in
+  // a loopback URL's FRAGMENT (a docs OAuth redirect) are all still flagged.
+  assert.equal(detectSensitiveTransformInput({ content: "plain body", sourceUrl: "http://localhost:8000/x" }).sensitive, true, "loopback source url (SSRF)");
+  assert.equal(detectSensitiveTransformInput({ content: "internal api http://10.0.0.5/api" }).sensitive, true, "RFC1918 in content");
+  assert.equal(detectSensitiveTransformInput({ content: "see [http://10.0.0.5]" }).sensitive, true, "prose ']' after an internal host");
+  assert.equal(detectSensitiveTransformInput({ content: "[http://10.0.0.5]." }).sensitive, true, "prose ']' + punctuation");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost:3000/cb#access_token=eyJhbGc" }).sensitive, true, "a loopback URL with a credential fragment is NOT exempt (codex r7)");
 });
 
 test("noneReason: zero candidates reports 'unconfigured' even when the sensitive gate fired (#127 0.11.3)", () => {

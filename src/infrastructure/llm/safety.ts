@@ -81,12 +81,12 @@ const INTERNAL_HOST_SUFFIXES = [
     .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
 ];
 
-/** Bounded URL-literal scan for embedded signed/internal URLs in content. Two alternations:
- *  (1) a bracketed IPv6 host `[…]:port/path` — scanned as a whole so [::1]/[fd00::1] aren't
- *  truncated at the bracket; (2) a normal URL, which EXCLUDES '[' and ']' so a prose bracket
- *  like "[see http://10.0.0.5]." (and any trailing punctuation) stops cleanly at the ']' and
- *  the internal host is still scanned. Bounded (char classes + length caps) against ReDoS. */
-const SIGNED_URL_IN_CONTENT = /https?:\/\/\[[^\]\s]{1,79}\][^\s"'<>)]{0,512}|https?:\/\/[^\s"'<>)\]\[]{1,512}/gi;
+/** Bounded URL-literal scan for embedded signed/internal URLs in content. Excludes ']' so a
+ *  prose bracket like "[see http://10.0.0.5]." stops cleanly at the ']' and the internal host is
+ *  still scanned. (Bracketed IPv6 literals like http://[fd00::1] are NOT matched — a narrow
+ *  pre-existing gap; an earlier attempt to broaden this regex to include them kept absorbing
+ *  trailing prose/brackets across review rounds, so it's deferred to a focused follow-up.) */
+const SIGNED_URL_IN_CONTENT = /https?:\/\/[^\s"'<>)\]]{1,512}/gi;
 /** Cap the embedded-URL scan to the head of the content. The high-confidence
  *  credential/header patterns below scan the FULL content regardless of size;
  *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
@@ -135,20 +135,12 @@ export function detectSensitiveTransformInput(input: {
   for (const match of head.matchAll(SIGNED_URL_IN_CONTENT)) {
     // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup example —
     // resolves to the READER's machine, not a leaked internal endpoint) must not be flagged.
-    // RFC1918 / 169.254.169.254 / .corp / .internal / signed-URL keys are still flagged here.
-    // Trim trailing prose so new URL() can read the host: (1) a single anchored strip of
-    // [).,;:] (no per-char parse loop — a page of malformed tokens can't DoS the event loop);
-    // ']' is not in that set because the normal-URL branch already stops at ']' and on the
-    // IPv6 branch the ']' closes the literal. (2) A markdown/prose wrapper's EXTRA ']'s around
-    // a bracketed IPv6 URL (e.g. "[http://[fd00::1]]" — one '[' balances one ']'; any ']' beyond
-    // that is prose) — strip trailing ']'s while they outnumber '['. Bounded string slices,
-    // no parsing. The host sits before the first path char, so trimming the tail never changes
-    // which host is scanned.
-    let url = match[0].replace(/[).,;:]+$/, "");
-    let opens = (url.match(/\[/g) ?? []).length;
-    let closes = (url.match(/\]/g) ?? []).length;
-    while (closes > opens && url.endsWith("]")) { url = url.slice(0, -1); closes--; }
-    const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS) ?? internalHostReason(url, true);
+    // RFC1918 / 169.254.169.254 / .corp / .internal / signed-URL query keys are still flagged.
+    // A credential key in the FRAGMENT (#access_token=…) is checked BEFORE the loopback exemption
+    // — a loopback OAuth redirect carrying a bearer token is a real leak, not a docs example.
+    const reason = signedUrlReason(match[0], CONTENT_CREDENTIAL_QUERY_KEYS)
+      ?? fragmentCredentialReason(match[0], CONTENT_CREDENTIAL_QUERY_KEYS)
+      ?? internalHostReason(match[0], true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
   return { sensitive: false };
@@ -176,6 +168,19 @@ function signedUrlReason(sourceUrl: string, keys: Set<string> = SIGNED_QUERY_KEY
   // credentials are still caught elsewhere: JWTs by the credential-value patterns
   // above, presigned URLs by the query-key check, internal hosts by
   // internalHostReason. See docs/threat-model.md "Sensitive-content detection".
+  return undefined;
+}
+
+/** A credential key in the URL FRAGMENT (e.g. http://localhost/cb#access_token=…). signedUrlReason
+ *  only checks query params, so without this a tokenized fragment on a loopback (allowLoopback) URL
+ *  — or any URL — would egress to a hosted LLM. Returns "signed_or_tokenized_url" if the fragment
+ *  carries a credential key. */
+function fragmentCredentialReason(sourceUrl: string, keys: Set<string>): string | undefined {
+  const hash = sourceUrl.indexOf("#");
+  if (hash === -1) return undefined;
+  for (const key of new URLSearchParams(sourceUrl.slice(hash + 1)).keys()) {
+    if (keys.has(key.toLowerCase())) return "signed_or_tokenized_url";
+  }
   return undefined;
 }
 
