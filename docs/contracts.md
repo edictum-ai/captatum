@@ -173,6 +173,16 @@ to undercount. When render-on-bulk lands (with the render-egress-host union
 plumbing), it lands alongside the deep `egressBytes` accounting (subresource bytes
 → `Result.egressBytes`) so the byte cap stays honest on the render path too.
 
+**Egress cap in-flight overshoot (honest bound).** The global byte cap is summed
+from `result.bytes` AFTER each seed returns, so up to `maxConcurrency` seeds can be
+in flight when the running sum is just under the cap. Worst-case aggregate egress
+is therefore **`maxGlobalEgressBytes + maxConcurrency × perSeedMaxBytes`**
+(= 100 MB + 4 × 5 MB = ~120 MB at the defaults) before the post-seed re-check
+short-circuits the remaining seeds. This is a bounded overshoot of a hard cap,
+documented honestly like the transform-cost concurrent-overshoot; PR 2's budget
+tracker can tighten it by reserving `perSeedMaxBytes` against the global budget at
+dispatch (analogous to the cost-cap reservation).
+
 ### Input shaping (before any egress)
 
 `validate → reject Tier-2 board URLs per-entry → dedupe → per-host cap (truncate
