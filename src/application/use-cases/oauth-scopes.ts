@@ -30,7 +30,8 @@ export function scopeString(scopes: readonly OAuthScope[]): string {
 
 export function requireScope(auth: AuthorizedSubject, required: OAuthScope): void {
   if (!auth.scopes.includes(required)) {
-    throw new OAuthError("insufficient_scope", `Missing required scope: ${required}`, 403);
+    // A verified token reached the scope check — credentials presented. (#104)
+    throw new OAuthError("insufficient_scope", `Missing required scope: ${required}`, 403, true);
   }
 }
 

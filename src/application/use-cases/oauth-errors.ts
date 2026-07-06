@@ -1,12 +1,21 @@
 export class OAuthError extends Error {
   readonly code: string;
   readonly status: number;
+  /**
+   * True when the client actually presented credentials that were processed and
+   * rejected (a Bearer token that failed verification, or a verified token that
+   * failed a scope check). False when the request lacked authentication
+   * information (no Authorization header, or a non-Bearer scheme). Gates the
+   * `error` attribute in the RFC 6750 challenge — see bearerChallenge. (#104)
+   */
+  readonly presented: boolean;
 
-  constructor(code: string, message: string, status = 400) {
+  constructor(code: string, message: string, status = 400, presented = false) {
     super(message);
     this.name = "OAuthError";
     this.code = code;
     this.status = status;
+    this.presented = presented;
   }
 }
 
@@ -28,11 +37,17 @@ const RFC6750_BEARER_ERRORS = new Set(["invalid_request", "invalid_token", "insu
  * client guessing; the `error_description` also carries the actionable text a human
  * reads in the JSON-RPC `message`, so both channels agree. (#104)
  *
- * `error` is emitted only for RFC-6750-§3.1 values; other codes emit realm only.
+ * RFC 6750 §3: "The resource server SHOULD NOT include the 'error' attribute if the
+ * request lacks any authentication information." So `error`/`error_description` are
+ * emitted only when the client actually presented credentials that were rejected
+ * (`error.presented`: a Bearer token that failed verification, or a verified token
+ * that failed a scope check) AND the code is an RFC-6750-§3.1 value. A no-credentials
+ * `invalid_token` (no Authorization header, or a non-Bearer scheme) stays realm-only
+ * — the actionable remedy still reaches the client via the JSON-RPC body.
  */
 export function bearerChallenge(error: OAuthError): string {
   const parts = ['Bearer realm="captatum"'];
-  if (RFC6750_BEARER_ERRORS.has(error.code)) {
+  if (RFC6750_BEARER_ERRORS.has(error.code) && error.presented) {
     parts.push(`error="${error.code}"`);
     if (error.message) parts.push(`error_description="${escapeBearerAttr(error.message)}"`);
   }

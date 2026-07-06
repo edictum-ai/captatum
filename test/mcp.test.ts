@@ -46,12 +46,13 @@ test("POST /mcp rejects unauthenticated hosted calls before captatum runs", asyn
   const response = await ctx.rpc({ arguments: { url: "https://fixture.test/", output: "raw" } }, undefined);
 
   assert.equal(response.statusCode, 401);
-  // #104: a non-OAuth Streamable HTTP client gets a RFC 6750 Bearer challenge with
-  // error + error_description (not a bare "Bearer"), plus an actionable JSON-RPC
-  // message naming the remedy (/oauth/token).
+  // #104 + codex P2: RFC 6750 §3 — a request with NO authentication information gets
+  // a realm-only challenge (no error/error_description); the actionable remedy lives
+  // in the JSON-RPC message. (A presented-then-rejected token, tested separately,
+  // DOES get error="invalid_token".)
   const wwwAuth = String(response.headers["www-authenticate"]);
-  assert.match(wwwAuth, /^Bearer realm="captatum", error="invalid_token", error_description=/);
-  assert.match(wwwAuth, /\/oauth\/token/, "error_description points to the remedy");
+  assert.match(wwwAuth, /^Bearer realm="captatum"$/);
+  assert.doesNotMatch(wwwAuth, /error=/, "no error attr when no credentials were presented");
   const body = response.json();
   assert.equal(body.id, null);
   assert.equal(body.error.code, -32001);
