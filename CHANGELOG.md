@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.3] — 2026-07-06
+
+Provenance-correctness + sensitive-detector fixes — honest 4xx/5xx receipts (the headline) and a content-only loopback exemption made leak-safe. No breaking changes (one new `access.gateReason` value: `http_error`).
+
+- **fix(receipt): honest 4xx/5xx handling — `http_error` gate.** A 4xx/5xx is an error page, not content. Previously a thin text/html error page (nginx 404, SSG error) escalated to `render-blocked` with a false `gateReason` (the live sibling of #92, which fixed `text/plain` not `text/html`), and a non-empty error body (`text/plain "Forbidden"`, JSON, rich HTML) was presented as a successful, public, non-gated fetch (`status:pass`, `gateReason:none`, `ok:true`). Now the Tier-1 extract forces `jsRequired:false` + `resolvedVia:"tier1-error"` + an `http_error` warning (body still returned); `classifyAccess` → `gateReason:"http_error"` + `gated:true`; `classifyStatus` → `fail`; the hosted transform is skipped on 4xx/5xx (the error body is returned raw, not summarized); a Tier-3 render returning 4xx keeps the Tier-1 http-error gate. Documented in `docs/contracts.md`.
+- **fix(sensitive): content-only loopback exemption, made leak-safe.** A loopback URL (`localhost`/`127.x`/`[::1]`) *embedded in fetched content* (a README/docs setup example) is no longer flagged — it resolves to the reader's machine. The exemption is **content-only** (a loopback SOURCE url is still flagged — SSRF) and **plain-loopback-only**: it does not apply when the URL carries a credential anywhere — query key, fragment key (HTML-escaped `&amp;` normalized; hash-router `#/path?code=` parsed), userinfo (`user:pass@`), or OAuth `code`/`refresh_token`/`token`/`key`/`auth` on a loopback redirect. The `#44` ad-noise guard holds (non-loopback `?token=`/`?key=` stay unflagged). Bracketed IPv6 internal hosts (`[fd00::1]`, `[fe80::1]` incl. RFC6874 zone ids) are now scanned (host + userinfo + path with balanced `[]`/`()` delimiters). Helpers extracted to `sensitive-urls.ts`; documented in `docs/threat-model.md`.
+- **fix(router): `noneReason` reports `unconfigured`** (not `sensitive_content_no_local_provider`) on a zero-candidate router, even when the sensitive gate fired.
+
+Checks: `pnpm run check` + 497 unit + 50 integration fixture tests green. Adversarially reviewed across multiple workflow passes; ~22 codex findings, all real, all fixed + verified live.
+
 ## [0.11.2] — 2026-07-06
 
 One transform correctness fix (the two refinements deferred from #130's codex review) + a vendor-neutral docs pass. No breaking changes.
