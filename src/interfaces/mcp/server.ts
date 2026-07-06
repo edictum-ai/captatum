@@ -22,9 +22,7 @@ import { buildStructuredContent } from "./shape.ts";
 import { CAPTATUM_SERVER_INSTRUCTIONS, CAPTATUM_TOOL_NAME, captatumToolDefinition } from "./schema.ts";
 import { config } from "../../config.ts";
 import { parseClientProfileMap, resolveClientProfile, type ClientProfile } from "../../application/client-profile.ts";
-
-const AUTH_JSONRPC_CODE = -32001;
-const OVERLOADED_JSONRPC_CODE = -32050; // admission overload: distinct, retryable server code (#84)
+import { AUTH_JSONRPC_CODE, OVERLOADED_JSONRPC_CODE } from "../jsonrpc-error-codes.ts";
 
 /**
  * Thrown when the process-wide admission limiter is at capacity (DOS-2). `toMcpError` surfaces it
