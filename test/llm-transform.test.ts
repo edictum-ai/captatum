@@ -864,6 +864,8 @@ test("detectSensitiveTransformInput: internal hosts (incl. IPv6) and credential-
   assert.equal(detectSensitiveTransformInput({ content: "presigned https://files.example/a[draft]?access_token=eyJhbGc" }).sensitive, true, "a BALANCED path bracket [draft] before a credential query is kept (codex P2)");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://localhost/cb(v2)?code=eyJhbGc" }).sensitive, true, "a balanced parenthesized path cb(v2) before a credential query is kept (codex P2)");
   assert.equal(detectSensitiveTransformInput({ content: "see (http://10.0.0.5)" }).sensitive, true, "a prose ')' (no matching opener) is stripped so the internal host is flagged");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://[::1]/cb(v2)?code=eyJhbGc" }).sensitive, true, "IPv6 + balanced paren path cb(v2) + credential query (codex P2)");
+  assert.equal(detectSensitiveTransformInput({ content: "OAuth http://[::1]/a[draft]?access_token=eyJhbGc" }).sensitive, true, "IPv6 + balanced bracket path [draft] + credential query");
   assert.equal(detectSensitiveTransformInput({ content: "OAuth http://admin:x@[::1]:8000/cb?access_token=eyJ" }).sensitive, true, "userinfo + IPv6 loopback + credential is flagged");
   assert.equal(detectSensitiveTransformInput({ content: "debug http://[fe80::1%25eth0]:8080/admin" }).sensitive, true, "zone-id link-local IPv6 internal host is flagged (zone normalized before parse)");
   assert.equal(detectSensitiveTransformInput({ content: "debug http://[fe80::1%25eth0.100]:8080/admin" }).sensitive, true, "zone id with '.' (RFC6874) is fully stripped (codex P2)");
