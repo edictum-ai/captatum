@@ -113,10 +113,13 @@ test("resolveBulkGuard: output=raw → maxUrls 50; output=summary → maxUrls 10
 });
 
 test("resolveBulkGuard: caller cost overrides clamp DOWN to the server ceiling + disclose", () => {
-  // A LOWER caller cap is honored (the point of decision 9: "cap this bulk at $0.10").
+  // A LOWER caller global cap is honored (decision 9: "cap this bulk at $0.10").
+  // The global itself is not clamped; perSeed concurrency-sizes to 0.10/4 = 0.025
+  // (4 × 0.025 = 0.10 ≤ ceiling) and that sizing is disclosed.
   const lower = resolveBulkGuard({ operator: {}, output: "raw", caller: { maxTransformCostUsd: 0.1 } });
   assert.equal(lower.guard.maxTransformCostUsd, 0.1);
-  assert.deepEqual(lower.clamped, []);
+  assert.equal(lower.guard.perSeedTransformCostUsd, 0.025);
+  assert.deepEqual(lower.clamped, ["perSeedTransformCostUsd"]);
   // An OVER-ceiling caller value is clamped to the ceiling + disclosed (never above).
   const over = resolveBulkGuard({ operator: {}, output: "raw", caller: { maxTransformCostUsd: 5, perSeedTransformCostUsd: 1 } });
   assert.equal(over.guard.maxTransformCostUsd, 0.5);
@@ -136,21 +139,24 @@ test("resolveBulkGuard: operator concurrency capped at the default (never wider)
   assert.equal(g.maxConcurrency, 4);
 });
 
-test("resolveBulkGuard: per-seed cost clamped to the global cap (a single seed can never exceed the whole-call ceiling)", () => {
-  // Caller lowers ONLY the global cap to $0.01. The default per-seed is $0.05;
-  // if left alone, the first in-flight transform could spend 5x the caller's
-  // total budget before the global cap re-checks. perSeed must clamp to $0.01.
+test("resolveBulkGuard: per-seed cost sized for concurrency (maxConcurrency × perSeed ≤ global)", () => {
+  // The concurrent-overshoot bound (codex round-7): up to maxConcurrency transforms
+  // run before the post-transform global re-check, so perSeed must be ≤
+  // global/maxConcurrency or a caller's lower ceiling is blown by the first wave.
+  // (1) Caller lowers only global to $0.01; default conc=4 → perSeed clamps to
+  //     $0.0025 (4 × $0.0025 = $0.01 ≤ ceiling), disclosed.
   const out = resolveBulkGuard({ operator: {}, output: "raw", caller: { maxTransformCostUsd: 0.01 } });
   assert.equal(out.guard.maxTransformCostUsd, 0.01);
-  assert.equal(out.guard.perSeedTransformCostUsd, 0.01, "per-seed must be ≤ the global cap");
-  assert.ok(out.clamped.includes("perSeedTransformCostUsd"), "the per-seed clamp is disclosed");
-  // A per-seed UNDER the global (and the ceiling) is honored unchanged.
+  assert.equal(out.guard.perSeedTransformCostUsd, 0.0025);
+  assert.ok(out.clamped.includes("perSeedTransformCostUsd"));
+  assert.ok(out.guard.maxConcurrency * out.guard.perSeedTransformCostUsd <= out.guard.maxTransformCostUsd + 1e-9, "C × perSeed ≤ global");
+  // (2) A per-seed UNDER global/conc is honored unchanged.
   const out2 = resolveBulkGuard({ operator: {}, output: "raw", caller: { perSeedTransformCostUsd: 0.04 } });
-  assert.equal(out2.guard.perSeedTransformCostUsd, 0.04);
-  assert.equal(out2.guard.maxTransformCostUsd, 0.5);
+  assert.equal(out2.guard.perSeedTransformCostUsd, 0.04); // 0.04 < 0.50/4 = 0.125
   assert.ok(!out2.clamped.includes("perSeedTransformCostUsd"));
-  // And a caller setting per-seed above their own global gets clamped to the global.
-  const out3 = resolveBulkGuard({ operator: {}, output: "raw", caller: { maxTransformCostUsd: 0.03, perSeedTransformCostUsd: 0.04 } });
+  // (3) maxConcurrency=1 → reduces to perSeed ≤ global (no concurrent overshoot);
+  //     a per-seed above the global clamps to the global.
+  const out3 = resolveBulkGuard({ operator: { maxConcurrency: 1 }, output: "raw", caller: { maxTransformCostUsd: 0.03, perSeedTransformCostUsd: 0.04 } });
   assert.equal(out3.guard.perSeedTransformCostUsd, 0.03);
   assert.equal(out3.guard.maxTransformCostUsd, 0.03);
 });

@@ -40,26 +40,30 @@ export function resolveBulkGuard(args: {
     args.caller?.maxTransformCostUsd ?? BULK_GUARD_DEFAULTS.maxTransformCostUsd,
     BULK_GUARD_CEILINGS.maxTransformCostUsd, "maxTransformCostUsd", clamped,
   );
+  const maxConcurrency = Math.min(
+    BULK_GUARD_DEFAULTS.maxConcurrency, Math.max(1, op.maxConcurrency ?? BULK_GUARD_DEFAULTS.maxConcurrency),
+  );
   let perSeedTransformCostUsd = clampMax(
     args.caller?.perSeedTransformCostUsd ?? BULK_GUARD_DEFAULTS.perSeedTransformCostUsd,
     BULK_GUARD_CEILINGS.perSeedTransformCostUsd, "perSeedTransformCostUsd", clamped,
   );
-  // The per-seed cap is a SUB-BOUND of the global cap: a single seed must never
-  // be able to spend more than the whole-call ceiling. Without this, a caller
-  // who lowers only maxTransformCostUsd (e.g. $0.01) would still leave
-  // perSeedTransformCostUsd at the $0.05 default, so the first in-flight
-  // transform could spend 5x the caller's total budget before the global cap is
-  // re-checked. Clamp + disclose so the caller's lower ceiling is actually honored.
-  if (perSeedTransformCostUsd > maxTransformCostUsd) {
-    perSeedTransformCostUsd = maxTransformCostUsd;
+  // The per-seed cap is a SUB-BOUND of the global cap, SIZED FOR CONCURRENCY. Up
+  // to maxConcurrency transforms run simultaneously, and each is checked against
+  // the global cap only AFTER it settles — so maxConcurrency in-flight transforms
+  // could otherwise collectively spend maxConcurrency × perSeed before the
+  // post-transform re-check, blowing a caller's lower ceiling (e.g. global=$0.01,
+  // perSeed=$0.05, conc=4 → $0.20 spent before re-check). Clamp perSeed to
+  // global / maxConcurrency so the first wave can't exceed the caller's ceiling;
+  // this also subsumes perSeed ≤ global (conc ≥ 1). Disclosed. (A runtime
+  // reservation in the budget tracker, PR 2, can tighten this further.)
+  const concurrentSafePerSeed = maxTransformCostUsd / maxConcurrency;
+  if (perSeedTransformCostUsd > concurrentSafePerSeed) {
+    perSeedTransformCostUsd = concurrentSafePerSeed;
     clamped.push("perSeedTransformCostUsd");
   }
   const maxPerHostInflight = Math.max(1, op.maxPerHostInflight ?? BULK_GUARD_DEFAULTS.maxPerHostInflight);
   const crawlDelayMs = Math.max(
     BULK_GUARD_CEILINGS.crawlDelayMsFloor, op.crawlDelayMs ?? BULK_GUARD_DEFAULTS.crawlDelayMs,
-  );
-  const maxConcurrency = Math.min(
-    BULK_GUARD_DEFAULTS.maxConcurrency, Math.max(1, op.maxConcurrency ?? BULK_GUARD_DEFAULTS.maxConcurrency),
   );
   return {
     guard: {
