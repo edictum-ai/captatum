@@ -96,6 +96,18 @@ _From source (development):_ `corepack pnpm install && node --no-warnings src/in
 >
 > _From source (dev):_ `{"command":"node","args":["--no-warnings","src/interfaces/mcp/stdio-bridge.ts"]}` — never wrap in `pnpm run bridge` (the pnpm lifecycle banner corrupts the JSON-RPC stream; use `corepack pnpm --silent run bridge` if you need a script).
 
+### Authentication errors (hosted)
+
+The hosted server is a Bearer-token resource server (`POST /mcp`). What a client sees on an auth failure depends on whether it speaks the OAuth flow — both the HTTP `WWW-Authenticate` header and the JSON-RPC `message` carry the same actionable explanation, so a raw HTTP client and an MCP/JSON-RPC client each get a clear error in the channel they read (#104):
+
+| Client | Sends | On auth failure | What to do |
+| --- | --- | --- | --- |
+| **OAuth-aware MCP client** (claude.ai, Cursor, Desktop) | Runs the OAuth (PKCE) flow itself; sends `Authorization: Bearer <token>` | `401` + a `WWW-Authenticate: Bearer` challenge → the client auto-(re)starts OAuth | Configure the remote Streamable-HTTP connector; nothing manual |
+| **Non-OAuth Streamable HTTP client** (curl, custom script) | `Authorization: Bearer <token>` you minted via `POST /oauth/token` | `401` **and** an actionable JSON-RPC body whose `error.message` names the remedy, e.g. `invalid_token: OAuth Bearer access token required — obtain one via /oauth/token, then resend 'Authorization: Bearer <token>'` (or `…is invalid or expired — re-authenticate via /oauth/token` for a bad token) | Run the flow manually: `GET /oauth/authorize` → `POST /oauth/token` → resend `/mcp` with the bearer |
+| **Local stdio binary** | nothing | `200` (no auth — single-user, loopback) | n/a |
+
+The `WWW-Authenticate` challenge carries `error="invalid_token"` + `error_description` **only when a token was actually presented and rejected** (or `error="insufficient_scope"` for a wrong-scope call); per RFC 6750 §3 a request with **no** authentication information gets a realm-only challenge (`Bearer realm="captatum"`) — the actionable remedy still reaches the client via the JSON-RPC `message` in every case. The stable JSON-RPC auth-failure `code` is documented in [`docs/contracts.md`](./docs/contracts.md). A wrong-scope call (e.g. `output: summary` without `fetch:transform`) is `insufficient_scope`, returned in a JSON-RPC error body (HTTP 200, not 401) — request the `fetch:transform` scope in your connector config.
+
 ### Token-efficient local use
 
 Captatum keeps the **calling agent's** context small: it digests a page into a short result *before* the agent sees it, rather than dumping raw bytes for the agent's (expensive) model to churn through. Three token-light recipes:

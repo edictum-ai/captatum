@@ -6,7 +6,7 @@ import type { HostedOAuthConfig } from "../../application/use-cases/oauth-config
 import { publicJwk } from "../../application/use-cases/oauth-crypto.ts";
 import { OAuthAuthorizationUseCase, assertAllowedRedirectUri, type AuthorizeRequestInput } from "../../application/use-cases/oauth-authorization.ts";
 import { OAuthTokenUseCase } from "../../application/use-cases/oauth-token.ts";
-import { OAuthError, oauthErrorBody } from "../../application/use-cases/oauth-errors.ts";
+import { OAuthError, bearerChallenge, oauthErrorBody } from "../../application/use-cases/oauth-errors.ts";
 import { OAUTH_SCOPES } from "../../application/use-cases/oauth-scopes.ts";
 
 /** Cloudflare Access JWT verifier port. The concrete verifier is built once in the
@@ -197,7 +197,7 @@ function sendError(reply: FastifyReply, error: unknown): void {
   const oauthError = error instanceof OAuthError
     ? error
     : new OAuthError("internal_error", "OAuth request failed", 500);
-  if (oauthError.status === 401) reply.header("www-authenticate", "Bearer");
+  if (oauthError.status === 401) reply.header("www-authenticate", bearerChallenge(oauthError));
   reply.code(oauthError.status).send(oauthErrorBody(oauthError));
 }
 

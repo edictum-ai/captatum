@@ -46,12 +46,43 @@ test("POST /mcp rejects unauthenticated hosted calls before captatum runs", asyn
   const response = await ctx.rpc({ arguments: { url: "https://fixture.test/", output: "raw" } }, undefined);
 
   assert.equal(response.statusCode, 401);
-  assert.match(String(response.headers["www-authenticate"]), /Bearer/);
-  assert.deepEqual(response.json(), {
-    jsonrpc: "2.0",
-    error: { code: -32001, message: "invalid_token: Bearer token is required" },
-    id: null,
-  });
+  // #104 + codex P2: RFC 6750 §3 — a request with NO authentication information gets
+  // a realm-only challenge (no error/error_description); the actionable remedy lives
+  // in the JSON-RPC message. (A presented-then-rejected token, tested separately,
+  // DOES get error="invalid_token".)
+  const wwwAuth = String(response.headers["www-authenticate"]);
+  assert.match(wwwAuth, /^Bearer realm="captatum"$/);
+  assert.doesNotMatch(wwwAuth, /error=/, "no error attr when no credentials were presented");
+  const body = response.json();
+  assert.equal(body.id, null);
+  assert.equal(body.error.code, -32001);
+  assert.match(body.error.message, /^invalid_token: OAuth Bearer access token required/);
+  assert.match(body.error.message, /\/oauth\/token/, "message names how to obtain a token");
+  assert.equal(ctx.fetcher.calls.length, 0);
+  await ctx.app.close();
+});
+
+test("POST /mcp with a malformed Bearer token returns a 401 with the actionable invalid/expired message (#104)", async () => {
+  // Exercises verifyAccessToken (oauth-crypto.ts) — the stale/expired-token path, a
+  // more common real-world 401 than "no token at all". The prior test sends NO
+  // Authorization header (bearerToken path); this sends a bad one so the actionable
+  // "invalid or expired … /oauth/token" message is asserted end-to-end, including its
+  // em-dash safety in the WWW-Authenticate header.
+  const ctx = await setup();
+  const response = await ctx.rpc(
+    { arguments: { url: "https://fixture.test/", output: "raw" } },
+    undefined,
+    { authorization: "Bearer not-a-real-jwt" },
+  );
+  assert.equal(response.statusCode, 401);
+  const wwwAuth = String(response.headers["www-authenticate"]);
+  assert.match(wwwAuth, /error="invalid_token"/);
+  assert.match(wwwAuth, /\/oauth\/token/, "error_description carries the remedy");
+  assert.ok(!wwwAuth.includes("—"), "em dash is ASCII-sanitized out of the header value");
+  const body = response.json();
+  assert.equal(body.error.code, -32001);
+  assert.match(body.error.message, /invalid_token: .*invalid or expired/);
+  assert.match(body.error.message, /\/oauth\/token/);
   assert.equal(ctx.fetcher.calls.length, 0);
   await ctx.app.close();
 });

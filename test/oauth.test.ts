@@ -277,6 +277,11 @@ test("authorize fails closed (401) when no Cloudflare Access verifier is configu
   });
   assert.equal(response.statusCode, 401);
   assert.equal(response.json().error.code, "access_denied");
+  // #104: sendError routes the 401 through bearerChallenge; access_denied is not an
+  // RFC 6750 §3.1 value, so the challenge is realm-only (no error attribute).
+  const wwwAuth1 = String(response.headers["www-authenticate"]);
+  assert.match(wwwAuth1, /^Bearer realm="captatum"/);
+  assert.doesNotMatch(wwwAuth1, /error=/);
   await app.close();
 });
 
@@ -290,6 +295,10 @@ test("authorize fails closed (401) when the Access JWT is rejected (AUTH-1)", as
   });
   assert.equal(response.statusCode, 401);
   assert.equal(response.json().error.code, "access_denied");
+  // #104: sendError routes the 401 through bearerChallenge; access_denied is realm-only.
+  const wwwAuth2 = String(response.headers["www-authenticate"]);
+  assert.match(wwwAuth2, /^Bearer realm="captatum"/);
+  assert.doesNotMatch(wwwAuth2, /error=/);
   await ctx.app.close();
 });
 

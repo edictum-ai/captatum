@@ -87,10 +87,17 @@ export function createRequestAuthorizer(deps: RequestAuthDeps): RequestAuthorize
   return new RequestAuthorizer(deps);
 }
 
+// Actionable for a non-OAuth Streamable HTTP client that POSTs to /mcp without the
+// OAuth flow: it must learn HOW to get a token, not just that one is missing. The
+// same text reaches the client via the JSON-RPC `message` and the RFC 6750
+// `WWW-Authenticate: Bearer … error_description`. (#104)
+const TOKEN_REQUIRED_MESSAGE =
+  "OAuth Bearer access token required — obtain one via /oauth/token, then resend 'Authorization: Bearer <token>'";
+
 function bearerToken(header: string | string[] | undefined): string {
   const value = Array.isArray(header) ? header[0] : header;
-  if (!value) throw new OAuthError("invalid_token", "Bearer token is required", 401);
+  if (!value) throw new OAuthError("invalid_token", TOKEN_REQUIRED_MESSAGE, 401);
   const match = /^Bearer\s+(.+)$/i.exec(value.trim());
-  if (!match?.[1]) throw new OAuthError("invalid_token", "Bearer token is required", 401);
+  if (!match?.[1]) throw new OAuthError("invalid_token", TOKEN_REQUIRED_MESSAGE, 401);
   return match[1];
 }
