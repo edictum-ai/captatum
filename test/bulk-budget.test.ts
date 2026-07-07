@@ -132,3 +132,22 @@ test("BudgetTracker: reserveRetry reserves a 2nd byte unit but skips when it wou
   const after = t2.afterSeed({ bytes: 120, transformReserved: b2.runTransform, byteUnits: 2 }); // both attempts' egress, release 2 units
   assert.equal(after.shortCircuit, false, "120 ≤ 200 → no breach");
 });
+
+test("BudgetTracker: reserveRender reserves the render pool (4× perSeed) but skips when it would breach the cap (codex R5 P2)", () => {
+  const clock = fakeClock();
+  // perSeed 10, cap 100: beforeSeed reserves 10 (1 unit). reserveRender reserves 4×10=40 more → 50 ≤ 100 → fits.
+  const t = new BudgetTracker({ clock, maxGlobalEgressBytes: 100, maxGlobalWallMs: 5000, maxTransformCostUsd: 1, perSeedTransformCostUsd: 0.02, perSeedMaxBytes: 10 });
+  const b = t.beforeSeed();
+  assert.equal(b.dispatch, true);
+  assert.equal(t.reserveRender(), true, "1 unit (10) + render pool (40) = 50 ≤ 100 → render allowed");
+  // A render seed settles its actual egress (say 45) + releases 1+4=5 units.
+  const after = t.afterSeed({ bytes: 45, transformReserved: b.runTransform, byteUnits: 1 + 4 });
+  assert.equal(after.shortCircuit, false, "45 ≤ 100 → no breach");
+
+  // perSeed 25, cap 100: beforeSeed reserves 25. reserveRender needs 4×25=100 more → 25+100=125 > 100 → refuse.
+  const t2 = new BudgetTracker({ clock, maxGlobalEgressBytes: 100, maxGlobalWallMs: 5000, maxTransformCostUsd: 1, perSeedTransformCostUsd: 0.02, perSeedMaxBytes: 25 });
+  const b2 = t2.beforeSeed();
+  assert.equal(b2.dispatch, true);
+  assert.equal(t2.reserveRender(), false, "1 unit (25) + render pool (100) = 125 > 100 → render refused");
+  t2.cancelReservation(b2.runTransform); // release the 1 unit (no render reserved)
+});

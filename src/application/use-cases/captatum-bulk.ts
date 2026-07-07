@@ -29,7 +29,7 @@ import type { Output } from "../../domain/tier.ts";
 import type { Result } from "../../domain/result.ts";
 import { normalizeBulkInput, type NormalizedBulkRequest } from "./bulk-input.ts";
 import { ashbyJidOf, rejectPerEntryBulk, reserveBulkQuota } from "./bulk-dispatch.ts";
-import { BudgetTracker, type BudgetCapReason } from "./bulk-budget.ts";
+import { BudgetTracker, RENDER_EGRESS_MULTIPLIER, type BudgetCapReason } from "./bulk-budget.ts";
 import { PerHostGate, Semaphore } from "./bulk-concurrency.ts";
 import { mergeRenderEgressHosts } from "./bulk-render.ts";
 import { executeSeedWithRetry } from "./bulk-retry.ts";
@@ -170,12 +170,12 @@ export class CaptatumBulkUseCase {
             }
           }
           const downgradedByCost = request.requestedOutput !== "raw" && effectiveOutput === "raw";
-          // maxRenderedSeeds (BULK-3 OOM guard): allowRender:true seeds are allowed only while
-          // renderedCount < maxRenderedSeeds; past the cap they're downgraded (render-blocked at
-          // Tier-1). Checked pre-dispatch against the settled count → overshoot ≤ maxConcurrency
-          // (in-flight attempts). Actual concurrent browsers are bounded by the renderer (DOS-2).
-          const renderAllowed = request.allowRender && renderedCount < guard.maxRenderedSeeds;
-          const renderDowngraded = request.allowRender && !renderAllowed;
+          // maxRenderedSeeds (BULK-3) + render byte reservation (codex R5 P2): allowRender needs
+          // renderedCount < maxRenderedSeeds AND the render pool to fit the global cap (a render egresses
+          // several× perSeedMaxBytes; reserving it holds the in-flight invariant vs concurrent renders).
+          let reservedUnits = 1, renderAllowed = request.allowRender && renderedCount < guard.maxRenderedSeeds;
+          if (renderAllowed && !budget.reserveRender()) renderAllowed = false; // pool won't fit → refuse render
+          const renderDowngraded = request.allowRender && !renderAllowed; if (renderAllowed) reservedUnits += RENDER_EGRESS_MULTIPLIER;
           const execInput = { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: renderAllowed, debug: request.debug };
           const execCtx = { ...(context.fetchedAt !== undefined ? { fetchedAt: context.fetchedAt } : {}), signal };
           let seedResult: Result;
@@ -200,7 +200,7 @@ export class CaptatumBulkUseCase {
           // The wall may have fired DURING the in-flight execute — disclose it (the result flows
           // straight here, not a record branch). transformReserved mirrors before.runTransform.
           if (signal.aborted) record("bulk_deadline_exceeded");
-          const after = budget.afterSeed({ bytes: seedResult.egressBytes ?? seedResult.bytes, costUsd: seedResult.transform?.costUsd, inTokens: seedResult.transform?.inTokens, outTokens: seedResult.transform?.outTokens, transformReserved: before.runTransform, ...(retried ? { byteUnits: 2 } : {}) });
+          const after = budget.afterSeed({ bytes: seedResult.egressBytes ?? seedResult.bytes, costUsd: seedResult.transform?.costUsd, inTokens: seedResult.transform?.inTokens, outTokens: seedResult.transform?.outTokens, transformReserved: before.runTransform, byteUnits: reservedUnits + (retried ? 1 : 0) });
           if (after.shortCircuit) {
             shortCircuit = shortCircuit ?? budgetMsg(after.reason as BudgetCapReason);
             record(`bulk_budget_exceeded:${after.reason}`);
