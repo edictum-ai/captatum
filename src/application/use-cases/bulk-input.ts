@@ -141,8 +141,10 @@ type ParsedBulkInput = z.infer<typeof bulkInputSchema>;
  *  (WHATWG trims before parsing). Scheme-independent (http/ftp/gopher + protocol-relative //). */
 function redactUserinfo(u: string): string {
   const trimmed = u.replace(/^[\s\x00-\x1f]+/, "");
-  // WHATWG treats backslashes as slashes, so match [/\] in the separator.
-  return trimmed.replace(/^((?:[a-z][a-z0-9+.-]*:)?)[/\\]{2}[^/?#]+@/i, "$1//");
+  // WHATWG normalizes backslashes→slashes and special-scheme slash variants (https:/, https:,
+  // https:\, https:\\\\) to an authority form — so strip userinfo from ANY count of [/\\] after
+  // an optional scheme:.
+  return trimmed.replace(/^((?:[a-z][a-z0-9+.-]*:)?)[/\\]*[^/?#]+@/i, "$1//");
 }
 
 function parseInput(value: unknown): ParsedBulkInput {

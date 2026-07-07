@@ -146,8 +146,17 @@ test("normalizeBulkInput: protocol-relative userinfo redacted (//user:pass@host)
 
 test("normalizeBulkInput: backslash-separator userinfo redacted (https:\\\\user:pass@host)", () => {
   // WHATWG treats backslashes as slashes, so new URL() parses this as userinfo + rejects it.
-  // redactUserinfo must match [/\] in the separator, not just //.
   const out = normalizeBulkInput({ urls: ["https:\\\\user:secretpass@example.test/x"] });
   assert.equal(out.invalid.length, 1);
   assert.ok(!out.invalid[0].url.includes("secretpass"), "backslash-separator userinfo password redacted");
+});
+
+test("normalizeBulkInput: single-slash + special-scheme userinfo variants redacted", () => {
+  // WHATWG normalizes https:/user:pass@, https:user:pass@, https:\user:pass@, https:////user:pass@
+  // to an authority with userinfo — normalizeContractUrl rejects them, redactUserinfo must strip.
+  for (const sep of ["https:/", "https:", "https:\\", "https:////", "//"]) {
+    const out = normalizeBulkInput({ urls: [`${sep}user:secretpass@example.test/x`] });
+    assert.equal(out.invalid.length, 1, `${JSON.stringify(sep)} rejected`);
+    assert.ok(!out.invalid[0].url.includes("secretpass"), `${JSON.stringify(sep)} password redacted`);
+  }
 });
