@@ -208,7 +208,7 @@ export class RenderRouteState {
     if (this.pool.used(true) > this.pool.cap(true)) this.pool.markExceeded(true); // crossing reservation marks the pool blown synchronously (#111 codex P2)
     try {
       await this.fetchSem.acquire(); // POST fetches bounded by the render fetch semaphore too (codex R13 P2)
-      if (!this.postAcquireGate(true)) { this.pool.releaseEssential(plan.body.byteLength); return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted"); }
+      if (!this.postAcquireGate(true)) { this.pool.releaseUnsentEssential(plan.body.byteLength); return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted"); }
       let outcome;
       try { outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit); }
       finally { this.fetchSem.release(); }
