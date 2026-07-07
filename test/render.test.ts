@@ -307,6 +307,29 @@ test("RenderBytePool: essentials cross → crosser counted + pool marked exceede
   // Once exceeded, handle()'s pre-fetch isExceeded check aborts s3/s4 before network (no add).
 });
 
+test("RenderBytePool.releaseEssential clears the exceeded flag when used drops back under the cap (codex P2 on #147)", () => {
+  // A POST body reservation can transiently mark the essential pool exceeded (markExceeded at dispatch),
+  // then get released when the POST re-gates out / is rejected before sending. The flag must clear so
+  // later essentials are not falsely aborted despite unused budget. DoS-safe: a real crossing (actual
+  // egress, not fully released) stays exceeded; only the transient body-cross clears.
+  const pool = new RenderBytePool(100, 50); // essentialCap 100, nonEssentialCap 50
+  pool.add(true, 95);                        // 95 ≤ 100, not exceeded
+  assert.equal(pool.isExceeded(true), false);
+  pool.add(true, 10);                        // 105 > 100 — a transient POST body reservation
+  pool.markExceeded(true);
+  assert.equal(pool.isExceeded(true), true);
+  pool.releaseEssential(10);                 // body released (POST never sent) → 95 ≤ 100 → flag clears
+  assert.equal(pool.isExceeded(true), false, "the flag cleared when the released body brought used back under the cap");
+  pool.add(true, 20);                        // 115 > 100 — a REAL crossing (actual egress)
+  pool.markExceeded(true);
+  assert.equal(pool.isExceeded(true), true);
+  pool.releaseEssential(5);                  // 110 > 100 — the overage is real, not a released body
+  assert.equal(pool.isExceeded(true), true, "a real crossing stays exceeded until used fully drops to/under the cap");
+  pool.releaseEssential(10);                 // 100 ≤ 100 → clear
+  assert.equal(pool.isExceeded(true), false, "once used drops to the cap the flag clears (budget available again)");
+});
+
+
 test("renderEgressUnits: the bulk render reservation is decoupled from maxBytes (#143) — per-call, not a fixed 8×", () => {
   // Was a constant 8× when the essential cap was 3× maxBytes. Now essential is a fixed 48MB, so the
   // reservation in perSeedMaxBytes units scales with 1/perSeedMaxBytes (smaller perSeed → more units).

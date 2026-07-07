@@ -27,6 +27,14 @@ export class RenderBytePool {
   add(essential: boolean, bytes: number): void {
     if (essential) this.essential += bytes; else this.nonEssential += bytes;
   }
-  /** Release essential bytes (a forwarded-POST reservation whose request was rejected). */
-  releaseEssential(bytes: number): void { this.essential -= bytes; }
+  /** Release essential bytes (a forwarded-POST body reservation whose request was rejected OR re-gated
+   *  out before sending). Such a reservation can transiently mark the pool exceeded (markExceeded at
+   *  dispatch); clear the flag when used drops back to/under the cap so later essentials are not falsely
+   *  aborted despite unused budget (codex P2 on #147). DoS-safe: `essential` still bounds cumulative
+   *  egress, and the flag only re-opens budget that genuinely exists (the fetchSem re-gate still bounds
+   *  concurrent past-the-gate fetches to N → used ≤ cap + N×maxBytes). */
+  releaseEssential(bytes: number): void {
+    this.essential -= bytes;
+    if (this.essentialExceeded && this.essential <= this.essentialCap) this.essentialExceeded = false;
+  }
 }
