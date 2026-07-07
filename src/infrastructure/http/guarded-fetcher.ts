@@ -144,6 +144,10 @@ export class GuardedHttpFetcher implements FetcherPort {
     signal: AbortSignal,
   ): Promise<FetcherResult> {
     const body = await readCappedBody(response.body, response.headers, maxBytes, signal);
+    // Parse Retry-After ONCE + include on `!== undefined` (not truthiness): a `Retry-After: 0`
+    // (or a past HTTP-date → 0) is a valid "retry now" signal that must enable the one retry
+    // (codex P3: the truthiness check dropped 0, skipping the retry exactly when asked to retry now).
+    const retryAfterMs = parseRetryAfter(response.headers, response.status);
     return {
       status: response.status,
       finalUrl: current.finalUrl,
@@ -153,9 +157,7 @@ export class GuardedHttpFetcher implements FetcherPort {
       bytes: body.byteLength,
       ...(body.truncated ? { truncated: true } : {}),
       antibot: computeAntiBotEvidence(response.headers, body.bytes, response.status),
-      ...(parseRetryAfter(response.headers, response.status)
-        ? { retryAfterMs: parseRetryAfter(response.headers, response.status) }
-        : {}),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     };
   }
 }

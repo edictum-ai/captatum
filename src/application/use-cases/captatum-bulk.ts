@@ -187,7 +187,7 @@ export class CaptatumBulkUseCase {
             // shell can hold Promise.all past maxGlobalWallMs (codex R2 P2). The wall abandons it
             // (dispatch-level). executeSeedWithRetry performs ONE jittered 429/503 retry (wall-bounded).
             const run = (): Promise<Result> => raceWallAbort(this.deps.executor.execute(execInput, execCtx), signal, seed);
-            ({ result: seedResult, retried } = await executeSeedWithRetry(run, { signal, wallExceeded: () => budget.wallExceeded() }));
+            ({ result: seedResult, retried } = await executeSeedWithRetry(run, { signal, wallExceeded: () => budget.wallExceeded(), reserveRetry: () => budget.reserveRetry() }));
           } catch (err) {
             seedResult = syntheticFail(seed, err);
           } finally {
@@ -200,7 +200,7 @@ export class CaptatumBulkUseCase {
           // The wall may have fired DURING the in-flight execute — disclose it (the result flows
           // straight here, not a record branch). transformReserved mirrors before.runTransform.
           if (signal.aborted) record("bulk_deadline_exceeded");
-          const after = budget.afterSeed({ bytes: seedResult.egressBytes ?? seedResult.bytes, costUsd: seedResult.transform?.costUsd, inTokens: seedResult.transform?.inTokens, outTokens: seedResult.transform?.outTokens, transformReserved: before.runTransform });
+          const after = budget.afterSeed({ bytes: seedResult.egressBytes ?? seedResult.bytes, costUsd: seedResult.transform?.costUsd, inTokens: seedResult.transform?.inTokens, outTokens: seedResult.transform?.outTokens, transformReserved: before.runTransform, ...(retried ? { byteUnits: 2 } : {}) });
           if (after.shortCircuit) {
             shortCircuit = shortCircuit ?? budgetMsg(after.reason as BudgetCapReason);
             record(`bulk_budget_exceeded:${after.reason}`);

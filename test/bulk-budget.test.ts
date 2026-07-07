@@ -115,3 +115,20 @@ test("BudgetTracker: cancelReservation releases a dispatch reservation without r
   t.afterSeed({ bytes: 60, transformReserved: again.runTransform });
   assert.equal(t.bytesUsed, 60);
 });
+
+test("BudgetTracker: reserveRetry reserves a 2nd byte unit but skips when it would breach the cap (codex P2)", () => {
+  const clock = fakeClock();
+  // perSeed 60, cap 100: beforeSeed reserves 60 (fits); a retry's 2nd 60 (60+60=120 > 100) → skip.
+  const t = new BudgetTracker({ clock, maxGlobalEgressBytes: 100, maxGlobalWallMs: 5000, maxTransformCostUsd: 1, perSeedTransformCostUsd: 0.02, perSeedMaxBytes: 60 });
+  const b = t.beforeSeed();
+  assert.equal(b.dispatch, true);
+  assert.equal(t.reserveRetry(), false, "the retry's 2nd 60MB fetch would breach the 100MB cap → skip the retry");
+  t.afterSeed({ bytes: 60, transformReserved: b.runTransform }); // settled with 1 unit only
+
+  // perSeed 60, cap 200: the retry's 2nd 60 fits (60 reserved + 60 retry = 120 ≤ 200) → reserve + release 2.
+  const t2 = new BudgetTracker({ clock, maxGlobalEgressBytes: 200, maxGlobalWallMs: 5000, maxTransformCostUsd: 1, perSeedTransformCostUsd: 0.02, perSeedMaxBytes: 60 });
+  const b2 = t2.beforeSeed();
+  assert.equal(t2.reserveRetry(), true, "the retry's 2nd 60MB fits under 200MB");
+  const after = t2.afterSeed({ bytes: 120, transformReserved: b2.runTransform, byteUnits: 2 }); // both attempts' egress, release 2 units
+  assert.equal(after.shortCircuit, false, "120 ≤ 200 → no breach");
+});

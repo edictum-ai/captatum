@@ -543,6 +543,24 @@ test("bulk retry: a 429 with NO retryAfterMs is NOT retried (single attempt, no 
   assert.ok(!res.results[0].warnings.some((w) => w.code === "bulk_retried_429"), "no retry warning");
 });
 
+test("bulk retry: Retry-After:0 ENABLES the retry (codex P3 — truthiness dropped 0)", async () => {
+  // Retry-After:0 (or a past HTTP-date → 0) is a valid "retry now" signal. The parse must keep it
+  // (was: `parseRetryAfter(...) ?` dropped 0 → no retryAfterMs → retry skipped exactly when asked to retry now).
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", okResult("https://a.test/x"));
+  let calls = 0;
+  const realExec = exec.execute.bind(exec);
+  exec.execute = async (input: unknown, ctx?: CaptatumContext) => {
+    calls++;
+    const url = (input as { url: string }).url;
+    if (calls === 1) return { ...rejectResult(url, "http_429", "Too Many Requests"), code: 429, retryAfterMs: 0 };
+    return realExec(input, ctx);
+  };
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1 }).execute({ urls: ["https://a.test/x"] });
+  assert.equal(calls, 2, "Retry-After:0 → the retry happened");
+  assert.ok(res.results[0].warnings.some((w) => w.code === "bulk_retried_429"), "retry warning present");
+});
+
 test("bulk retry: BOTH attempts' egress is counted (the 429 body is real network egress, BULK-5 on retry)", async () => {
   // First attempt: 429 with a 1000-byte body + Retry-After. Second attempt: 200 with a 500-byte body.
   // The seed's egressBytes must be 1500 (both attempts), not just the retry's 500.

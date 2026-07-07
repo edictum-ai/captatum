@@ -104,17 +104,32 @@ export class BudgetTracker {
     return { dispatch: true, runTransform };
   }
 
+  /** Reserve an ADDITIONAL per-seed byte unit for a 429/503 retry (the retry does a second fetch
+   *  of up to `perSeedMaxBytes`; `beforeSeed` reserved only one). Returns false (skip the retry)
+   *  when the second fetch's egress would not fit under the global byte cap — so a retried seed
+   *  cannot push egress past the hard cap (codex P2). The unit is released in `afterSeed` via
+   *  `byteUnits`. */
+  reserveRetry(): boolean {
+    if (this.bytesSettled + this.bytesReserved + this.opts.perSeedMaxBytes > this.opts.maxGlobalEgressBytes) {
+      return false;
+    }
+    this.bytesReserved += this.opts.perSeedMaxBytes;
+    return true;
+  }
+
   /** Release a seed's reservation + record its ACTUAL bytes/cost, then re-check the global
    *  caps. `transformReserved` MUST mirror the `runTransform` returned by this seed's
-   *  `beforeSeed` (the caller threads it through the await). */
+   *  `beforeSeed` (the caller threads it through the await). `byteUnits` is the number of
+   *  perSeedMaxBytes reservations held for this seed (1 normally, 2 if a retry was reserved). */
   afterSeed(args: {
     bytes: number;
     costUsd?: number;
     inTokens?: number;
     outTokens?: number;
     transformReserved: boolean;
+    byteUnits?: number;
   }): AfterSeed {
-    this.bytesReserved -= this.opts.perSeedMaxBytes;
+    this.bytesReserved -= this.opts.perSeedMaxBytes * (args.byteUnits ?? 1);
     this.bytesSettled += args.bytes;
     if (args.transformReserved) {
       this.costReserved -= this.opts.perSeedTransformCostUsd;

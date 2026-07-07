@@ -20,6 +20,9 @@ export interface SeedRetryCtx {
   signal: AbortSignal;
   /** Returns true when the bulk wall deadline has passed (stop retrying). */
   wallExceeded: () => boolean;
+  /** Reserve an additional per-seed byte unit for the retry's second fetch; returns false (skip
+   *  the retry) when it would not fit under the global byte cap (codex P2). */
+  reserveRetry: () => boolean;
 }
 
 /** Run a seed once; if the result is a retriable 429/503 with a `retryAfterMs` and
@@ -36,6 +39,9 @@ export async function executeSeedWithRetry(
   const first = await run();
   if (!isRetriable(first) || first.retryAfterMs === undefined) return { result: first, retried: false };
   if (ctx.signal.aborted || ctx.wallExceeded()) return { result: first, retried: false };
+  // Reserve a second per-seed byte unit for the retry's fetch; if it would breach the global byte
+  // cap, skip the retry (settle with the first attempt) — codex P2.
+  if (!ctx.reserveRetry()) return { result: first, retried: false };
   const wait = Math.min(RETRY_WAIT_CAP_MS, first.retryAfterMs) + randomInt(0, RETRY_JITTER_MAX_MS);
   await abortableSleep(wait, ctx.signal);
   if (ctx.signal.aborted || ctx.wallExceeded()) return { result: first, retried: false };
