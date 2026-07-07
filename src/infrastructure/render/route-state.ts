@@ -76,8 +76,7 @@ export class RenderRouteState {
     this.mainHost = hostnameOf(input.url);
     // Computed ONCE from the page URL; the POST first-party scope never expands mid-render (security property).
     this.mainRegistrableDomain = registrableDomain(this.mainHost);
-    // POST body cap = min(postMaxBytes, maxBytes) (codex R9 P2): POST bodies are counted in the render
-    // egress pool, so a body > maxBytes would breach the renderEgressUnits(maxBytes) reservation on low-maxBytes bulk.
+    // POST body cap = min(postMaxBytes, maxBytes) (codex R9 P2): POST bodies count in the render egress pool, so a body > maxBytes would breach the renderEgressUnits(maxBytes) reservation on low-maxBytes bulk.
     this.postMaxBytes = Math.min(config.render.postMaxBytes(), input.maxBytes);
     this.postSemaphore = new Semaphore(config.render.postConcurrency());
     this.fetchSem = new AsyncSemaphore(RENDER_FETCH_CONCURRENCY);
@@ -204,16 +203,17 @@ export class RenderRouteState {
     if (plan.kind === "abort") return this.abort(route, url, resourceType, plan.reason);
     if (this.pool.isExceeded(true)) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     if (!this.postSemaphore.tryAcquire()) return this.abort(route, url, resourceType, "render_concurrency_limit");
-    this.pool.add(true, plan.body.byteLength); // reserve the request body at dispatch; released on reject
-    if (this.pool.used(true) > this.pool.cap(true)) this.pool.markExceeded(true); // crossing reservation marks the pool blown synchronously (#111 codex P2)
     try {
       await this.fetchSem.acquire(); // POST fetches bounded by the render fetch semaphore too (codex R13 P2)
-      if (!this.postAcquireGate(true)) { this.pool.releaseUnsentEssential(plan.body.byteLength); return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted"); }
+      if (!this.postAcquireGate(true)) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
+      // Reserve + count the body POST re-gate (committed to send) — NOT at dispatch, which held essentialExceeded while queued + blocked other essentials (codex P2).
+      this.pool.add(true, plan.body.byteLength);
+      if (this.pool.used(true) > this.pool.cap(true)) this.pool.markExceeded(true);
       let outcome;
       try { outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit); }
       finally { this.fetchSem.release(); }
       if (outcome.kind === "reject") {
-        this.pool.releaseEssential(plan.body.byteLength);
+        this.pool.releaseEssential(plan.body.byteLength); // resolve rejected before the body counted as egress → release
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
       }
       if (this.pool.isExceeded(true)) { // a concurrent POST blew the pool in flight; the POST fully egressed (body+response) — count both + host, then abort (codex R4 P2).

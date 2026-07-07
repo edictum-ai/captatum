@@ -27,20 +27,8 @@ export class RenderBytePool {
   add(essential: boolean, bytes: number): void {
     if (essential) this.essential += bytes; else this.nonEssential += bytes;
   }
-  /** Release essential bytes for a POST body whose request was REJECTED after resolve() ran — the body
-   *  may already have egressed (e.g. body_read_error returns only after fetchGuarded has a response
-   *  stream), so the bytes still count; do NOT clear the exceeded flag (codex P2 on #147: clearing here
-   *  would reopen the pool for bytes that were actually sent). */
+  /** Release essential bytes for a POST body whose resolve() rejected before the body counted as egress
+   *  (e.g. an SSRF guard reject before the request was sent). The body is reserved only post-re-gate, so
+   *  this never reopens a speculative dispatch reservation. */
   releaseEssential(bytes: number): void { this.essential -= bytes; }
-
-  /** Release essential bytes for a POST body reservation that NEVER egressed — the post-acquire re-gate
-   *  aborted before resolve() ran, so the body was never sent. Such a reservation can transiently mark
-   *  the pool exceeded (markExceeded at dispatch); clear the flag when used drops back to/under the cap
-   *  so later essentials are not falsely aborted despite unused budget. DoS-safe: `essential` still
-   *  bounds cumulative egress, and the flag only re-opens budget that genuinely exists (the fetchSem
-   *  re-gate still bounds concurrent past-the-gate fetches to N → used ≤ cap + N×maxBytes). */
-  releaseUnsentEssential(bytes: number): void {
-    this.essential -= bytes;
-    if (this.essentialExceeded && this.essential <= this.essentialCap) this.essentialExceeded = false;
-  }
 }

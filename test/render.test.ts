@@ -307,25 +307,19 @@ test("RenderBytePool: essentials cross → crosser counted + pool marked exceede
   // Once exceeded, handle()'s pre-fetch isExceeded check aborts s3/s4 before network (no add).
 });
 
-test("RenderBytePool: releaseUnsentEssential clears the exceeded flag (unsent body); releaseEssential preserves it (sent-body reject) (codex P2 on #147)", () => {
-  // A POST body reservation can transiently mark the essential pool exceeded (markExceeded at dispatch).
-  // releaseUnsentEssential (the post-acquire re-gate abort — body NEVER sent) clears the flag when used
-  // drops back to/under the cap. releaseEssential (the resolve() reject path — body MAY have egressed)
-  // does NOT clear: those bytes may be real egress, so reopening the pool would let later essentials
-  // exceed the cap (codex P2).
-  const pool = new RenderBytePool(100, 50); // essentialCap 100, nonEssentialCap 50
-  pool.add(true, 95);                        // 95 ≤ 100, not exceeded
-  pool.add(true, 10);                        // 105 > 100 — a transient body reservation
+test("RenderBytePool: the essential exceeded flag is sticky for real egress (a POST body is reserved only post-re-gate, so it never sets a transient dispatch flag — codex P2 root fix on #147)", () => {
+  // The body is reserved AFTER the post-acquire re-gate (the POST is committed to send), not at dispatch,
+  // so an unsent body can no longer transiently mark the pool exceeded. A real crossing (actual egress)
+  // sets the flag via markExceeded and it stays sticky (the DoS backstop); releaseEssential only reverses
+  // a resolve() reject that happened before the body counted as egress.
+  const pool = new RenderBytePool(100, 50);
+  pool.add(true, 95);
+  assert.equal(pool.isExceeded(true), false);
+  pool.add(true, 20);                        // 115 > 100 — real egress crossing
   pool.markExceeded(true);
   assert.equal(pool.isExceeded(true), true);
-  pool.releaseUnsentEssential(10);           // unsent body (re-gate abort) → 95 ≤ 100 → flag clears
-  assert.equal(pool.isExceeded(true), false, "releaseUnsentEssential clears the flag when used drops under the cap");
-  // A sent-body reject: the body egressed, so it still counts — releaseEssential must NOT clear.
-  pool.add(true, 20);                        // 115 > 100 — real egress (a script) crossing
-  pool.markExceeded(true);
-  assert.equal(pool.isExceeded(true), true);
-  pool.releaseEssential(20);                 // a resolve() reject after the body was sent → 95 ≤ 100, but...
-  assert.equal(pool.isExceeded(true), true, "releaseEssential (sent-body reject) preserves the flag — the bytes may have egressed");
+  pool.releaseEssential(5);                  // a pre-send reject partial release → 110, still > 100
+  assert.equal(pool.isExceeded(true), true, "a real crossing stays exceeded (releaseEssential does not clear the flag)");
 });
 
 
@@ -397,6 +391,41 @@ test("render byte budget bounds a CONCURRENT GET+POST burst — the POST path's 
   assert.ok(egress < 70 * 1024 * 1024, `POST re-gate bounded the mixed burst (codex P1 gap was ~76MB); got ${egress}`);
   assert.ok(egress >= ESSENTIAL_RENDER_BYTES, `the burst crossed the cap (GETs+POSTs did load); got ${egress}`);
 });
+
+test("POST body is reserved POST re-gate, not at dispatch — a POST queued at fetchSem does NOT reserve its body (codex P2 root fix on #147)", async () => {
+  // Root fix for codex P2 r3: the body is reserved AFTER the post-acquire re-gate (POST committed to send),
+  // not at dispatch. So a POST queued behind occupied fetchSem permits can't transiently mark the pool
+  // exceeded + block other essentials during the wait. Verified by holding both permits with never-resolving
+  // GETs, dispatching a POST (it queues), and asserting its body was NOT counted. The sync FakeFetcher can't
+  // reproduce this (it never holds fetchSem), so this uses a delaying fetcher.
+  let releaseGets: () => void = () => {};
+  const getBlocked = new Promise<void>((r) => { releaseGets = r; });
+  const fetcher: FetcherPort = {
+    async fetchGuarded(url: string): Promise<FetcherResult | RejectResult> {
+      if (url.includes("/get")) await getBlocked;
+      const b = new TextEncoder().encode("x");
+      return { status: 200, finalUrl: url, redirects: [], bodyStream: new ReadableStream({ start(c) { c.enqueue(b); c.close(); } }), contentType: "application/json", bytes: 1 };
+    },
+  };
+  const state = new RenderRouteState(renderInput(fetcher, { maxBytes: 1024 * 1024 }), [], new FakeGuard({}));
+  const mk = (u: string, method: "GET" | "POST"): PlaywrightRoute => ({
+    request: () => ({
+      url: () => u, method: () => method, resourceType: () => "fetch", isNavigationRequest: () => false, frame: () => null,
+      ...(method === "POST" ? { headers: () => ({ "content-type": "application/json", "content-length": "1024" }), postDataBuffer: () => new Uint8Array(1024) } : {}),
+    }),
+    fulfill: async () => {}, abort: async () => {}, continue: async () => {},
+  } as unknown as PlaywrightRoute);
+  const g1 = state.handle(mk("https://public.test/get1", "GET")); // occupy permit 1 (blocks forever)
+  const g2 = state.handle(mk("https://public.test/get2", "GET")); // occupy permit 2 (blocks forever)
+  await new Promise((r) => setTimeout(r, 20));                     // let both GETs reach + hold fetchSem
+  const before = state.egressBytes();
+  const post = state.handle(mk("https://public.test/api/p", "POST")); // queues at fetchSem (both permits held)
+  await new Promise((r) => setTimeout(r, 20));                     // let the POST reach fetchSem.acquire (queued)
+  assert.equal(state.egressBytes(), before, `the queued POST did NOT reserve its body (reserved post-re-gate, not at dispatch — codex P2 root fix); gained ${state.egressBytes() - before}`);
+  releaseGets();
+  await Promise.allSettled([g1, g2, post]);
+});
+
 
 test("renderer concatenates captured iframe content into the rendered HTML", async () => {
   const harness = new BrowserHarness({
