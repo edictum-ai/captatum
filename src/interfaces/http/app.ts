@@ -10,6 +10,7 @@ import { createCloudflareAccessJwtVerifier } from "../../infrastructure/auth/clo
 import { registerOAuthRoutes } from "./oauth-routes.ts";
 import { registerMcpRoute } from "./mcp-route.ts";
 import { sendHttpError } from "./errors.ts";
+import type { CaptatumBulkMcpExecutor } from "../mcp/server.ts";
 
 export interface HttpAppDeps {
   captatum: Pick<CaptatumUseCase, "execute" | "defaultOutput">;
@@ -19,6 +20,8 @@ export interface HttpAppDeps {
   store?: StorePort;
   allowedHosts: string[];
   allowedOrigins: string[];
+  /** Raw captatum_bulk use case; absent when CAPTATUM_BULK_ENABLED is off (hosted). */
+  bulk?: CaptatumBulkMcpExecutor;
 }
 
 /**
@@ -50,9 +53,12 @@ export function assertHostedFlavor(runtime: AuthRuntimeConfig): void {
 
 export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance> {
   assertHostedFlavor(deps.runtime);
-  // requestTimeout (90s) bounds the whole request — defense-in-depth beyond the
-  // per-tier timeoutMs cap (60s) so a hijacked/slow stream can't pin a connection.
-  const app = Fastify({ logger: false, bodyLimit: config.http.bodyLimitBytes, requestTimeout: 90_000 });
+  // requestTimeout bounds the whole request — defense-in-depth beyond the per-tier timeoutMs cap
+  // (60s) so a hijacked/slow stream can't pin a connection. When bulk is enabled, the bulk wall is
+  // 180s, so the HTTP timeout must cover it (+20s margin for assembly/audit/network) — otherwise a
+  // legitimate 90-180s bulk is cut off before returning its partial receipt.
+  const requestTimeout = deps.bulk ? 200_000 : 90_000;
+  const app = Fastify({ logger: false, bodyLimit: config.http.bodyLimitBytes, requestTimeout });
   app.setErrorHandler((error, _request, reply) => sendHttpError(reply, error));
   app.get("/healthz", async () => ({ status: "ok" }));
 
@@ -87,6 +93,7 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
     hosted: deps.runtime.flavor === "hosted",
     allowedHosts: deps.allowedHosts,
     allowedOrigins: deps.allowedOrigins,
+    ...(deps.bulk !== undefined ? { bulk: deps.bulk } : {}),
   });
   return app;
 }

@@ -5,7 +5,7 @@ import type { ClockPort } from "../../application/ports/clock.ts";
 import type { RequestAuthorizer } from "../../application/use-cases/request-auth.ts";
 import type { CaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import { config } from "../../config.ts";
-import { createCaptatumMcpServer, OverloadedError } from "../mcp/server.ts";
+import { createCaptatumMcpServer, OverloadedError, type CaptatumBulkMcpExecutor } from "../mcp/server.ts";
 import { sendMcpAuthError } from "./errors.ts";
 
 export interface McpRouteDeps {
@@ -16,6 +16,10 @@ export interface McpRouteDeps {
   hosted: boolean;
   allowedHosts: string[];
   allowedOrigins: string[];
+  /** Raw captatum_bulk use case (constructed with the UNWRAPPED captatum executor). When
+   *  present, the route wraps its `execute` with one admission slot; inner per-seed fan-out
+   *  takes no slots (bounded by the BulkGuard). Absent on hosted when CAPTATUM_BULK_ENABLED is off. */
+  bulk?: CaptatumBulkMcpExecutor;
 }
 
 export async function registerMcpRoute(app: FastifyInstance, deps: McpRouteDeps): Promise<void> {
@@ -81,6 +85,9 @@ async function handleMcpPost(
   // and retries — not the generic InternalError it used to collapse to. (#84)
   const mcp = createCaptatumMcpServer({
     captatum: withAdmission(deps.captatum, mcpAdmission),
+    // The bulk CALL takes one admission slot (the orchestrator holds the UNWRAPPED captatum
+    // executor, so per-seed fan-out takes none). Absent → bulk not listed/dispatched.
+    bulk: deps.bulk ? withBulkAdmission(deps.bulk, mcpAdmission) : undefined,
     auth,
     audit: deps.audit,
     clock: deps.clock,
@@ -113,6 +120,25 @@ export function withAdmission(
       }
     },
     defaultOutput: inner.defaultOutput,
+  };
+}
+
+/** Wraps a captatum_bulk executor so the whole bulk CALL acquires/releases ONE admission
+ *  slot (DOS-2). Per-seed fan-out inside the orchestrator takes no slots — the orchestrator
+ *  holds the UNWRAPPED captatum executor. OverloadedError fires only at the bulk-call
+ *  boundary (retryable, whole-call), never swallowed as a per-seed error. */
+export function withBulkAdmission(inner: CaptatumBulkMcpExecutor, limiter: AdmissionLimiter): CaptatumBulkMcpExecutor {
+  return {
+    execute: async (...args: Parameters<CaptatumBulkMcpExecutor["execute"]>) => {
+      if (!limiter.tryAcquire()) {
+        throw new OverloadedError("captatum: server overloaded — too many concurrent bulk calls");
+      }
+      try {
+        return await inner.execute(...args);
+      } finally {
+        limiter.release();
+      }
+    },
   };
 }
 

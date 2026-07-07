@@ -156,8 +156,8 @@ to a legitimate host AND the directed-DoS bound against a victim:
 
 | Attack class | Bound |
 | --- | --- |
-| Directed DoS to a victim (count) | `maxPerHostInBulk` (10), **union-keyed on egress hosts** (seed registrable domain ∪ redirect hosts ∪ `finalUrl` ∪ Tier-2-resolved). Pre-egress: truncate each seed domain; post-egress: abort further seeds to a host over the cap (`bulk_per_host_cap`). Honest worst case: a victim is added to the union only after a seed settles, so the per-victim SEED count can reach `maxPerHostInBulk + maxConcurrency - 1` (= 13 seeds; ≤ × `maxHops` REQUESTS) AND the union token bucket can't gate the undiscovered victim, so the first "discovery wave" (≤ `maxConcurrency` = 4 seeds) hits it concurrently (a one-time burst); `maxPerHostInflight` rate-bounds only SUBSEQUENT seeds. See "In-flight discovery overshoot" in contracts.md. |
-| Directed DoS to a victim (rate) | `maxPerHostInflight` (2, configurable) token-bucket burst + `crawlDelayMs` (1000, 500 floor) refill, union-keyed. Cross-domain: the global `maxConcurrency` (4) is shared across all hosts, lowering per-host rate when many hosts are in flight. |
+| Directed DoS to a victim (count) | `maxPerHostInBulk` (10), **union-keyed on egress hosts** (seed registrable domain ∪ redirect hosts ∪ `finalUrl` ∪ Tier-2-resolved, incl. failed-redirect targets). Pre-egress: truncate each seed domain; post-egress: quarantine (stop dispatching) once a redirect-discovered victim crosses the cap. Honest worst case: a victim is added to the union only after a seed settles, so the redirect-discovery wave (≤ `maxConcurrency` = 4) can push the per-victim SEED count to `maxPerHostInBulk + maxConcurrency` (= 14 worst case; pure-direct floods are tighter at `maxPerHostInBulk` via shaping). Per-victim REQUEST count ≤ that × `maxHops`. See "In-flight discovery overshoot" in contracts.md. |
+| Directed DoS to a victim (rate) | `maxPerHostInflight` (2, configurable) token-bucket burst + `crawlDelayMs` (1000, 500 floor) refill, keyed on the SEED registrable domain in v1 (the only host known pre-egress — NOT union-keyed). It rate-bounds a victim only when the victim IS a seed domain (direct flood) or a repeating funnel source; a pure cross-domain funnel victim is rate-bounded only by the global `maxConcurrency` (4) semaphore in v1. Union-keyed rate spacing lands with the quarantine hardening. |
 | Unbounded crawl | `maxUrls` (50 raw / 10 summary\|extract) total + seed-list-only (no discovery/recursion/`depth`) + per-host count cap. |
 | Egress amplification (bandwidth) | `maxGlobalEgressBytes` (100 MB), host-agnostic global sum from `result.bytes`. Worst-case aggregate is ~120 MB (in-flight overshoot ≤ `maxConcurrency × perSeedMaxBytes` = 4 × 5 MB before the post-seed re-check; a PR 2 dispatch-time reservation tightens it). |
 | Browser time / OOM | `maxGlobalWallMs` (180 s) — dispatch-level wall in v1 (PR 2 makes it fetch-aborting via the `CaptatumContext.signal`); render-on-bulk is **rejected** in v1 (`bulk_render_not_supported`), so `maxRenderedSeeds` is inactive until render-on-bulk lands. |
@@ -411,9 +411,32 @@ and a caller who fetches a presigned SOURCE url is still blocked at the source c
   cross-domain directed-DoS fixture (seeds on N distinct domains all 302→victim)
   asserting the union-keyed count cap aborts the overflow; (d) a Tier-3 bulk
   regression asserting every render subrequest routes through `route.fulfill` /
-  `fetchGuarded` AND `maxRenderedSeeds` short-circuits; (e) a global
-  fetch-concurrency cap (`LimitingFetcher`) + per-tenant `BulkQuotaPort` have
-  landed; (f) a REAL 50-URL run (not a synthetic green fixture) verifying
+  `fetchGuarded` AND `maxRenderedSeeds` short-circuits (N/A in v1 — bulk rejects
+  `allowRender:true`, so zero renders: the regression is the reject itself); (e) a
+  global fetch-concurrency cap (`LimitingFetcher`) + per-tenant `BulkQuotaPort`
+  have landed; (f) a REAL 50-URL run (not a synthetic green fixture) verifying
   egress-byte accounting and wall-clock against the 2 vCPU / 4 GiB sizing (the
-  cerebralvalley render-byte-budget lesson). Local-flavor bulk may ship once
-  (a)–(d) pass (single-user, no multi-tenant amplification).
+  cerebralvalley render-byte-budget lesson). **v1 status (PR 2):** (a)–(d) + (f)
+  pass — the local flavor ships ON; (b) drives the REAL `GuardedHttpFetcher`
+  through the orchestrator (`test/bulk-ssrf.test.ts`); (f) ran via
+  `src/dev/bulk-probe.ts` (49 real URLs → 7.88 MB egress, ~79–111 s wall, under
+  the 100 MB / 180 s caps; per-host cap truncated a 13-seed host to 10). (e)
+  (`LimitingFetcher` + `BulkQuotaPort`) remains the hosted-enablement gate — PR 3.
+  **Funnel bound (quarantine):** once a REDIRECT-discovered victim (a host in a seed's
+  union that is NOT its own seed domain) crosses `maxPerHostInBulk`, the orchestrator
+  QUARANTINES — it stops dispatching the remaining seeds (a one-time global pause on
+  further dispatch; in-flight seeds finish). This bounds the per-victim SEED count at
+  `maxPerHostInBulk + maxConcurrency` (= 14 at the defaults) worst case: a redirect-
+  discovery wave can be up to `maxConcurrency` wide (the victim is undiscovered until the
+  first funnel seed settles, by which time up to `maxConcurrency` are in flight). Pure-
+  direct floods are tighter (`maxPerHostInBulk` via shaping + the pre-egress seed-domain
+  check); pure-redirect ≈ `maxPerHostInBulk + maxConcurrency - 1`. Tightening the mix case
+  to `+ maxConcurrency - 1` would require quarantining on ANY host reaching the cap
+  (including direct), which over-truncates legitimate multi-host bulks — not worth the UX
+  cost for one fewer seed at the victim. The per-victim REQUEST count is the seed count ×
+  `maxHops` (victim-controlled redirects). A legitimate cross-domain bulk where each seed
+  redirects to a DISTINCT destination is NOT quarantined (no host crosses the cap). Residual
+  (BULK-4): directed-DoS to a victim is inherent to any bulk tool — these caps bound it to
+  ≤ 14 seeds/call, they do not eliminate it; and the quarantine is intentionally coarse (it
+  pauses all further dispatch once any victim is discovered, so innocent seeds in the same
+  call may also be aborted — the caller retries them).

@@ -30,11 +30,15 @@ export interface TransformResult {
 
 export class TransformError extends Error {
   readonly code: string;
+  /** The accumulated billed cost across all attempts before the failure (so the caller — and the
+   *  bulk budget tracker — can account for spend even on a failed transform). */
+  readonly costUsd?: number;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, costUsd?: number) {
     super(message);
     this.name = "TransformError";
     this.code = code;
+    this.costUsd = costUsd;
   }
 }
 

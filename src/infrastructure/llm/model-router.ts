@@ -108,6 +108,7 @@ export class LlmTransformer implements TransformPort {
     let best: TransformResult | undefined;
     let budgetFloor = input.budget; // grows on truncation
     let escalations = 0; // truncation-budget retries only — hard-fail fallback is candidate-bound
+    let accumulatedCostUsd = 0; // sum EVERY billable attempt (escalation/fallback re-bills input); only the last was recorded before, so a paid-fallback truncation silently undercounted spend vs the bulk cost cap
     for (;;) {
       // Reserve what this attempt will request so a long page is not rejected for a model MAX it won't use (codex P2 #125).
       const pick = this.router.pick(input.mode, inTokens, { ...baseOptions, exclude: tried, reserveOutputTokens: budgetFloor ?? this.maxOutputTokensDefault });
@@ -117,6 +118,7 @@ export class LlmTransformer implements TransformPort {
         throw new TransformError(
           "transform_provider_failed",
           errorMessage(lastError, `All ${tried.length} candidate model(s) failed`),
+          accumulatedCostUsd || undefined,
         );
       }
       const provider = this.providers[pick.provider];
@@ -150,7 +152,7 @@ export class LlmTransformer implements TransformPort {
         process.stderr.write(`captatum transform: ${pick.model} failed: ${lastError.message}\n`);
         continue;
       }
-
+      accumulatedCostUsd += generated.costUsd ?? 0; // every successful (non-empty) generate bills
       const latencyMs = elapsed(started, this.nowMs());
       // Truncation is checked BEFORE finalize (#131 P2-B): a length-capped extract is incomplete
       // JSON, and finalize() would parse+throw extract_invalid_json before this branch could run.
@@ -168,12 +170,15 @@ export class LlmTransformer implements TransformPort {
             inTokens: generated.inTokens ?? inTokens,
             outTokens: generated.outTokens ?? estimateTokens(generated.text),
             latencyMs,
-            costUsd: generated.costUsd,
+            costUsd: accumulatedCostUsd,
             ...(tried.length > 0 ? { fallbackFrom: tried.join(", ") } : {}),
             truncated: true,
           },
         };
         if (!best || truncatedResult.result.length > best.result.length) best = truncatedResult; // keep longest truncation
+        // Sync best's cost even when this truncation was SHORTER (best not replaced) — otherwise a
+        // later billed attempt's cost is dropped from the returned TransformResult (codex P2).
+        best = { ...best, info: { ...best.info, costUsd: accumulatedCostUsd } };
         if (typeof input.budget === "number" && input.budget > 0) return best; // explicit caller budget is a hard ceiling — do not escalate past it (codex P2 #125)
         // Escalate to the model's full cap, bounded by remaining context so a long page isn't rejected for a model MAX the context can't hold (codex P2 #125).
         const ceiling = Math.min(modelMax, (pick.contextTokens ?? MAX_OUTPUT_TOKENS_CAP) - inTokens);
@@ -185,7 +190,17 @@ export class LlmTransformer implements TransformPort {
         continue;
       }
 
-      const finalized = finalize(input, generated.text, pick.model, this.router, generated.outTokens);
+      let finalized;
+      try {
+        finalized = finalize(input, generated.text, pick.model, this.router, generated.outTokens);
+      } catch (error) {
+        // finalize threw (e.g. extract_invalid_json) AFTER billing — re-throw with accumulated cost.
+        throw new TransformError(
+          error instanceof TransformError ? error.code : "extract_finalize_failed",
+          errorMessage(error, "Extract finalize failed"),
+          accumulatedCostUsd || undefined,
+        );
+      }
       return {
         result: finalized.result,
         info: {
@@ -195,7 +210,7 @@ export class LlmTransformer implements TransformPort {
           inTokens: generated.inTokens ?? inTokens,
           outTokens: finalized.outTokens,
           latencyMs,
-          costUsd: generated.costUsd,
+          costUsd: accumulatedCostUsd,
           ...(finalized.schemaIssue ? { schemaIssue: finalized.schemaIssue } : {}),
           ...(tried.length > 0 ? { fallbackFrom: tried.join(", ") } : {}),
         },

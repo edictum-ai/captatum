@@ -29,6 +29,9 @@ export interface ToolAuditEvent {
   /** Per-bulk-call correlation id when `tool === "captatum_bulk"`. Present on every
    *  per-seed event in a bulk + the one summary event, so a sink can group them. */
   bulkId?: string;
+  /** Which BulkGuard caps short-circuited the run. Present only on the captatum_bulk
+   *  SUMMARY event (one per call); per-seed events omit it. Empty/absent = no breach. */
+  capBreaches?: string[];
   url_host?: string;
   tier?: string | number;
   platform?: string;

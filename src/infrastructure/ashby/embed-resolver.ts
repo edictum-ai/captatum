@@ -24,10 +24,13 @@ export function extractAshbyJid(url: string): string | null {
 export async function resolveAshbyEmbedUrl(
   url: string,
   fetcher: FetcherPort,
-  opts: { maxBytes: number; timeoutMs: number; maxHops: number },
+  opts: { maxBytes: number; timeoutMs: number; maxHops: number; signal?: AbortSignal },
 ): Promise<string | null> {
   const jid = extractAshbyJid(url);
   if (!jid) return null;
+  // The opts carry the caller's abort signal (the captatum_bulk wall deadline) so
+  // a bulk seed stuck resolving an Ashby embed aborts at the deadline instead of
+  // running to its own per-tier timeout. `opts` is structurally a FetcherOptions.
   const result = await fetcher.fetchGuarded(url, opts);
   if ("rejected" in result) return null;
   const html = await decodeBody(result.bodyStream, result.contentType);

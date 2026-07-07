@@ -289,6 +289,63 @@ test("#131 P2-B: a truncated extract escalates and completes instead of throwing
   assert.equal(result.info.truncated ?? false, false, "completed after escalation — no truncation advisory");
 });
 
+test("escalation accumulates cost across billable attempts (the bulk cost cap keys off this)", async () => {
+  // The truncated attempt bills $0.001, the escalated completion bills $0.002. Pre-fix only the
+  // LAST attempt's costUsd was returned ($0.002), so the bulk BudgetTracker undercounted real
+  // spend by the dropped escalation cost. Post-fix costUsd is the sum ($0.003).
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "paid/model", { free: false, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      const truncated = (input.maxOutputTokens ?? 0) < 30_000;
+      return truncated
+        ? { text: '{"title":"parti', truncated: true, costUsd: 0.001 }
+        : { text: '{"title":"Complete"}', costUsd: 0.002 };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const schema = { type: "object", required: ["title"], properties: { title: { type: "string" } } };
+  const result = await transformer.transform({ mode: "extract", output: "extract", content: "page", prompt: "p", schema });
+  assert.equal(result.info.costUsd, 0.003, "escalation accumulates both billable attempts");
+});
+
+test("a shorter later truncation still syncs best's cost (no dropped billed attempt)", async () => {
+  // Call 1 truncates LONG ($0.001); call 2 truncates SHORT ($0.002) so `best` is NOT replaced.
+  // Pre-fix best kept call 1's cost ($0.001), dropping call 2's spend. Post-fix best's cost is
+  // synced to the accumulated total ($0.003) even though it wasn't replaced.
+  let n = 0;
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "paid/model", { free: false, maxOutputTokens: 65_536 })],
+    async generate(): Promise<LlmGenerateResult> {
+      return n++ === 0
+        ? { text: "long truncated text here that is the best", truncated: true, costUsd: 0.001 }
+        : { text: "short", truncated: true, costUsd: 0.002 };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p" });
+  assert.equal(result.info.truncated, true, "the longer truncation is kept as best");
+  assert.equal(result.info.costUsd, 0.003, "best's cost includes the later (shorter) billed attempt");
+});
+
+test("a billed extract failure carries the cost (for the bulk cap — codex P1)", async () => {
+  // The provider bills $0.05 but returns invalid JSON → finalize throws. Pre-fix the thrown error
+  // carried no cost, so applyOutputMode + the bulk budget recorded $0 (the cap never tripped).
+  // Post-fix TransformError carries the accumulated cost.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "paid/model", { free: false })],
+    async generate(): Promise<LlmGenerateResult> { return { text: '{"invalid"', costUsd: 0.05 }; },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const schema = { type: "object", properties: { x: { type: "string" } } };
+  await assert.rejects(
+    transformer.transform({ mode: "extract", output: "extract", content: "page", prompt: "p", schema }),
+    (err: unknown) => err instanceof TransformError && err.costUsd === 0.05,
+  );
+});
+
 test("#131 P2-B: an extract that never completes surfaces truncated (never throws extract_invalid_json)", async () => {
   // The model always truncates, so the incomplete JSON is never parseable. Pre-fix this threw
   // extract_invalid_json; post-fix the cap escalates then surfaces the longest raw text as

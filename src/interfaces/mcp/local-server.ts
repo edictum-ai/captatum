@@ -10,6 +10,9 @@ import {
 } from "../../application/use-cases/oauth-config.ts";
 import { createRequestAuthorizer } from "../../application/use-cases/request-auth.ts";
 import { createCaptatumUseCase } from "../../application/use-cases/captatum.ts";
+import { createCaptatumBulkUseCase } from "../../application/use-cases/captatum-bulk.ts";
+import { createAdapterRegistry } from "../../application/adapters.ts";
+import { config } from "../../config.ts";
 import type { HtmlExtractor } from "../../application/use-cases/tier1-extract.ts";
 import { createCaptatumMcpServer } from "./server.ts";
 
@@ -69,8 +72,21 @@ export async function createLocalMcpServer(deps: LocalMcpDeps): Promise<Server> 
     renderer: deps.renderer,
     clock: deps.clock,
   });
+  // Local flavor ships captatum_bulk ON (single-user; no admission cap, no BulkQuotaPort).
+  // Built with the UNWRAPPED captatum executor (per-seed fan-out is bounded by the BulkGuard).
+  const bulk = createCaptatumBulkUseCase({
+    executor: captatum,
+    adapters: createAdapterRegistry(),
+    clock: deps.clock,
+    operator: {
+      maxPerHostInflight: config.bulk.maxPerHostInflight(),
+      crawlDelayMs: config.bulk.crawlDelayMs(),
+      maxConcurrency: config.bulk.maxConcurrency(),
+    },
+  });
   return createCaptatumMcpServer({
     captatum,
+    bulk,
     auth,
     audit: deps.audit,
     clock: deps.clock,

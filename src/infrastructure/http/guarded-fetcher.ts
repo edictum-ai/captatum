@@ -36,19 +36,33 @@ export class GuardedHttpFetcher implements FetcherPort {
   async fetchGuarded(url: string, opts: FetcherOptions, postInit?: PostInit): Promise<FetcherResult | RejectResult> {
     const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    // Hoisted into fetchGuarded's scope so a reject (private redirect target, timeout mid-chain,
+    // network error) carries the redirect chain in the RejectResult — the bulk orchestrator
+    // counts redirect-funnel victims even when the final hop failed (directed-DoS accounting).
+    const redirects: Redirect[] = [];
 
     try {
       const timeoutMs = positive(opts.timeoutMs, "timeout");
       timeout = setTimeout(() => controller.abort(), timeoutMs);
+      // Compose the caller-supplied signal (e.g. the captatum_bulk wall deadline)
+      // with this fetch's own per-tier timeout controller, so EITHER firing aborts
+      // the in-flight request. The composed signal flows through throwIfAborted /
+      // withAbort / resolvePublicAddress exactly like the per-tier timeout, so an
+      // external abort surfaces as the same `code:"timeout"` reject. AbortSignal.any
+      // is already-aborted if `opts.signal` is, and throwIfAborted handles that on
+      // the next line of fetchWithRedirects. Omitted → falls back to the timeout
+      // controller alone (single-fetch behavior, unchanged).
+      const signal = opts.signal ? AbortSignal.any([controller.signal, opts.signal]) : controller.signal;
       return await this.fetchWithRedirects(
         normalizeInitialUrl(url),
         opts,
         timeoutMs,
-        controller.signal,
+        signal,
         postInit,
+        redirects,
       );
     } catch (error) {
-      return toRejectResult(error);
+      return toRejectResult(error, redirects);
     } finally {
       if (timeout) clearTimeout(timeout);
     }
@@ -59,11 +73,11 @@ export class GuardedHttpFetcher implements FetcherPort {
     opts: FetcherOptions,
     timeoutMs: number,
     signal: AbortSignal,
-    postInit?: PostInit,
+    postInit: PostInit | undefined,
+    redirects: Redirect[],
   ): Promise<FetcherResult> {
     const maxBytes = positive(opts.maxBytes, "maxBytes");
     const maxHops = nonNegative(opts.maxHops, "maxHops");
-    const redirects: Redirect[] = [];
     let current = initial;
 
     for (;;) {

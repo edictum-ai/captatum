@@ -5,6 +5,12 @@ export interface FetcherOptions {
   timeoutMs: number;
   /** Maximum redirect hops, each re-validated against SSRF guards. */
   maxHops: number;
+  /** Optional external abort signal (e.g. the `captatum_bulk` wall deadline). When
+   *  present, the guarded fetcher composes it with its own per-tier timeout
+   *  controller via `AbortSignal.any`, so EITHER firing aborts the in-flight
+   *  request (surfaced as a `code:"timeout"` reject, same as a per-tier timeout).
+   *  Additive + optional: single-fetch callers omit it and behavior is unchanged. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -68,6 +74,11 @@ export interface RejectResult {
   rejected: true;
   code: string;
   message: string;
+  /** Redirect chain followed before the reject (e.g. a 302 to a host that then timed out or
+   *  was SSRF-rejected). Carried so the orchestrator can count redirect-funnel victims even
+   *  when the final hop failed (directed-DoS accounting). Absent/empty when the reject happened
+   *  before any redirect (e.g. a private-address literal at initial resolve). */
+  redirects?: Redirect[];
 }
 
 /**
