@@ -21,6 +21,9 @@ export interface BulkOperatorConfig {
    *  default; a deployment may shorten the wall for its sizing, never lengthen it past the
    *  hard server cap). */
   readonly maxGlobalWallMs?: number;
+  /** Optional operator tightening of the per-host directed-DoS COUNT bound (lowering only —
+   *  clamped DOWN to the default 10; tightens the quarantine bound for a sensitive deployment). */
+  readonly maxPerHostInBulk?: number;
 }
 
 /** Caller per-call overrides (founder decision 9): only the cost knobs. Clamped
@@ -73,10 +76,14 @@ export function resolveBulkGuard(args: {
   const maxGlobalWallMs = op.maxGlobalWallMs !== undefined
     ? Math.min(BULK_GUARD_DEFAULTS.maxGlobalWallMs, Math.max(1, op.maxGlobalWallMs))
     : BULK_GUARD_DEFAULTS.maxGlobalWallMs;
+  // Operator may TIGHTEN the per-host directed-DoS count bound (lowering only, min 1).
+  const maxPerHostInBulk = op.maxPerHostInBulk !== undefined
+    ? Math.min(BULK_GUARD_DEFAULTS.maxPerHostInBulk, Math.max(1, op.maxPerHostInBulk))
+    : BULK_GUARD_DEFAULTS.maxPerHostInBulk;
   return {
     guard: {
       maxUrls: args.output === "raw" ? BULK_RAW_MAX_URLS : BULK_SUMMARY_MAX_URLS,
-      maxPerHostInBulk: BULK_GUARD_DEFAULTS.maxPerHostInBulk,
+      maxPerHostInBulk,
       maxGlobalEgressBytes: BULK_GUARD_DEFAULTS.maxGlobalEgressBytes,
       maxGlobalWallMs,
       maxConcurrency,

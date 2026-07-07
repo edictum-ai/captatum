@@ -345,3 +345,17 @@ test("bulk: a wall breach DURING an in-flight transform is recorded in capBreach
   const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1, maxGlobalWallMs: 1 }).execute({ urls: ["https://a.test/x"], output: "summary" });
   assert.ok(res.capBreaches.includes("bulk_deadline_exceeded"), "in-flight wall breach recorded in capBreaches");
 });
+
+test("bulk P1: a summary seed queued on the transform slot ABORTS (no fetch) after a HARD short-circuit (per-host quarantine)", async () => {
+  // summary caps at maxUrls=10 = maxPerHostInBulk default, so the quarantine fires only at the last
+  // seed (no queue) — UNREACHABLE at the defaults. Lower maxPerHostInBulk to 3 (operator-tighten)
+  // so the quarantine fires at the 3rd funnel seed; the remaining summary seeds, queued on the
+  // transform slot (serialize cap 1), must ABORT (not fetch) — was: downgraded to raw + executed.
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 10 }, (_, i) => `https://src${i}.test/p`);
+  for (const u of urls) exec.results.set(u, okResult(u, { output: "summary", redirects: ["https://victim.test/x"], finalUrl: "https://victim.test/x" }));
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4, maxPerHostInflight: 50, maxPerHostInBulk: 3 }).execute({ urls, output: "summary" });
+  const aborted = res.results.filter((r) => r.codeText === "bulk_per_host_cap");
+  assert.ok(aborted.length >= 1, "queued transform seeds aborted after the hard quarantine");
+  assert.ok(exec.calls < urls.length, `queued seeds did NOT fetch after the hard short-circuit; calls=${exec.calls} of ${urls.length}`);
+});
