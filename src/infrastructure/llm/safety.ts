@@ -142,24 +142,30 @@ export function detectSensitiveTransformInput(input: {
   return { sensitive: false };
 }
 
-/** Redact signed/tokenized query-param values from a URL before display (INFOLEAK-1). HOST-AGNOSTIC:
- *  uses a substring + URLSearchParams parse of the query (never `new URL(url)`, which throws on a
- *  malformed host and would fail-open, leaking the signature). Mirrors signedUrlReason's approach so
- *  detection + redaction agree on coverage. */
+/** Redact signed/tokenized param values from a URL before display (INFOLEAK-1). HOST-AGNOSTIC
+ *  (substring + URLSearchParams; never `new URL`, which throws on a malformed host + fails open).
+ *  Normalizes HTML-escaped separators (&amp;/&#38;/&#x26;) + redacts BOTH the query AND the
+ *  fragment (e.g. #access_token=…), so coverage matches signedUrlReason's detection. */
 export function redactSignedQueryParams(url: string): string {
-  const q = url.indexOf("?");
-  if (q < 0) return url;
-  const hashIdx = url.indexOf("#", q);
-  const queryEnd = hashIdx < 0 ? url.length : hashIdx;
-  const params = new URLSearchParams(url.slice(q + 1, queryEnd));
+  const normalized = url.replace(/&(amp|#38|#x26);/gi, "&");
+  const q = normalized.indexOf("?");
+  const hash0 = normalized.indexOf("#", q < 0 ? 0 : q);
+  let out = normalized;
+  if (q >= 0) out = redactParamRange(out, q, hash0 > q ? hash0 : normalized.length);
+  if (hash0 >= 0) { // re-find '#' (redacting the query may have shifted it) + redact the fragment
+    const hash = out.indexOf("#");
+    if (hash >= 0) out = redactParamRange(out, hash, out.length);
+  }
+  return out;
+}
+
+/** Redact signed-param values in the substring (sepIdx, end) of `s` (the query or fragment body). */
+function redactParamRange(s: string, sepIdx: number, end: number): string {
+  if (sepIdx < 0 || sepIdx + 1 >= end) return s;
+  const params = new URLSearchParams(s.slice(sepIdx + 1, end));
   let redacted = false;
   for (const key of params.keys()) {
-    if (SIGNED_QUERY_KEYS.has(key.toLowerCase())) {
-      params.set(key, "[REDACTED]");
-      redacted = true;
-    }
+    if (SIGNED_QUERY_KEYS.has(key.toLowerCase())) { params.set(key, "[REDACTED]"); redacted = true; }
   }
-  if (!redacted) return url;
-  const newQuery = params.toString();
-  return url.slice(0, q + 1) + newQuery + (hashIdx < 0 ? "" : url.slice(hashIdx));
+  return redacted ? s.slice(0, sepIdx + 1) + params.toString() + s.slice(end) : s;
 }

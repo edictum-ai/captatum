@@ -51,6 +51,14 @@ function envelope(bulk: BulkResult, tier: RowTier, debug: boolean): Record<strin
   };
 }
 
+/** Compact tier: clip each diagnostic message + cap the row count so long upstream/schema messages
+ *  can't overflow the 25 KB ceiling from warnings[]/errors[] (the codes are kept). */
+const COMPACT_DIAG_MSG_CHARS = 80;
+const COMPACT_MAX_DIAGS = 3;
+function compactDiags(diags: { code: string; message: string }[]): { code: string; message: string }[] {
+  return diags.slice(0, COMPACT_MAX_DIAGS).map((d) => ({ code: d.code, message: d.message.length > COMPACT_DIAG_MSG_CHARS ? `${d.message.slice(0, COMPACT_DIAG_MSG_CHARS - 1)}…` : d.message }));
+}
+
 /** Redact signed query params from EVERY failure URL (a failed/rejected presigned seed would
  *  leak its signature into structuredContent otherwise — single-fetch redacts; bulk matches) +
  *  clip + cap on the compact tier. The envelope's `failed` count still reports the true total. */
@@ -83,8 +91,10 @@ function leanRow(r: BulkSeedResult, tier: RowTier, debug: boolean): Record<strin
     resolvedVia: r.resolvedVia,
     ...(tier !== "compact" ? { redirectHosts: r.redirectHosts } : {}), // drop on compact (heaviest non-url field)
     ...(r.contentSha256 !== undefined && tier !== "compact" ? { contentSha256: r.contentSha256 } : {}),
-    warnings: r.warnings,
-    errors: r.errors,
+    // Compact tier: clip each diagnostic message + cap the row count so long upstream/schema
+    // messages can't overflow the 25 KB ceiling from warnings[]/errors[] (codes are kept).
+    warnings: tier === "compact" ? compactDiags(r.warnings) : r.warnings,
+    errors: tier === "compact" ? compactDiags(r.errors) : r.errors,
   };
   if (tier === "full") {
     row.result = r.result; // ≤500-char snippet

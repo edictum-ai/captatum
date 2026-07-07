@@ -309,6 +309,26 @@ test("escalation accumulates cost across billable attempts (the bulk cost cap ke
   assert.equal(result.info.costUsd, 0.003, "escalation accumulates both billable attempts");
 });
 
+test("a shorter later truncation still syncs best's cost (no dropped billed attempt)", async () => {
+  // Call 1 truncates LONG ($0.001); call 2 truncates SHORT ($0.002) so `best` is NOT replaced.
+  // Pre-fix best kept call 1's cost ($0.001), dropping call 2's spend. Post-fix best's cost is
+  // synced to the accumulated total ($0.003) even though it wasn't replaced.
+  let n = 0;
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "paid/model", { free: false, maxOutputTokens: 65_536 })],
+    async generate(): Promise<LlmGenerateResult> {
+      return n++ === 0
+        ? { text: "long truncated text here that is the best", truncated: true, costUsd: 0.001 }
+        : { text: "short", truncated: true, costUsd: 0.002 };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const result = await transformer.transform({ mode: "summarize", output: "summary", content: "page", prompt: "p" });
+  assert.equal(result.info.truncated, true, "the longer truncation is kept as best");
+  assert.equal(result.info.costUsd, 0.003, "best's cost includes the later (shorter) billed attempt");
+});
+
 test("#131 P2-B: an extract that never completes surfaces truncated (never throws extract_invalid_json)", async () => {
   // The model always truncates, so the incomplete JSON is never parseable. Pre-fix this threw
   // extract_invalid_json; post-fix the cap escalates then surfaces the longest raw text as

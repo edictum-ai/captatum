@@ -123,6 +123,27 @@ test("bulk structured: a MALFORMED-host presigned failure URL is still redacted 
   assert.ok(!JSON.stringify(buildBulkStructuredContent(bulk)).includes("SECRET123"), "signature redacted even for a malformed host");
 });
 
+test("bulk structured: fragment tokens + HTML-escaped separators in failure URLs are redacted", () => {
+  // #access_token=SECRET (fragment) + &amp;-escaped X-Amz-Signature must both redact (matching
+  // signedUrlReason's detection coverage).
+  const failures = [
+    { url: "https://h.test/cb#access_token=FRAGSECRET", code: "invalid_url", message: "frag" },
+    { url: "https://h.test/x?foo=1&amp;X-Amz-Signature=AMPSECRET", code: "invalid_url", message: "amp" },
+  ];
+  const bulk: BulkResult = { ...makeBulk(0, 50), results: [], count: 0, passed: 0, failed: 2, status: "fail", ok: false, failures };
+  const json = JSON.stringify(buildBulkStructuredContent(bulk));
+  assert.ok(!json.includes("FRAGSECRET"), "fragment access_token redacted");
+  assert.ok(!json.includes("AMPSECRET"), "HTML-escaped-separator signature redacted");
+});
+
+test("bulk structured: compact-tier row diagnostics are clipped (no ceiling overflow from long messages)", () => {
+  // 50 rows each with a 2KB warning message would overflow the 25 KB ceiling from warnings[] alone.
+  const longMsg = "w".repeat(2000);
+  const results = Array.from({ length: 50 }, (_, i) => ({ ...makeSeed(i, 100), status: "partial" as const, warnings: [{ code: "x", message: longMsg }] }));
+  const bulk: BulkResult = { ...makeBulk(1, 100), results, count: 50, passed: 50 };
+  assert.ok(JSON.stringify(buildBulkStructuredContent(bulk)).length <= 25_000, "compact tier with long row diagnostics stays ≤ 25 KB");
+});
+
 test("bulk structured: perHostTruncated hosts are clipped in the compact tier (no clamp ceiling overflow)", () => {
   // ~18 distinct ~2030-char single-label hosts (within the 200-input / 2048-char caps) would
   // overflow the 25 KB structured ceiling from clamp.perHostTruncated alone if not clipped.

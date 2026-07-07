@@ -175,6 +175,9 @@ export class LlmTransformer implements TransformPort {
           },
         };
         if (!best || truncatedResult.result.length > best.result.length) best = truncatedResult; // keep longest truncation
+        // Sync best's cost even when this truncation was SHORTER (best not replaced) — otherwise a
+        // later billed attempt's cost is dropped from the returned TransformResult (codex P2).
+        best = { ...best, info: { ...best.info, costUsd: accumulatedCostUsd } };
         if (typeof input.budget === "number" && input.budget > 0) return best; // explicit caller budget is a hard ceiling — do not escalate past it (codex P2 #125)
         // Escalate to the model's full cap, bounded by remaining context so a long page isn't rejected for a model MAX the context can't hold (codex P2 #125).
         const ceiling = Math.min(modelMax, (pick.contextTokens ?? MAX_OUTPUT_TOKENS_CAP) - inTokens);
