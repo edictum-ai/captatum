@@ -334,3 +334,14 @@ test("bulk: a seed wall-aborted while waiting for the transform slot is bulk_dea
   assert.ok(seed2, "seed 2 present");
   assert.equal(seed2!.codeText, "bulk_deadline_exceeded", "the slot-waiting seed is deadline-marked, not a raw re-run/timeout");
 });
+
+test("bulk: a wall breach DURING an in-flight transform is recorded in capBreaches", async () => {
+  // A summary seed whose transform never resolves: raceWallAbort abandons it at the wall, but the
+  // result flows through afterSeed (not a record branch) — so the in-flight breach must be recorded
+  // after the await for the receipt/audit disclosure.
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", okResult("https://a.test/x", { output: "summary" }));
+  exec.execute = async () => new Promise<Result>(() => {}); // transform never resolves
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1, maxGlobalWallMs: 1 }).execute({ urls: ["https://a.test/x"], output: "summary" });
+  assert.ok(res.capBreaches.includes("bulk_deadline_exceeded"), "in-flight wall breach recorded in capBreaches");
+});

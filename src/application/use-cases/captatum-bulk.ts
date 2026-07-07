@@ -184,6 +184,9 @@ export class CaptatumBulkUseCase {
           } finally {
             if (transformSlotHeld) transformSem.release();
           }
+          // The wall may have fired DURING the in-flight execute (raceWallAbort, or a raw fetch
+          // returning a timeout post-abort) — those flow straight here, not a record branch. Disclose.
+          if (signal.aborted) record("bulk_deadline_exceeded");
           // transformReserved mirrors before.runTransform (the exact predicate beforeSeed reserved
           // under) so the cost reservation is always released on the seed it was taken for — never
           // the output-derived proxy (which diverges on a raw request with runTransform true).
@@ -204,11 +207,12 @@ export class CaptatumBulkUseCase {
               record("bulk_per_host_cap");
             }
           }
-          // Use the SETTLED Result.output (a summary/extract seed that fell back to raw reports
-          // raw); a cost-cap downgrade is surfaced as partial + a warning on an otherwise-passing seed.
+          // Use the SETTLED Result.output (a summary/extract seed that fell back to raw reports raw).
+          // A cost-cap downgrade is surfaced as a warning on any non-fail row (it may already be
+          // partial from a fetch warning like max_bytes); only a `pass` row flips to `partial`.
           const row = toBulkSeedResult(seed, seedResult, seedResult.output);
-          if (downgradedByCost && row.status === "pass") {
-            row.status = "partial";
+          if (downgradedByCost && row.status !== "fail") {
+            if (row.status === "pass") row.status = "partial";
             row.warnings.push({ code: "transform_skipped_cost_cap", message: "Requested summary/extract ran as raw — the per-call transform cost cap was reached." });
           }
           results[idx] = row;
