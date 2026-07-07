@@ -58,7 +58,7 @@ export function toBulkSeedResult(seed: ValidatedSeed, r: Result, output: Output)
     code: r.code,
     codeText: r.codeText,
     bytes: r.bytes,
-    egressBytes: r.bytes, // v1: egressBytes = document bytes; deep subresource plumbing is PR 3
+    egressBytes: r.egressBytes ?? r.bytes, // deep egress (Tier-3 subresources) when present, else document bytes (BULK-5)
     output,
     platform: r.platform.adapterId,
     jsRequired: r.jsRequired,

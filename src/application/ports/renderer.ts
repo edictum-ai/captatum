@@ -7,6 +7,10 @@ export interface RenderInput {
   timeoutMs: number;
   maxHops: number;
   fetcher: FetcherPort;
+  /** Optional abort signal (e.g. the captatum_bulk wall deadline). When it fires, the renderer
+   *  CANCELS the in-flight render (closes the page) so an abandoned render cannot keep acquiring
+   *  a browser slot + egressing subresources after the bulk returns (codex R4 P2). Additive. */
+  signal?: AbortSignal;
 }
 
 export type RenderActionType =
@@ -41,11 +45,24 @@ export interface RenderSuccess {
    * Surfaced into Result.errors by the use case; non-fatal.
    */
   notice?: ProvenanceError;
+  /** Total network egress for the render (every fulfilled subresource's bytes).
+   *  Surfaced as `Result.egressBytes` (BULK-5) — distinct from `fetchResult.bytes`
+   *  (the rendered DOM size). */
+  egressBytes?: number;
+  /** Registrable domains the render loaded subresources from. Fed into the bulk
+   *  per-host union count gate as `Result.renderEgressHosts` (BULK-3). */
+  egressHosts?: string[];
 }
 
 export type RenderFailure = RejectResult & {
   rendered: false;
   actions: RenderAction[];
+  /** Partial Tier-3 network egress before the failure (every subresource fulfilled up to the
+   *  fatal error/timeout). Surfaced so a render that loads subresources then fails still counts
+   *  its real egress (codex R2 P2). */
+  egressBytes?: number;
+  /** Partial render egress hosts before the failure (for the per-host union count gate). */
+  egressHosts?: string[];
 };
 
 export type RenderOutput = RenderSuccess | RenderFailure;

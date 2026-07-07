@@ -17,4 +17,8 @@ export interface CaptatumContext {
    *  then the wall cap is dispatch-level only. Additive: single-fetch passes
    *  nothing and is unchanged. */
   signal?: AbortSignal;
+  /** The OAuth client id (hosted). Threaded by the MCP handler so the bulk
+   *  orchestrator can key the per-tenant `BulkQuotaPort` reservation (BULK-1).
+   *  Absent on single-fetch + local-binary. Additive (PR 3). */
+  clientId?: string;
 }

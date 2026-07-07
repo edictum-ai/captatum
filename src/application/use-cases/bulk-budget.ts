@@ -27,6 +27,14 @@ import type { ClockPort } from "../ports/clock.ts";
 
 export type BudgetCapReason = "egress_bytes" | "transform_cost";
 
+/** The render byte pool worst-case as a multiple of perSeedMaxBytes. The Tier-3 render fulfills
+ *  essential subresources (capped at ESSENTIAL_BUDGET_MULTIPLIER× = 3×) + non-essential (capped at
+ *  1×), PLUS up to RENDER_FETCH_CONCURRENCY (2) crossing responses per pool that blow the cap but are
+ *  still COUNTED (each per-request maxBytes-capped; in-flight fetches are bounded to 2 so the overage
+ *  is 2× per pool, codex R11 P1): essential ≤ 3×+2× = 5×, non-essential ≤ 1×+2× = 3× → 8× total, on
+ *  top of the Tier-1 fetch beforeSeed reserved (1×). Keep in sync with route-state.ts's pools. */
+export const RENDER_EGRESS_MULTIPLIER = 8;
+
 /** Result of reserving budget before dispatching a seed. */
 export interface BeforeSeed {
   /** false → abort this seed BEFORE it fetches (a hard cap is full); `reason` names which. */
@@ -104,17 +112,46 @@ export class BudgetTracker {
     return { dispatch: true, runTransform };
   }
 
+  /** Reserve the retry's byte budget: 1 raw-fetch unit, PLUS the render pool
+   *  (RENDER_EGRESS_MULTIPLIER×) when the retried seed is render-capable — a render that returns
+   *  429/503 + Retry-After renders AGAIN on retry, so the retry's render egress must be reserved
+   *  too (codex R13 P1). Returns false (skip the retry) when it would not fit under the global cap. */
+  reserveRetry(withRender = false): boolean { return this.reserveUnits(1 + (withRender ? RENDER_EGRESS_MULTIPLIER : 0)); }
+
+  /** Release a retry reservation that did not run (e.g. the 2nd attempt threw) — reverse of
+   *  reserveRetry (codex R8 P2). */
+  cancelRetry(withRender = false): void {
+    this.bytesReserved -= this.opts.perSeedMaxBytes * (1 + (withRender ? RENDER_EGRESS_MULTIPLIER : 0));
+  }
+
+  /** Reserve the render byte pool (RENDER_EGRESS_MULTIPLIER × perSeedMaxBytes) before enabling a
+   *  render — a render egresses the nav + essential/non-essential subresource pools (several×
+   *  perSeedMaxBytes), so the single beforeSeed unit under-reserves it. Returns false (refuse the
+   *  render) when the pool would not fit under the global cap (codex R5 P2). */
+  reserveRender(): boolean { return this.reserveUnits(RENDER_EGRESS_MULTIPLIER); }
+
+  /** Reserve `units` × perSeedMaxBytes; false when it would not fit under the global byte cap. */
+  private reserveUnits(units: number): boolean {
+    const add = this.opts.perSeedMaxBytes * units;
+    if (this.bytesSettled + this.bytesReserved + add > this.opts.maxGlobalEgressBytes) return false;
+    this.bytesReserved += add;
+    return true;
+  }
+
   /** Release a seed's reservation + record its ACTUAL bytes/cost, then re-check the global
    *  caps. `transformReserved` MUST mirror the `runTransform` returned by this seed's
-   *  `beforeSeed` (the caller threads it through the await). */
+   *  `beforeSeed` (the caller threads it through the await). `byteUnits` is the number of
+   *  perSeedMaxBytes reservations held for this seed (1 normally, +RENDER_EGRESS_MULTIPLIER for a
+   *  render, +1 for a retry). */
   afterSeed(args: {
     bytes: number;
     costUsd?: number;
     inTokens?: number;
     outTokens?: number;
     transformReserved: boolean;
+    byteUnits?: number;
   }): AfterSeed {
-    this.bytesReserved -= this.opts.perSeedMaxBytes;
+    this.bytesReserved -= this.opts.perSeedMaxBytes * (args.byteUnits ?? 1);
     this.bytesSettled += args.bytes;
     if (args.transformReserved) {
       this.costReserved -= this.opts.perSeedTransformCostUsd;
@@ -131,6 +168,16 @@ export class BudgetTracker {
       return { shortCircuit: true, reason: "egress_bytes" };
     }
     return { shortCircuit: false };
+  }
+
+  /** Release a seed's dispatch-time reservation WITHOUT recording settled bytes/cost — for an
+   *  abort path that reserved in `beforeSeed` but never executed (e.g. the wall fired while
+   *  waiting for the transform slot, or a HARD short-circuit landed right after). `transformReserved`
+   *  MUST mirror the `runTransform` returned by this seed's `beforeSeed`; `byteUnits` is the number
+   *  of perSeedMaxBytes byte reservations held (default 1). */
+  cancelReservation(transformReserved: boolean, byteUnits = 1): void {
+    this.bytesReserved -= this.opts.perSeedMaxBytes * byteUnits;
+    if (transformReserved) this.costReserved -= this.opts.perSeedTransformCostUsd;
   }
 
   get bytesUsed(): number { return this.bytesSettled; }

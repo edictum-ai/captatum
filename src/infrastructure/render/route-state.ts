@@ -5,8 +5,10 @@ import { config } from "../../config.ts";
 import type { PlaywrightFrame, PlaywrightRequest, PlaywrightRoute } from "./playwright-types.ts";
 import { safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { FetcherRouteFulfiller, type RouteFulfiller } from "./route-fulfill.ts";
+import { RenderBytePool } from "./render-byte-pool.ts";
 import { authorizePostForward, CORS_ALLOW_ORIGIN, materializePostForward, planOptionsPreflight } from "./post-forward.ts";
-import { Semaphore } from "./semaphore.ts";
+import { RenderEgressHosts } from "./render-egress.ts";
+import { AsyncSemaphore, Semaphore } from "./semaphore.ts";
 import { hostnameOf, isNavigation, shouldAbortWithoutBody } from "./route-helpers.ts";
 
 /** Render resource types the page's CLIENT APP needs to load, or it throws a
@@ -29,20 +31,23 @@ const ESSENTIAL_RENDER_TYPES = new Set(["script", "fetch", "xhr", "document"]);
  *  capped. (#110) */
 export const ESSENTIAL_BUDGET_MULTIPLIER = 3;
 
+/** Max concurrent render subresource FETCHES. Bounds the byte pool's per-pool crossing overage to
+ *  N× maxBytes so the bulk render reservation holds (codex R11 P1). Keep in sync with the budget's
+ *  RENDER_EGRESS_MULTIPLIER (essential (3+N) + non-essential (1+N) = 4+2N = 8). */
+export const RENDER_FETCH_CONCURRENCY = 2;
+
 function isEssentialRenderType(resourceType: string): boolean {
   return ESSENTIAL_RENDER_TYPES.has(resourceType);
 }
 
 /**
  * Per-request route state for the Tier-3 render. The browser NEVER makes its own
- * egress: every non-aborted GET is resolved through the guarded FetcherPort and
- * fulfilled with the fetched bytes (`route.fulfill`), so the connection is pinned
- * to the guard-resolved IP and every redirect hop is re-validated against the
- * SSRF guards with `maxHops` enforced. Ad/tracker + blocked body types and non-GET
- * requests are aborted before any network; aborted body types are still P1/DNS
- * private-IP-checked so the action log records a private target. This closes the
- * DNS-rebinding + redirect TOCTOU that `route.continue()` left open
- * (TIER3-SSRF-1/2/NAV-1) — Chromium no longer resolves or connects by name.
+ * egress: every non-aborted GET is resolved through the guarded FetcherPort and fulfilled with the
+ * fetched bytes (`route.fulfill`), so the connection is pinned to the guard-resolved IP and every
+ * redirect hop is re-validated against the SSRF guards (`maxHops` enforced). Ad/tracker + blocked
+ * body types + non-GET requests are aborted before any network; aborted body types are still
+ * P1/DNS private-IP-checked. This closes the DNS-rebinding + redirect TOCTOU `route.continue()` left
+ * open (TIER3-SSRF-1/2/NAV-1) — Chromium no longer resolves or connects by name.
  */
 export class RenderRouteState {
   readonly input: RenderInput;
@@ -53,34 +58,36 @@ export class RenderRouteState {
   private readonly mainRegistrableDomain: string | null;
   private readonly postMaxBytes: number;
   private readonly postSemaphore: Semaphore;
+  /** Bounds concurrent render subresource FETCHES so the byte pool's crossing overage stays within
+   *  the bulk egress reservation (codex R11 P1). */
+  private readonly fetchSem: AsyncSemaphore;
   status = 200;
-  finalUrl = "";
-  redirects: FetcherResult["redirects"] = [];
+  finalUrl = ""; redirects: FetcherResult["redirects"] = [];
   fatal?: RejectResult;
   private mainFrame?: PlaywrightFrame;
-  // Two cumulative byte pools, each capped at maxBytes: non-essential (stylesheets,
-  // etc.) and essential (script/fetch/xhr/document). Splitting them means a page
-  // whose non-essential budget is blown still gets its essential scripts/data (so the
-  // client app doesn't crash), while total egress stays bounded at ~2×maxBytes.
-  private bytesFulfilled = 0;
-  private essentialBytes = 0;
-  private budgetExceeded = false;
-  private essentialBudgetExceeded = false;
+  // The two cumulative byte pools (essential + non-essential) bounding render subresource egress.
+  private readonly pool: RenderBytePool;
+  // Registrable domains of fulfilled subresources → Result.renderEgressHosts (BULK-3).
+  private readonly egressHostsList = new RenderEgressHosts();
 
   constructor(input: RenderInput, actions: RenderAction[], guard: BrowserUrlGuard) {
     this.input = input;
-    this.actions = actions;
-    this.guard = guard;
+    this.actions = actions; this.guard = guard;
     this.mainHost = hostnameOf(input.url);
-    // Computed ONCE from the page URL; NEVER recomputed on a same-tab navigation — the
-    // POST first-party scope never expands mid-render (a security property, not accident).
+    // Computed ONCE from the page URL; the POST first-party scope never expands mid-render (security property).
     this.mainRegistrableDomain = registrableDomain(this.mainHost);
-    this.postMaxBytes = config.render.postMaxBytes();
+    // POST body cap = min(postMaxBytes, maxBytes) (codex R9 P2): POST bodies are counted in the render
+    // egress pool, so a body > maxBytes would breach the 6×maxBytes render reservation on low-maxBytes bulk.
+    this.postMaxBytes = Math.min(config.render.postMaxBytes(), input.maxBytes);
     this.postSemaphore = new Semaphore(config.render.postConcurrency());
+    this.fetchSem = new AsyncSemaphore(RENDER_FETCH_CONCURRENCY);
+    this.pool = new RenderBytePool(input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER, input.maxBytes);
+    // Thread the bulk-wall signal into every render subresource fetch (codex R6 P2): an in-flight
+    // route fulfillment runs through the guarded Node fetcher, so page.close() alone can't cancel it —
+    // without the signal it holds a global fetch slot + egresses after the bulk is abandoned.
     this.fulfiller = new FetcherRouteFulfiller(input.fetcher, {
-      maxBytes: input.maxBytes,
-      timeoutMs: input.timeoutMs,
-      maxHops: input.maxHops,
+      maxBytes: input.maxBytes, timeoutMs: input.timeoutMs, maxHops: input.maxHops,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
   }
 
@@ -89,6 +96,12 @@ export class RenderRouteState {
   setMainFrame(frame: PlaywrightFrame): void {
     this.mainFrame = frame;
   }
+
+  /** Total render network egress → `Result.egressBytes` (BULK-5). */
+  egressBytes(): number { return this.pool.total(); }
+
+  /** Registrable domains the render loaded subresources from → bulk per-host union (BULK-3). */
+  egressHosts(): string[] { return this.egressHostsList.get(); }
 
   /**
    * request.frame() throws for a navigation request Playwright hasn't created the
@@ -108,9 +121,8 @@ export class RenderRouteState {
     const request = route.request();
     const url = request.url();
     const resourceType = request.resourceType();
-    // The main-frame document navigation is the page the user asked to fetch — it is
-    // never an ad/tracker (even when its host is a blocklisted vendor apex like
-    // amplitude.com), and it owns provenance below. Computed once and reused.
+    // The main-frame document navigation is the page the user asked to fetch — never an ad/tracker
+    // (even when its host is a blocklisted vendor apex like amplitude.com); owns provenance below.
     const mainFrameNav = isNavigation(request) && this.isMainFrame(request);
     if (!mainFrameNav && shouldAbortWithoutBody(url, resourceType, this.mainHost)) {
       return this.abortBlockedType(route, url, resourceType);
@@ -118,13 +130,16 @@ export class RenderRouteState {
     if (!mainFrameNav && request.method() !== "GET") {
       return this.handleNonGet(route, request, url, resourceType);
     }
-    // Once a pool is blown, subsequent resources in THAT pool are aborted before any
-    // network. Essentials and non-essentials have separate pools, so a blown
-    // non-essential budget still lets essential scripts/data through.
-    if (isEssentialRenderType(resourceType) ? this.essentialBudgetExceeded : this.budgetExceeded) {
+    // Once a pool is blown, subsequent resources in THAT pool abort before network. Essentials
+    // and non-essentials have separate pools, so a blown non-essential budget still lets essentials through.
+    if (this.pool.isExceeded(isEssentialRenderType(resourceType))) {
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
-    const outcome = await this.fulfiller.resolve(url, resourceType);
+    // Bound concurrent render fetches (codex R11 P1): a GET response size is unknown pre-fetch, so N
+    // concurrent fetches can each add a crossing body to the pool. The semaphore queues over-cap fetches.
+    await this.fetchSem.acquire();
+    let outcome;
+    try { outcome = await this.fulfiller.resolve(url, resourceType); } finally { this.fetchSem.release(); }
     if (outcome.kind === "reject") {
       if (mainFrameNav) this.fatal = outcome.reject;
       return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
@@ -137,38 +152,29 @@ export class RenderRouteState {
       this.status = outcome.status;
       this.finalUrl = outcome.finalUrl;
       this.redirects = outcome.redirects;
-      // Fidelity limit: the nav body is served against the ORIGINAL request URL, so a cross-origin
-      // redirect's base URL stays the original origin (relative subresources may miss) + Set-Cookie
-      // from intermediate hops isn't carried. Playwright can't follow a fulfilled redirect for a
-      // nav. Cross-origin-redirect only; every hop was guard-validated, not an SSRF gap.
+      // Fidelity limit: the nav body is served against the ORIGINAL request URL (a cross-origin redirect's
+      // base stays the original origin; intermediate Set-Cookie isn't carried). Every hop was guard-validated.
     }
-    // TIER3-DOS-1: each pool (essential vs non-essential) is capped. The essential cap is
-    // ESSENTIAL_BUDGET_MULTIPLIER× the non-essential cap so heavy client apps (Cursor, Jira)
-    // load instead of crashing into an error boundary. The response that crosses its pool's
-    // cap: NON-essential is aborted; ESSENTIAL is still fulfilled (aborting a script/fetch
-    // mid-load crashes the client app — e.g. Clerk on cerebralvalley.ai), but the pool is
-    // marked exceeded so subsequent resources in it are aborted. Total egress ~4×maxBytes.
     const essential = isEssentialRenderType(resourceType);
-    // Re-check AFTER resolve: the early check ran before this `await`, so a CONCURRENT
-    // essential may have blown the pool while this request was in flight. The first
-    // essential to cross the cap is fulfilled; every essential that finds the pool
-    // already blown is aborted. (The check + counter update below are synchronous, so
-    // two handlers can't both pass the crossing check — one sets the flag first.)
-    if (essential ? this.essentialBudgetExceeded : this.budgetExceeded) {
+    // Count EVERY resolved body + hosts — including cap-aborted ones (egress already happened; codex R2 P2).
+    const countFetched = (): void => {
+      this.pool.add(essential, outcome.body.byteLength);
+      this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
+    };
+    if (this.pool.isExceeded(essential)) { // re-check after resolve (concurrent blow)
+      countFetched();
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
-    const cap = essential ? this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER : this.input.maxBytes;
-    const poolBytes = essential ? this.essentialBytes : this.bytesFulfilled;
-    if (poolBytes + outcome.body.byteLength > cap) {
+    if (this.pool.used(essential) + outcome.body.byteLength > this.pool.cap(essential)) {
       if (essential) {
-        this.essentialBudgetExceeded = true; // crossing essential: fulfill (fall through)
+        this.pool.markExceeded(true); // crossing essential: fulfill (counted below)
       } else {
-        this.budgetExceeded = true;
+        this.pool.markExceeded(false);
+        countFetched(); // non-essential crossing: body fetched — count it before aborting
         return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
       }
     }
-    if (essential) this.essentialBytes += outcome.body.byteLength;
-    else this.bytesFulfilled += outcome.body.byteLength;
+    countFetched();
     await route.fulfill({
       status: outcome.status,
       body: outcome.body,
@@ -176,8 +182,7 @@ export class RenderRouteState {
     });
   }
 
-  /** #111: a non-GET Tier-3 request — a first-party CORS preflight (OPTIONS) gets a synthesized permissive
-   *  response; a first-party POST (fetch/xhr) forwards through FetcherPort (body reserved, released on reject); else aborts. */
+  /** #111: non-GET Tier-3 — OPTIONS preflight → synthesized permissive response; first-party POST → forwarded via FetcherPort (body reserved, released on reject); else aborts. */
   private async handleNonGet(route: PlaywrightRoute, request: PlaywrightRequest, url: string, resourceType: string): Promise<void> {
     // CORS preflight (OPTIONS) for a cross-origin POST: synthesize a permissive first-party response (#111 codex P1).
     if (request.method() === "OPTIONS") {
@@ -195,26 +200,31 @@ export class RenderRouteState {
     if (auth.kind === "abort") return this.abort(route, url, resourceType, auth.reason);
     const plan = materializePostForward({ body: request.postDataBuffer?.() ?? null, contentType: h["content-type"], maxBytes: this.postMaxBytes });
     if (plan.kind === "abort") return this.abort(route, url, resourceType, plan.reason);
-    if (this.essentialBudgetExceeded) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
+    if (this.pool.isExceeded(true)) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     if (!this.postSemaphore.tryAcquire()) return this.abort(route, url, resourceType, "render_concurrency_limit");
-    this.essentialBytes += plan.body.byteLength; // reserve at dispatch; released on reject
-    if (this.essentialBytes > this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER) this.essentialBudgetExceeded = true; // crossing reservation marks the pool blown synchronously so concurrent early-checks see it (#111 codex P2)
+    this.pool.add(true, plan.body.byteLength); // reserve the request body at dispatch; released on reject
+    if (this.pool.used(true) > this.pool.cap(true)) this.pool.markExceeded(true); // crossing reservation marks the pool blown synchronously (#111 codex P2)
     try {
-      const outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit);
+      await this.fetchSem.acquire(); // POST fetches bounded by the render fetch semaphore too (codex R13 P2)
+      let outcome;
+      try { outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit); }
+      finally { this.fetchSem.release(); }
       if (outcome.kind === "reject") {
-        this.essentialBytes -= plan.body.byteLength;
+        this.pool.releaseEssential(plan.body.byteLength);
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
       }
-      if (this.essentialBudgetExceeded) { // a concurrent POST may have blown the pool in flight (#111 codex P2)
-        this.essentialBytes -= plan.body.byteLength;
+      if (this.pool.isExceeded(true)) { // a concurrent POST blew the pool in flight (#111 codex P2)
+        // The POST fully egressed (request body + this response) — count both + the host even though
+        // we abort the route. (codex R4 P2: was released → undercount.)
+        this.pool.add(true, outcome.body.byteLength);
+        this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
         return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
       }
       // The crossing POST marks the pool exceeded but is still fulfilled (aborting mid-load 400s the page).
-      if (this.essentialBytes + outcome.body.byteLength > this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER) {
-        this.essentialBudgetExceeded = true;
-      }
-      this.essentialBytes += outcome.body.byteLength;
+      if (this.pool.used(true) + outcome.body.byteLength > this.pool.cap(true)) this.pool.markExceeded(true);
+      this.pool.add(true, outcome.body.byteLength);
       this.actions.push({ type: "request-forwarded-post", outcome: "ok", url: safeRenderUrl(url), resourceType, method: "POST", bodyBytes: plan.body.byteLength, responseBytes: outcome.body.byteLength });
+      this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
       // ACAO:* admits the cross-origin POST response (#111 codex P1). Credentialed CORS (credentials:"include") would need the Origin echoed — known limitation (rare; cookies stripped).
       await route.fulfill({
         status: outcome.status,
@@ -227,23 +237,13 @@ export class RenderRouteState {
     }
   }
 
-  private async abortBlockedType(
-    route: PlaywrightRoute,
-    url: string,
-    resourceType: string,
-  ): Promise<void> {
+  private async abortBlockedType(route: PlaywrightRoute, url: string, resourceType: string): Promise<void> {
     const blocked = await this.guard.check(url, AbortSignal.timeout(this.input.timeoutMs));
     const reason = blocked?.code ?? `blocked_${resourceType}`;
     await this.abort(route, url, resourceType, reason, "resource-aborted");
   }
 
-  private async abort(
-    route: PlaywrightRoute,
-    url: string,
-    resourceType: string,
-    reason: string,
-    type: RenderAction["type"] = "request-blocked",
-  ): Promise<void> {
+  private async abort(route: PlaywrightRoute, url: string, resourceType: string, reason: string, type: RenderAction["type"] = "request-blocked"): Promise<void> {
     this.actions.push({ type, reason, url: safeRenderUrl(url), resourceType });
     await route.abort("blockedbyclient");
   }

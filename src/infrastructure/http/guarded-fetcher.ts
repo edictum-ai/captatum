@@ -144,6 +144,10 @@ export class GuardedHttpFetcher implements FetcherPort {
     signal: AbortSignal,
   ): Promise<FetcherResult> {
     const body = await readCappedBody(response.body, response.headers, maxBytes, signal);
+    // Parse Retry-After ONCE + include on `!== undefined` (not truthiness): a `Retry-After: 0`
+    // (or a past HTTP-date → 0) is a valid "retry now" signal that must enable the one retry
+    // (codex P3: the truthiness check dropped 0, skipping the retry exactly when asked to retry now).
+    const retryAfterMs = parseRetryAfter(response.headers, response.status);
     return {
       status: response.status,
       finalUrl: current.finalUrl,
@@ -153,6 +157,7 @@ export class GuardedHttpFetcher implements FetcherPort {
       bytes: body.byteLength,
       ...(body.truncated ? { truncated: true } : {}),
       antibot: computeAntiBotEvidence(response.headers, body.bytes, response.status),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     };
   }
 }
@@ -206,4 +211,30 @@ function positive(value: number, name: string): number {
 function nonNegative(value: number, name: string): number {
   if (Number.isInteger(value) && value >= 0) return value;
   reject("invalid_options", `${name} must be a non-negative integer`);
+}
+
+/** Parse a `Retry-After` header (RFC 7231 §7.1.3) into milliseconds. Two forms:
+ *  delta-seconds (`"120"`) or an HTTP-date (`"Fri, 31 Dec 2026 23:59:59 GMT"`).
+ *  Surfaced ONLY on 429/503 (a Retry-After elsewhere is not a retry signal).
+ *  Capped at 5 min so a hostile/misbehaving server can't stall a bulk seed
+ *  indefinitely; a past/invalid date floors to undefined (treat as "retry now"
+ *  → caller uses its own backoff). Returns undefined when there is no usable value. */
+const RETRY_AFTER_CAP_MS = 5 * 60 * 1000;
+function parseRetryAfter(
+  headers: Record<string, string | string[] | number | undefined>,
+  status: number,
+): number | undefined {
+  if (status !== 429 && status !== 503) return undefined;
+  const raw = headerValue(headers, "retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) {
+    if (seconds < 0) return 0;
+    return Math.min(RETRY_AFTER_CAP_MS, Math.round(seconds * 1000));
+  }
+  const dateMs = Date.parse(raw);
+  if (!Number.isFinite(dateMs)) return undefined;
+  const delta = dateMs - Date.now();
+  if (delta <= 0) return 0;
+  return Math.min(RETRY_AFTER_CAP_MS, Math.round(delta));
 }

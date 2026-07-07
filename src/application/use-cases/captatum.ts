@@ -25,11 +25,7 @@ import {
   type CaptatumDefaults,
 } from "./captatum-input.ts";
 
-const GENERIC_PLATFORM: Platform = {
-  adapterId: "generic",
-  label: "Generic HTML",
-  detectedFrom: "tier1",
-};
+const GENERIC_PLATFORM: Platform = { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" };
 
 export interface CaptatumDeps {
   fetcher: FetcherPort;
@@ -123,6 +119,7 @@ export class CaptatumUseCase {
         fetcher: this.fetcher,
         extractHtml: this.extractHtml,
         clock: this.clock,
+        ...(context.signal ? { signal: context.signal } : {}),
       });
     return await this.applyOutputMode(resolved, request, startMs, fetchMs);
   }

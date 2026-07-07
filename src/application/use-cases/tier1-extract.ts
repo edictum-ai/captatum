@@ -104,6 +104,7 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
         : []),
     ],
     ...(input.fetchedAt !== undefined ? { fetchedAt: input.fetchedAt } : {}),
+    ...(input.fetchResult.retryAfterMs !== undefined ? { retryAfterMs: input.fetchResult.retryAfterMs } : {}),
   };
 }
 

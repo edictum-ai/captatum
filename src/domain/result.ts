@@ -96,6 +96,24 @@ export interface Result {
   /** Anti-bot challenge wall detected (cloudflare/akamai/perimeterx/…). When set,
    *  the fetched bytes are a bot-protection interstitial, not page content (#41 Half A). */
   challengeProvider?: string;
+  /** Real NETWORK egress for the fetch. For Tier-1/Tier-2 this is the fetched
+   *  document bytes (== `bytes`). For a Tier-3 render it is the render's total
+   *  network egress (`essentialBytes + bytesFulfilled` — every subresource the
+   *  browser loaded through `route.fulfill`), which is honest subresource
+   *  accounting (BULK-5). `bytes` stays the document/DOM byte count. The bulk
+   *  budget sums `egressBytes ?? bytes`. Absent on legacy single-fetch Tier-1
+   *  results (additive, PR 3). */
+  egressBytes?: number;
+  /** The registrable domains a Tier-3 render loaded subresources from (script/xhr/
+   *  fetch/stylesheet hosts that are NOT in the seed's redirect/finalUrl chain).
+   *  Fed into the bulk per-host union count gate so a render-path directed victim
+   *  is bounded by `maxPerHostInBulk` (BULK-3). Absent for Tier-1/Tier-2 (PR 3). */
+  renderEgressHosts?: string[];
+  /** Curated `Retry-After` (ms) from a 429/503 response. Carried from
+   *  `FetcherResult.retryAfterMs`; the bulk orchestrator performs one jittered
+   *  retry per 429/503 seed. Single-fetch surfaces it on the receipt but does not
+   *  auto-retry (PR 3). */
+  retryAfterMs?: number;
 }
 
 /** sha256 hex of a string. */

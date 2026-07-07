@@ -16,6 +16,9 @@ export interface MaybeRenderInput {
   fetcher: FetcherPort;
   extractHtml: HtmlExtractor;
   clock: ClockPort;
+  /** Optional abort signal (the bulk wall) — threaded into the render so an abandoned render is
+   *  CANCELED, not just un-awaited (codex R4 P2). */
+  signal?: AbortSignal;
 }
 
 export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
@@ -43,8 +46,28 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
   const renderMs = elapsed(startedAt, input.clock.nowMs());
   const controlAttempts = actionAttempts(rendered.actions);
   input.result.timings.renderMs = renderMs;
+  // Surface the render's network egress + subresource hosts onto the Tier-1 result
+  // EARLY so every downstream path (promote, render-empty, render-rejected-success)
+  // carries them. egressBytes = the Tier-1 document fetch (input.result.bytes — the seed
+  // already spent it to decide jsRequired) PLUS the Tier-3 render's subresource bytes
+  // (codex P2: counting only the Tier-3 pass underreports by up to one initial fetch per
+  // rendered seed). renderEgressHosts for the per-host union count gate (BULK-3). A true
+  // render FAILURE (rendered=false) has no Tier-3 egress — correctly only the Tier-1 bytes.
+  if (rendered.rendered) {
+    const tier1Bytes = input.result.bytes ?? 0;
+    const renderEgress = rendered.egressBytes ?? 0;
+    input.result.egressBytes = tier1Bytes + renderEgress;
+    if (rendered.egressHosts && rendered.egressHosts.length > 0) input.result.renderEgressHosts = rendered.egressHosts;
+  }
 
   if (!rendered.rendered) {
+    // A FAILED render may still have fulfilled subresources before failing/timeout — surface that
+    // partial Tier-3 egress (codex R2 P2: otherwise an allowRender:true bulk of shells that load
+    // subresources then time out underreports totals, the byte cap, and the render-host union gate).
+    const tier1Bytes = input.result.bytes ?? 0;
+    const renderEgress = rendered.egressBytes ?? 0;
+    if (renderEgress > 0) input.result.egressBytes = tier1Bytes + renderEgress;
+    if (rendered.egressHosts && rendered.egressHosts.length > 0) input.result.renderEgressHosts = rendered.egressHosts;
     input.result.attempts.push(...controlAttempts);
     return renderRejected(input.result, rendered, renderMs);
   }
@@ -96,6 +119,7 @@ async function safeRender(input: MaybeRenderInput): Promise<RenderOutput> {
       timeoutMs: input.request.renderTimeoutMs,
       maxHops: input.request.maxHops,
       fetcher: input.fetcher,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
   } catch (error) {
     return {
@@ -148,6 +172,10 @@ function promoteRenderedResult(
     fetchMs: base.timings.fetchMs,
     renderMs,
   };
+  // Carry the render's network egress + subresource hosts (set on base in maybeRender)
+  // onto the promoted result so the bulk orchestrator sees them (BULK-3 + BULK-5).
+  if (base.egressBytes !== undefined) rendered.egressBytes = base.egressBytes;
+  if (base.renderEgressHosts !== undefined) rendered.renderEgressHosts = base.renderEgressHosts;
   return rendered;
 }
 

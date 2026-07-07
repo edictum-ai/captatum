@@ -24,6 +24,7 @@ import { buildStructuredContent } from "./shape.ts";
 import { CAPTATUM_SERVER_INSTRUCTIONS, CAPTATUM_TOOL_NAME, captatumToolDefinition } from "./schema.ts";
 import { CAPTATUM_BULK_TOOL_NAME, captatumBulkToolDefinition } from "./bulk-schema.ts";
 import { callBulk } from "./bulk-handler.ts";
+import { BulkQuotaError } from "../../application/ports/bulk-quota.ts";
 import { config } from "../../config.ts";
 import { parseClientProfileMap, resolveClientProfile, type ClientProfile } from "../../application/client-profile.ts";
 import { AUTH_JSONRPC_CODE, OVERLOADED_JSONRPC_CODE } from "../jsonrpc-error-codes.ts";
@@ -110,6 +111,17 @@ export function toMcpError(error: unknown): McpError {
   if (error instanceof McpError) return error;
   if (error instanceof OverloadedError) {
     return new McpError(OVERLOADED_JSONRPC_CODE, error.message, { retryable: true });
+  }
+  if (error instanceof BulkQuotaError) {
+    // exceeded → retryable (the client backs off + retries, like OverloadedError);
+    // store_error → fail-closed refusal (non-retryable InternalError). The code
+    // string rides on the message so the receipt distinguishes the two.
+    if (error.code === "bulk_quota_exceeded") {
+      const data: { retryable: true; retryAfterMs?: number } = { retryable: true };
+      if (error.retryAfterMs !== undefined) data.retryAfterMs = error.retryAfterMs;
+      return new McpError(OVERLOADED_JSONRPC_CODE, `${error.code}: ${error.message}`, data);
+    }
+    return new McpError(ErrorCode.InternalError, `${error.code}: ${error.message}`);
   }
   if (error instanceof OAuthError) {
     return new McpError(AUTH_JSONRPC_CODE, `${error.code}: ${error.message}`);

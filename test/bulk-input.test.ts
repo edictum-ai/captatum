@@ -12,11 +12,11 @@ test("normalizeBulkInput: defaults output=raw, allowRender=false, timeoutMs=8000
   assert.deepEqual(out.invalid, []);
 });
 
-test("normalizeBulkInput: rejects allowRender:true whole-call as bulk_render_not_supported", () => {
-  assert.throws(
-    () => normalizeBulkInput({ urls: ["https://a.test/x"], allowRender: true }),
-    (e: unknown) => e instanceof CaptatumInputError && e.body.error.code === "bulk_render_not_supported",
-  );
+test("normalizeBulkInput: allowRender:true is accepted (render-on-bulk, PR 3) + defaults false", () => {
+  const out = normalizeBulkInput({ urls: ["https://a.test/x"], allowRender: true });
+  assert.equal(out.request.allowRender, true, "allowRender:true flows through (no longer rejected)");
+  const defaulted = normalizeBulkInput({ urls: ["https://a.test/x"] });
+  assert.equal(defaulted.request.allowRender, false, "default remains false (raw-extraction-first)");
 });
 
 test("normalizeBulkInput: http→https upgrade + per-entry normalizeContractUrl", () => {
