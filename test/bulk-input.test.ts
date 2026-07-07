@@ -139,9 +139,15 @@ test("normalizeBulkInput: non-http(s) scheme userinfo redacted (ftp://user:pass@
 });
 
 test("normalizeBulkInput: protocol-relative userinfo redacted (//user:pass@host)", () => {
-  // //user:pass@example.com has no scheme — normalizeContractUrl rejects it, but redactUserinfo
-  // must still strip the credentials (the regex requires no explicit scheme for //...@ forms).
   const out = normalizeBulkInput({ urls: ["//user:secretpass@example.com/path"] });
   assert.equal(out.invalid.length, 1);
   assert.ok(!out.invalid[0].url.includes("secretpass"), "protocol-relative userinfo password redacted");
+});
+
+test("normalizeBulkInput: backslash-separator userinfo redacted (https:\\\\user:pass@host)", () => {
+  // WHATWG treats backslashes as slashes, so new URL() parses this as userinfo + rejects it.
+  // redactUserinfo must match [/\] in the separator, not just //.
+  const out = normalizeBulkInput({ urls: ["https:\\\\user:secretpass@example.test/x"] });
+  assert.equal(out.invalid.length, 1);
+  assert.ok(!out.invalid[0].url.includes("secretpass"), "backslash-separator userinfo password redacted");
 });

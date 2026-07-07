@@ -371,3 +371,16 @@ test("bulk: a SOFT (transform-cost) short-circuit fail-softs to raw for seeds be
   assert.equal(res.results.filter((r) => r.codeText === "bulk_budget_exceeded").length, 0, "no seed aborted for a SOFT (transform-cost) short-circuit");
   assert.ok(res.results.filter((r) => r.output === "raw").length >= 1, "post-cap seeds fail-soft to raw (not aborted)");
 });
+
+test("bulk: a HARD per-host quarantine replaces a SOFT cost short-circuit (remaining seeds abort, not fetch raw)", async () => {
+  // With maxPerHostInBulk=3 (operator-tighten) + maxTransformCostUsd=0.01: seed 1's $0.02 transform
+  // trips a SOFT shortCircuit. Seeds 2-3 fail-soft to raw (still funnel to victim). At victim count 3
+  // the HARD quarantine fires + UPGRADES the soft SC → remaining seeds abort (don't fetch raw).
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 10 }, (_, i) => `https://src${i}.test/p`);
+  for (const u of urls) exec.results.set(u, okResult(u, { output: "summary", costUsd: 0.02, redirects: ["https://victim.test/x"], finalUrl: "https://victim.test/x" }));
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4, maxPerHostInflight: 50, maxPerHostInBulk: 3 }).execute({ urls, output: "summary", maxTransformCostUsd: 0.01 });
+  const aborted = res.results.filter((r) => r.codeText === "bulk_per_host_cap");
+  assert.ok(aborted.length >= 1, "hard quarantine fired + aborted remaining seeds");
+  assert.ok(exec.calls < urls.length, `remaining seeds did NOT fetch after the hard upgrade; calls=${exec.calls} of ${urls.length}`);
+});

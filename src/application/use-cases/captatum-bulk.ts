@@ -200,7 +200,7 @@ export class CaptatumBulkUseCase {
             const next = (hostCounts.get(h) ?? 0) + 1;
             hostCounts.set(h, next);
             if (next > guard.maxPerHostInBulk) record(`bulk_per_host_cap:${h}`);
-            if (h !== seedKey && next >= guard.maxPerHostInBulk && !shortCircuit) {
+            if (h !== seedKey && next >= guard.maxPerHostInBulk && (!shortCircuit || !shortCircuit.hard)) {
               shortCircuit = { code: "bulk_per_host_cap", message: `discovered redirect victim ${h} reached the per-bulk cap — remaining seeds aborted`, hard: true };
               record("bulk_per_host_cap");
             }
