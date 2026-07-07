@@ -94,12 +94,15 @@ test("MCP: captatum_bulk dispatches end-to-end (orchestrator → captatum → fe
   await close();
 });
 
-test("MCP: captatum_bulk rejects allowRender:true as a tool-level invalid_input (bulk_render_not_supported)", async () => {
-  const { client, close } = await bootLocal(new PerUrlFetcher());
-  await assert.rejects(
-    client.callTool({ name: "captatum_bulk", arguments: { urls: ["https://a.test/x"], allowRender: true } }),
-    (err: unknown) => err instanceof Error && /bulk_render_not_supported/.test(err.message),
-  );
+test("MCP: captatum_bulk accepts allowRender:true (render-on-bulk, PR 3) — a non-shell seed passes at Tier-1", async () => {
+  // allowRender:true used to be a tool-level invalid_input (bulk_render_not_supported); it now
+  // flows through. A content-bearing (non-shell) seed is unaffected — it resolves at Tier-1.
+  const fetcher = new PerUrlFetcher();
+  fetcher.results.set("https://a.test/x", article("A", "This is article content long enough to resolve at Tier-1.", "https://a.test/x"));
+  const { client, close } = await bootLocal(fetcher);
+  const res = await client.callTool({ name: "captatum_bulk", arguments: { urls: ["https://a.test/x"], allowRender: true } });
+  const sc = res.structuredContent as { status: string };
+  assert.equal(sc.status, "pass", "allowRender:true is accepted; a non-shell seed passes at Tier-1");
   await close();
 });
 

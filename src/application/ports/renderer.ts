@@ -41,6 +41,13 @@ export interface RenderSuccess {
    * Surfaced into Result.errors by the use case; non-fatal.
    */
   notice?: ProvenanceError;
+  /** Total network egress for the render (every fulfilled subresource's bytes).
+   *  Surfaced as `Result.egressBytes` (BULK-5) — distinct from `fetchResult.bytes`
+   *  (the rendered DOM size). */
+  egressBytes?: number;
+  /** Registrable domains the render loaded subresources from. Fed into the bulk
+   *  per-host union count gate as `Result.renderEgressHosts` (BULK-3). */
+  egressHosts?: string[];
 }
 
 export type RenderFailure = RejectResult & {

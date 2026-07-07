@@ -68,6 +68,11 @@ export interface FetcherResult {
   truncated?: boolean;
   /** Vendor-attributed anti-bot evidence (#41). Absent on rejects/non-HTTP paths. */
   antibot?: AntiBotEvidence;
+  /** Curated `Retry-After` (ms) parsed from the response header on a 429/503
+   *  (seconds or HTTP-date). Absent when there is no usable Retry-After or the
+   *  status is not 429/503. Surfaced to the caller (no auto-retry in the fetcher)
+   *  so the bulk orchestrator can perform one jittered retry (PR 3). */
+  retryAfterMs?: number;
 }
 
 export interface RejectResult {

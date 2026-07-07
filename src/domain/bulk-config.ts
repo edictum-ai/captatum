@@ -24,6 +24,9 @@ export interface BulkOperatorConfig {
   /** Optional operator tightening of the per-host directed-DoS COUNT bound (lowering only —
    *  clamped DOWN to the default 10; tightens the quarantine bound for a sensitive deployment). */
   readonly maxPerHostInBulk?: number;
+  /** Optional operator tightening of the per-call render-attempt budget (lowering only —
+   *  clamped DOWN to the default 10; bounds Tier-3 browser spawns per bulk call). */
+  readonly maxRenderedSeeds?: number;
 }
 
 /** Caller per-call overrides (founder decision 9): only the cost knobs. Clamped
@@ -80,6 +83,10 @@ export function resolveBulkGuard(args: {
   const maxPerHostInBulk = op.maxPerHostInBulk !== undefined
     ? Math.min(BULK_GUARD_DEFAULTS.maxPerHostInBulk, Math.max(1, op.maxPerHostInBulk))
     : BULK_GUARD_DEFAULTS.maxPerHostInBulk;
+  // Operator may TIGHTEN the per-call render-attempt budget (lowering only, min 0).
+  const maxRenderedSeeds = op.maxRenderedSeeds !== undefined
+    ? Math.min(BULK_GUARD_DEFAULTS.maxRenderedSeeds, Math.max(0, op.maxRenderedSeeds))
+    : BULK_GUARD_DEFAULTS.maxRenderedSeeds;
   return {
     guard: {
       maxUrls: args.output === "raw" ? BULK_RAW_MAX_URLS : BULK_SUMMARY_MAX_URLS,
@@ -87,7 +94,7 @@ export function resolveBulkGuard(args: {
       maxGlobalEgressBytes: BULK_GUARD_DEFAULTS.maxGlobalEgressBytes,
       maxGlobalWallMs,
       maxConcurrency,
-      maxRenderedSeeds: BULK_GUARD_DEFAULTS.maxRenderedSeeds,
+      maxRenderedSeeds,
       maxPerHostInflight,
       crawlDelayMs,
       maxTransformCostUsd,

@@ -43,6 +43,15 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
   const renderMs = elapsed(startedAt, input.clock.nowMs());
   const controlAttempts = actionAttempts(rendered.actions);
   input.result.timings.renderMs = renderMs;
+  // Surface the render's network egress + subresource hosts onto the Tier-1 result
+  // EARLY so every downstream path (promote, render-empty, render-rejected-success)
+  // carries them: egressBytes for honest byte accounting (BULK-5), renderEgressHosts
+  // for the per-host union count gate (BULK-3). A true render FAILURE (rendered=false)
+  // has no RenderSuccess egress info — correctly unset (no subresources fulfilled).
+  if (rendered.rendered) {
+    if (rendered.egressBytes !== undefined) input.result.egressBytes = rendered.egressBytes;
+    if (rendered.egressHosts && rendered.egressHosts.length > 0) input.result.renderEgressHosts = rendered.egressHosts;
+  }
 
   if (!rendered.rendered) {
     input.result.attempts.push(...controlAttempts);
@@ -148,6 +157,10 @@ function promoteRenderedResult(
     fetchMs: base.timings.fetchMs,
     renderMs,
   };
+  // Carry the render's network egress + subresource hosts (set on base in maybeRender)
+  // onto the promoted result so the bulk orchestrator sees them (BULK-3 + BULK-5).
+  if (base.egressBytes !== undefined) rendered.egressBytes = base.egressBytes;
+  if (base.renderEgressHosts !== undefined) rendered.renderEgressHosts = base.renderEgressHosts;
   return rendered;
 }
 

@@ -8,6 +8,7 @@ import type { Result } from "../src/domain/result.ts";
 import { CaptatumBulkUseCase } from "../src/application/use-cases/captatum-bulk.ts";
 import { Semaphore } from "../src/application/use-cases/bulk-concurrency.ts";
 import { raceWallAbort } from "../src/application/use-cases/bulk-seed.ts";
+import type { BulkQuotaPort } from "../src/application/ports/bulk-quota.ts";
 
 function fakeClock(start = 1000): ClockPort & { now: number } {
   return { now: start, nowMs() { return this.now; } } as ClockPort & { now: number };
@@ -65,8 +66,8 @@ function rejectResult(url: string, code: string, message: string): Result {
   };
 }
 
-function makeBulk(exec: FakeExecutor, clock = fakeClock(), operator = {}): CaptatumBulkUseCase {
-  return new CaptatumBulkUseCase({ executor: exec, adapters: new PlatformAdapterRegistry([]), clock, operator });
+function makeBulk(exec: FakeExecutor, clock = fakeClock(), operator = {}, quota?: BulkQuotaPort): CaptatumBulkUseCase {
+  return new CaptatumBulkUseCase({ executor: exec, adapters: new PlatformAdapterRegistry([]), clock, operator, ...(quota ? { quota } : {}) });
 }
 
 test("bulk happy path: 3 seeds, input-order results, status pass, totals sum bytes", async () => {
@@ -383,4 +384,146 @@ test("bulk: a HARD per-host quarantine replaces a SOFT cost short-circuit (remai
   const aborted = res.results.filter((r) => r.codeText === "bulk_per_host_cap");
   assert.ok(aborted.length >= 1, "hard quarantine fired + aborted remaining seeds");
   assert.ok(exec.calls < urls.length, `remaining seeds did NOT fetch after the hard upgrade; calls=${exec.calls} of ${urls.length}`);
+});
+
+// ---- PR 3: BulkQuotaPort (BULK-1) --------------------------------------------------------
+
+/** A programmable quota port for orchestrator tests. */
+class FakeQuotaPort implements BulkQuotaPort {
+  private readonly result: import("../src/application/ports/bulk-quota.ts").QuotaResult;
+  constructor(result: import("../src/application/ports/bulk-quota.ts").QuotaResult) { this.result = result; }
+  async tryReserve(): Promise<import("../src/application/ports/bulk-quota.ts").QuotaResult> { return this.result; }
+}
+
+test("bulk quota (BULK-1): a quota refusal throws BulkQuotaError BEFORE any seed dispatches", async () => {
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", okResult("https://a.test/x"));
+  const quota = new FakeQuotaPort({ ok: false, code: "bulk_quota_exceeded", windowSeconds: 60, limit: 300, used: 300, retryAfterMs: 5000 });
+  await assert.rejects(
+    makeBulk(exec, fakeClock(), {}, quota).execute({ urls: ["https://a.test/x"] }, { clientId: "tenant-A" }),
+    (e: unknown) => e instanceof Error && (e as { code?: string }).code === "bulk_quota_exceeded" && (e as { retryable: boolean }).retryable === true && (e as { retryAfterMs?: number }).retryAfterMs === 5000,
+  );
+  assert.equal(exec.calls, 0, "no seed fetched — the quota refusal precedes dispatch");
+});
+
+test("bulk quota (BULK-1): an allowing quota proceeds + the call passes", async () => {
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", okResult("https://a.test/x"));
+  const quota = new FakeQuotaPort({ ok: true, reserved: 1, windowSeconds: 60, limit: 300, used: 1 });
+  const res = await makeBulk(exec, fakeClock(), {}, quota).execute({ urls: ["https://a.test/x"] }, { clientId: "tenant-A" });
+  assert.equal(res.status, "pass");
+  assert.equal(exec.calls, 1);
+});
+
+test("bulk quota (BULK-1): a store-error refusal is fail-closed (BulkQuotaError, non-retryable)", async () => {
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", okResult("https://a.test/x"));
+  const quota = new FakeQuotaPort({ ok: false, code: "bulk_quota_store_error", message: "store down" });
+  await assert.rejects(
+    makeBulk(exec, fakeClock(), {}, quota).execute({ urls: ["https://a.test/x"] }, { clientId: "tenant-A" }),
+    (e: unknown) => e instanceof Error && (e as { code?: string }).code === "bulk_quota_store_error" && (e as { retryable: boolean }).retryable === false,
+  );
+  assert.equal(exec.calls, 0, "fail-closed: no seed fetched when the quota store is unavailable");
+});
+
+// ---- PR 3: deep egressBytes (BULK-5) -----------------------------------------------------
+
+function renderResult(url: string, opts: { egressBytes?: number; renderEgressHosts?: string[]; finalUrl?: string } = {}): Result {
+  const base = okResult(url, { finalUrl: opts.finalUrl ?? url });
+  return { ...base, tier: 3, jsRequired: true, resolvedVia: "tier3-playwright", egressBytes: opts.egressBytes ?? 500, ...(opts.renderEgressHosts ? { renderEgressHosts: opts.renderEgressHosts } : {}) };
+}
+
+test("bulk egressBytes (BULK-5): a render seed's deep egressBytes (incl. subresources) is counted, not result.bytes", async () => {
+  const exec = new FakeExecutor();
+  // A render result: result.bytes=100 (DOM), egressBytes=5_000_000 (real network egress incl subresources).
+  exec.results.set("https://a.test/x", renderResult("https://a.test/x", { egressBytes: 5_000_000, renderEgressHosts: ["cdn-a.test"] }));
+  const res = await makeBulk(exec).execute({ urls: ["https://a.test/x"], allowRender: true });
+  assert.equal(res.results[0].bytes, 100, "result.bytes is the rendered DOM size");
+  assert.equal(res.results[0].egressBytes, 5_000_000, "egressBytes is the deep render egress (subresources counted)");
+  assert.equal(res.totals.egressBytes, 5_000_000, "the byte budget summed the DEEP egress, not result.bytes");
+});
+
+// ---- PR 3: render-on-bulk — render-egress-host union (BULK-3) + maxRenderedSeeds ----------
+
+test("bulk render-egress-host union (BULK-3): render subresource hosts feed the per-host count gate (quarantine)", async () => {
+  // 12 distinct-domain seeds that all RENDER, each loading a subresource from victim.test. The
+  // seed/redirect/finalUrl union does NOT contain victim.test — only renderEgressHosts does. Without
+  // the union merge, victim would be invisible; WITH it, victim crosses maxPerHostInBulk=10 → quarantine.
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 12 }, (_, i) => `https://src${i}.test/p`);
+  for (const u of urls) exec.results.set(u, renderResult(u, { renderEgressHosts: ["victim.test"], finalUrl: u }));
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4, maxPerHostInflight: 50 }).execute({ urls, allowRender: true });
+  assert.ok(res.capBreaches.some((c) => c.startsWith("bulk_per_host_cap")), `render-path victim quarantined: ${res.capBreaches}`);
+  const touched = res.results.filter((r) => r.tier === 3).length;
+  assert.ok(touched <= 13, `render-victim-touching renders bounded ≤ maxPerHostInBulk + maxConcurrency; got ${touched}`);
+});
+
+test("bulk maxRenderedSeeds: allowRender:true beyond the cap is downgraded (warned), not rendered", async () => {
+  // 5 seeds that all render (tier 3), maxRenderedSeeds=2 (operator-tighten). After 2 renders, the rest
+  // are downgraded to allowRender:false (renderDowngraded). The downgraded seeds are NOT tier 3 and
+  // carry a bulk_render_cap_exceeded warning. Overshoot ≤ maxConcurrency.
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 5 }, (_, i) => `https://src${i}.test/p`);
+  // The executor returns a render result ONLY when allowRender was passed true (downgraded seeds get false → tier 1).
+  for (const u of urls) exec.results.set(u, renderResult(u, { renderEgressHosts: [`cdn-${u}.test`], finalUrl: u }));
+  const realExec = exec.execute.bind(exec);
+  exec.execute = async (input: unknown) => {
+    const allow = (input as { allowRender?: boolean }).allowRender;
+    const url = (input as { url: string }).url;
+    const r = exec.results.get(url)!;
+    return allow ? { ...r } : { ...r, tier: 1 as const, jsRequired: false, resolvedVia: "tier1-text", egressBytes: undefined, renderEgressHosts: undefined };
+  };
+  void realExec;
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1, maxPerHostInflight: 50, maxRenderedSeeds: 2 }).execute({ urls, allowRender: true });
+  const rendered = res.results.filter((r) => r.tier === 3).length;
+  assert.ok(rendered <= 3, `renders bounded ≤ maxRenderedSeeds + maxConcurrency overshoot; got ${rendered}`);
+  assert.ok(rendered >= 2, `at least maxRenderedSeeds rendered; got ${rendered}`);
+  const downgraded = res.results.filter((r) => r.warnings.some((w) => w.code === "bulk_render_cap_exceeded"));
+  assert.ok(downgraded.length >= 1, "at least one allowRender seed was downgraded + warned");
+});
+
+test("bulk render-on-bulk: allowRender:true is threaded into the executor (the seed may render)", async () => {
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", renderResult("https://a.test/x", { renderEgressHosts: ["cdn.test"] }));
+  let seenAllowRender: boolean | undefined;
+  const realExec = exec.execute.bind(exec);
+  exec.execute = async (input: unknown, ctx?: CaptatumContext) => { seenAllowRender = (input as { allowRender?: boolean }).allowRender; return realExec(input, ctx); };
+  await makeBulk(exec).execute({ urls: ["https://a.test/x"], allowRender: true });
+  assert.equal(seenAllowRender, true, "allowRender:true is passed through to the executor (render-on-bulk)");
+});
+
+// ---- PR 3: retryAfterMs + one 429/503 retry ----------------------------------------------
+
+function rateLimited(url: string, retryAfterMs: number): Result {
+  return { ...rejectResult(url, "http_429", "Too Many Requests"), code: 429, retryAfterMs };
+}
+
+test("bulk retry: a 429 with Retry-After is retried once (executor called twice) + warned", async () => {
+  // First call returns 429 (with retryAfterMs); the retry (second call) returns 200.
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", okResult("https://a.test/x"));
+  let calls = 0;
+  const realExec = exec.execute.bind(exec);
+  exec.execute = async (input: unknown, ctx?: CaptatumContext) => {
+    calls++;
+    const url = (input as { url: string }).url;
+    return calls === 1 ? rateLimited(url, 50) : realExec(input, ctx);
+  };
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1 }).execute({ urls: ["https://a.test/x"] });
+  assert.equal(calls, 2, "the seed was executed twice (one retry)");
+  assert.equal(res.results[0].status !== "fail" ? "pass" : "fail", "pass", "the retry succeeded → the row passes");
+  assert.ok(res.results[0].warnings.some((w) => w.code === "bulk_retried_429"), "the retried seed carries the bulk_retried_429 warning");
+});
+
+test("bulk retry: a 429 with NO retryAfterMs is NOT retried (single attempt, no warning)", async () => {
+  const exec = new FakeExecutor();
+  let calls = 0;
+  exec.execute = async (input: unknown) => {
+    calls++;
+    const url = (input as { url: string }).url;
+    return { ...rejectResult(url, "http_429", "Too Many Requests"), code: 429 }; // no retryAfterMs
+  };
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1 }).execute({ urls: ["https://a.test/x"] });
+  assert.equal(calls, 1, "no retry without a Retry-After");
+  assert.ok(!res.results[0].warnings.some((w) => w.code === "bulk_retried_429"), "no retry warning");
 });

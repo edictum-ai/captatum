@@ -111,12 +111,21 @@ export const config = {
     sqlitePath: () => envString("CAPTATUM_SQLITE_PATH", "./data/captatum.sqlite"),
   },
   bulk: {
-    /** Hosted captatum_bulk gate (BULK-GATE): OFF until a global fetch-concurrency cap
-     *  (LimitingFetcher) + per-tenant BulkQuotaPort land. Local flavor ships ON regardless. */
-    enabled: () => envString("CAPTATUM_BULK_ENABLED", "false") === "true",
+    /** Hosted captatum_bulk gate (BULK-GATE): ON as of PR 3 — the LimitingFetcher
+     *  (BULK-2) + BulkQuotaPort (BULK-1) have landed. Local flavor ships ON regardless.
+     *  Operators may set this to "false" to disable hosted bulk independently. */
+    enabled: () => envString("CAPTATUM_BULK_ENABLED", "true") === "true",
     maxPerHostInflight: () => envPositiveInteger("CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT", 2),
     crawlDelayMs: () => envPositiveInteger("CAPTATUM_BULK_CRAWL_DELAY_MS", 1000),
     maxConcurrency: () => envPositiveInteger("CAPTATUM_BULK_MAX_CONCURRENCY", 4),
+    /** BULK-2: process-wide GLOBAL fetch-concurrency cap on hosted (LimitingFetcher).
+     *  Sized ≥ the admission cap (8) so single-fetch never queues; only concurrent bulks
+     *  (each up to maxConcurrency fetches) push past it. Bounds 8 bulks × maxConcurrency. */
+    globalFetchConcurrency: () => envPositiveInteger("CAPTATUM_GLOBAL_FETCH_CONCURRENCY", 16),
+    /** BULK-1: per-tenant rolling seed-window quota window length (seconds). */
+    quotaWindowSeconds: () => envPositiveInteger("CAPTATUM_BULK_QUOTA_WINDOW_SECONDS", 60),
+    /** BULK-1: per-tenant rolling seed-window quota seed limit (max seeds/window). */
+    quotaSeedLimit: () => envPositiveInteger("CAPTATUM_BULK_QUOTA_SEED_LIMIT", 300),
   },
 };
 

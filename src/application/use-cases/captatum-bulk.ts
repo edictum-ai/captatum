@@ -13,6 +13,7 @@ import type { ClockPort } from "../ports/clock.ts";
 import type { CaptatumContext } from "../ports/captatum-context.ts";
 import type { CaptatumExecutorPort } from "../ports/captatum-executor.ts";
 import type { PlatformAdapterRegistry } from "../ports/platform-adapter.ts";
+import type { BulkQuotaPort } from "../ports/bulk-quota.ts";
 import { registrableDomain } from "../../domain/registrable-domain.ts";
 import {
   generateFenceToken,
@@ -27,8 +28,11 @@ import { type BulkResult, type BulkSeedResult } from "../../domain/bulk-result.t
 import type { Output } from "../../domain/tier.ts";
 import type { Result } from "../../domain/result.ts";
 import { normalizeBulkInput, type NormalizedBulkRequest } from "./bulk-input.ts";
+import { ashbyJidOf, rejectPerEntryBulk, reserveBulkQuota } from "./bulk-dispatch.ts";
 import { BudgetTracker, type BudgetCapReason } from "./bulk-budget.ts";
 import { PerHostGate, Semaphore } from "./bulk-concurrency.ts";
+import { mergeRenderEgressHosts } from "./bulk-render.ts";
+import { executeSeedWithRetry } from "./bulk-retry.ts";
 import { abortedSeedResult, hostOf, raceWallAbort, syntheticFail, toBulkSeedResult } from "./bulk-seed.ts";
 import { assembleBulkResult } from "./bulk-assemble.ts";
 
@@ -39,6 +43,10 @@ export interface CaptatumBulkDeps {
   adapters: PlatformAdapterRegistry;
   clock: ClockPort;
   operator: Partial<BulkOperatorConfig>;
+  /** Per-tenant seed-window quota (BULK-1). When present, each call reserves its
+   *  processed-seed count against the calling tenant's window before dispatch; a
+   *  refusal throws BulkQuotaError (fail-closed). Absent on the local-binary flavor. */
+  quota?: BulkQuotaPort;
 }
 
 /** A run-level short-circuit. `hard` = true means a cap that the FETCH itself would violate
@@ -64,8 +72,12 @@ export class CaptatumBulkUseCase {
         ...(normalized.request.perSeedTransformCostUsd !== undefined ? { perSeedTransformCostUsd: normalized.request.perSeedTransformCostUsd } : {}),
       },
     });
-    const { toProcess, boardRejected, ashbyRejected } = this.rejectPerEntry(normalized.seeds);
+    const { toProcess, boardRejected, ashbyRejected } = rejectPerEntryBulk(this.deps.adapters, normalized.seeds);
     const shaped = shapeBulkInput(toProcess, guard);
+    // Per-tenant seed-window quota (BULK-1): reserve the processed-seed count
+    // BEFORE any dispatch. A refusal fails the WHOLE call (fail-closed). Skipped
+    // when no quota port is configured (the local-binary flavor).
+    await reserveBulkQuota(this.deps.quota, context.clientId, shaped.seeds.length);
     const wallController = new AbortController();
     const wallTimer = setTimeout(() => wallController.abort(), guard.maxGlobalWallMs);
     let ran: { results: BulkSeedResult[]; capBreaches: string[]; budget: BudgetTracker };
@@ -78,25 +90,6 @@ export class CaptatumBulkUseCase {
       bulkId: `bulk-${randomUUID()}`, fenceToken: generateFenceToken(), guard, costClamped, shaped, toProcessCount: toProcess.length,
       ran, normalized, boardRejected, ashbyRejected, startMs, clock: this.deps.clock,
     });
-  }
-
-  /** Per-entry rejection (roster-intact + egress-accounting invariants):
-   *  - Tier-2 board-root seeds (roster expander → forbidden in bulk — single-fetch the board).
-   *  - Ashby-embed (`?ashby_jid=`) seeds: the embed resolver performs an auxiliary host-page
-   *    fetch NOT captured by v1's result.bytes egress accounting (BULK-5), so a caller adding
-   *    ashby_jid to many URLs could spend up to another maxBytes/seed off the books. v1 closes
-   *    this structurally (like render) — single-fetch embeds, or bulk the direct ashby job URLs.
-   *  Per-JD URLs are not detected and flow through to Tier-1. */
-  private rejectPerEntry(seeds: readonly ValidatedSeed[]): { toProcess: ValidatedSeed[]; boardRejected: ValidatedSeed[]; ashbyRejected: ValidatedSeed[] } {
-    const toProcess: ValidatedSeed[] = [];
-    const boardRejected: ValidatedSeed[] = [];
-    const ashbyRejected: ValidatedSeed[] = [];
-    for (const s of seeds) {
-      if (this.deps.adapters.detect({ url: s.url })) boardRejected.push(s);
-      else if (ashbyJidOf(s.url) !== null) ashbyRejected.push(s);
-      else toProcess.push(s);
-    }
-    return { toProcess, boardRejected, ashbyRejected };
   }
 
   private async runPool(
@@ -115,6 +108,7 @@ export class CaptatumBulkUseCase {
     const capBreaches: string[] = [];
     const signal = wallController.signal;
     let shortCircuit: ShortCircuit | null = null;
+    let renderedCount = 0; // actual Tier-3 renders this call (drives the maxRenderedSeeds cap)
     const record = (code: string): void => { if (!capBreaches.includes(code)) capBreaches.push(code); };
 
     await Promise.all(seeds.map(async (seed, idx) => {
@@ -173,44 +167,63 @@ export class CaptatumBulkUseCase {
             }
           }
           const downgradedByCost = request.requestedOutput !== "raw" && effectiveOutput === "raw";
-          const execInput = { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: false, debug: request.debug };
+          // maxRenderedSeeds (BULK-3 OOM guard): bound ACTUAL renders per call. A seed with
+          // allowRender:true is allowed only while renderedCount < maxRenderedSeeds; once the cap
+          // is hit, further allowRender:true seeds are downgraded (render-blocked at Tier-1). The
+          // check runs pre-dispatch against the SETTLED count, so up to maxConcurrency renders can
+          // be in flight before the count catches up (overshoot ≤ maxConcurrency — honest, matches
+          // the redirect-discovery pattern). Actual concurrent browsers are bounded by the renderer.
+          const renderAllowed = request.allowRender && renderedCount < guard.maxRenderedSeeds;
+          const renderDowngraded = request.allowRender && !renderAllowed;
+          const execInput = { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: renderAllowed, debug: request.debug };
           const execCtx = { ...(context.fetchedAt !== undefined ? { fetchedAt: context.fetchedAt } : {}), signal };
           let seedResult: Result;
+          let retried = false;
           try {
             // A raw fetch aborts on the wall signal; a transform's LLM call doesn't — race it so the
             // wall abandons a slow transform (dispatch-level) instead of holding the bulk open past 180s.
-            seedResult = transformSlotHeld
-              ? await raceWallAbort(this.deps.executor.execute(execInput, execCtx), signal, seed)
-              : await this.deps.executor.execute(execInput, execCtx);
+            // executeSeedWithRetry performs ONE jittered 429/503 retry (bounded by the wall).
+            const run = (): Promise<Result> => transformSlotHeld
+              ? raceWallAbort(this.deps.executor.execute(execInput, execCtx), signal, seed)
+              : this.deps.executor.execute(execInput, execCtx);
+            ({ result: seedResult, retried } = await executeSeedWithRetry(run, { signal, wallExceeded: () => budget.wallExceeded() }));
           } catch (err) {
             seedResult = syntheticFail(seed, err);
           } finally {
             if (transformSlotHeld) transformSem.release();
           }
+          // Count ACTUAL renders post-settle (drives the maxRenderedSeeds cap above).
+          if (seedResult.tier === 3) renderedCount++;
           // The wall may have fired DURING the in-flight execute — disclose it (the result flows
           // straight here, not a record branch). transformReserved mirrors before.runTransform.
           if (signal.aborted) record("bulk_deadline_exceeded");
-          const after = budget.afterSeed({ bytes: seedResult.bytes, costUsd: seedResult.transform?.costUsd, inTokens: seedResult.transform?.inTokens, outTokens: seedResult.transform?.outTokens, transformReserved: before.runTransform });
+          const after = budget.afterSeed({ bytes: seedResult.egressBytes ?? seedResult.bytes, costUsd: seedResult.transform?.costUsd, inTokens: seedResult.transform?.inTokens, outTokens: seedResult.transform?.outTokens, transformReserved: before.runTransform });
           if (after.shortCircuit) {
             shortCircuit = shortCircuit ?? budgetMsg(after.reason as BudgetCapReason);
             record(`bulk_budget_exceeded:${after.reason}`);
           }
-          // Post-settle union count — quarantine (stop dispatching) once a REDIRECT victim (h !== seedKey) crosses the cap.
-          for (const h of unionEgressHosts({ seedRegistrable: registrableDomain(hostOf(seed.url)) ?? hostOf(seed.url), redirects: seedResult.redirects.map((r) => r.url), finalUrl: seedResult.finalUrl })) {
+          // Post-settle union count (directed-DoS bound): seed + redirect + finalUrl hosts, PLUS the
+          // render's subresource hosts (renderEgressHosts, BULK-3) — quarantine once a REDIRECT/RENDER
+          // victim (h !== seedKey) crosses the cap.
+          const unionHosts = new Set(unionEgressHosts({ seedRegistrable: registrableDomain(hostOf(seed.url)) ?? hostOf(seed.url), redirects: seedResult.redirects.map((r) => r.url), finalUrl: seedResult.finalUrl }));
+          mergeRenderEgressHosts(unionHosts, seedResult.renderEgressHosts);
+          for (const h of unionHosts) {
             const next = (hostCounts.get(h) ?? 0) + 1;
             hostCounts.set(h, next);
             if (next > guard.maxPerHostInBulk) record(`bulk_per_host_cap:${h}`);
             if (h !== seedKey && next >= guard.maxPerHostInBulk && (!shortCircuit || !shortCircuit.hard)) {
-              shortCircuit = { code: "bulk_per_host_cap", message: `discovered redirect victim ${h} reached the per-bulk cap — remaining seeds aborted`, hard: true };
+              shortCircuit = { code: "bulk_per_host_cap", message: `discovered victim ${h} reached the per-bulk cap — remaining seeds aborted`, hard: true };
               record("bulk_per_host_cap");
             }
           }
-          // Settled Result.output; a cost-cap downgrade is a warning on any non-fail row (a `pass`
-          // row flips to `partial`; an already-partial row keeps its status + gets the warning).
+          // Settled Result.output; a cost-cap / render-cap downgrade or a retry is a warning on any
+          // non-fail row (a `pass` row flips to `partial`; an already-partial row keeps its status).
           const row = toBulkSeedResult(seed, seedResult, seedResult.output);
-          if (downgradedByCost && row.status !== "fail") {
+          if ((downgradedByCost || renderDowngraded || retried) && row.status !== "fail") {
             if (row.status === "pass") row.status = "partial";
-            row.warnings.push({ code: "transform_skipped_cost_cap", message: "Requested summary/extract ran as raw — the per-call transform cost cap was reached." });
+            if (downgradedByCost) row.warnings.push({ code: "transform_skipped_cost_cap", message: "Requested summary/extract ran as raw — the per-call transform cost cap was reached." });
+            if (renderDowngraded) row.warnings.push({ code: "bulk_render_cap_exceeded", message: "allowRender downgraded to false — the per-call maxRenderedSeeds cap was reached." });
+            if (retried) row.warnings.push({ code: "bulk_retried_429", message: "Seed returned 429/503 and was retried once after the server's Retry-After." });
           }
           results[idx] = row;
         } finally {
@@ -228,22 +241,6 @@ function budgetMsg(reason: BudgetCapReason): ShortCircuit {
   return { code: "bulk_budget_exceeded", message: `bulk_budget_exceeded:${reason}`, hard: reason === "egress_bytes" };
 }
 
-/** Inline mirror of the Ashby-embed jid extractor (kept here to avoid an application→
- *  infrastructure import; pure URL parsing). Non-null ⇒ an ashby-embed seed. */
-function ashbyJidOf(url: string): string | null {
-  try { return new URL(url).searchParams.get("ashby_jid"); } catch { return null; }
-}
-
 export function createCaptatumBulkUseCase(deps: CaptatumBulkDeps): CaptatumBulkUseCase {
   return new CaptatumBulkUseCase(deps);
 }
-
-function failureCode(r: BulkSeedResult): string {
-  if (r.resolvedVia === "bulk-shortcut") return r.codeText; // a bulk_* short-circuit code
-  if (r.tier === "error") return r.errors[0]?.code ?? "fetch_error";
-  return `http_${r.code}`;
-}
-
-/** A per-seed Result for an executor throw (unexpected — partial failure is normal, so the
- *  seed is marked tier:error fail, never propagated to a whole-call error). */
-

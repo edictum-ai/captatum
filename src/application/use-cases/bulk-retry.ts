@@ -1,0 +1,45 @@
+// Per-seed 429/503 retry for captatum_bulk (PR 3). One jittered retry: on a
+// 429/503 result carrying a curated `retryAfterMs`, wait (bounded by the bulk wall
+// + a politeness cap) + a small CSPRNG jitter, then re-execute ONCE. The second
+// attempt's result wins (freshest). Single-fetch is unchanged — no auto-retry.
+// Extracted from the orchestrator (250-line limit). See docs/contracts.md
+// §"Tool: captatum_bulk" / bulk error codes (`bulk_retried_429`).
+import { randomInt } from "node:crypto";
+import type { Result } from "../../domain/result.ts";
+import { abortableSleep } from "./bulk-concurrency.ts";
+
+/** Politeness cap on a single retry wait, so a hostile `Retry-After: 300` cannot
+ *  make one seed's retry wait dominate the bulk wall. The wall signal bounds the
+ *  wait further (abortableSleep returns immediately when it fires). */
+const RETRY_WAIT_CAP_MS = 30_000;
+/** Max CSPRNG jitter added to the wait (ms). */
+const RETRY_JITTER_MAX_MS = 250;
+
+export interface SeedRetryCtx {
+  /** The bulk wall signal — aborts the wait + stops a retry past the deadline. */
+  signal: AbortSignal;
+  /** Returns true when the bulk wall deadline has passed (stop retrying). */
+  wallExceeded: () => boolean;
+}
+
+/** Run a seed once; if the result is a retriable 429/503 with a `retryAfterMs` and
+ *  the wall budget allows, wait + run it once more. `run` is the per-attempt
+ *  executor call (including the raceWallAbort wrapper when a transform slot is
+ *  held — the slot stays held across both attempts). Returns the final result +
+ *  whether a retry occurred. */
+export async function executeSeedWithRetry(
+  run: () => Promise<Result>,
+  ctx: SeedRetryCtx,
+): Promise<{ result: Result; retried: boolean }> {
+  const first = await run();
+  if (!isRetriable(first) || first.retryAfterMs === undefined) return { result: first, retried: false };
+  if (ctx.signal.aborted || ctx.wallExceeded()) return { result: first, retried: false };
+  const wait = Math.min(RETRY_WAIT_CAP_MS, first.retryAfterMs) + randomInt(0, RETRY_JITTER_MAX_MS);
+  await abortableSleep(wait, ctx.signal);
+  if (ctx.signal.aborted || ctx.wallExceeded()) return { result: first, retried: false };
+  return { result: await run(), retried: true };
+}
+
+function isRetriable(r: Result): boolean {
+  return r.code === 429 || r.code === 503;
+}

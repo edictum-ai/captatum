@@ -171,10 +171,8 @@ async function closeWebSocket(socket: PlaywrightWebSocketRoute, actions: RenderA
   await socket.close();
 }
 
-function renderSuccess(
-  input: RenderInput, page: PlaywrightPage, status: number,
-  bytes: Uint8Array, state: RenderRouteState, notice?: ProvenanceError,
-): RenderOutput {
+function renderSuccess(input: RenderInput, page: PlaywrightPage, status: number, bytes: Uint8Array, state: RenderRouteState, notice?: ProvenanceError): RenderOutput {
+  const egressHosts = state.egressHosts();
   return {
     rendered: true,
     fetchResult: {
@@ -186,6 +184,8 @@ function renderSuccess(
       bytes: bytes.byteLength,
     },
     actions: state.actions,
+    egressBytes: state.egressBytes(),
+    ...(egressHosts.length > 0 ? { egressHosts } : {}),
     ...(notice ? { notice } : {}),
   };
 }

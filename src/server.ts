@@ -7,6 +7,8 @@ import { createAdapterRegistry } from "./application/adapters.ts";
 import { config } from "./config.ts";
 import { extractHtml } from "./infrastructure/extract/index.ts";
 import { createWreqGuardedFetcher } from "./infrastructure/wreq/requester.ts";
+import { LimitingFetcher } from "./infrastructure/http/limiting-fetcher.ts";
+import { InMemoryBulkQuotaPort } from "./application/use-cases/in-memory-bulk-quota.ts";
 import { createDefaultLlmTransformer } from "./infrastructure/llm/model-router.ts";
 import { createRenderer } from "./infrastructure/render/index.ts";
 import { createHostedStore } from "./infrastructure/store-selection.ts";
@@ -42,16 +44,22 @@ if (store) {
     );
   }, 5 * 60 * 1000).unref();
 }
+// BULK-2: wrap the hosted FetcherPort in a LimitingFetcher — a process-wide global
+// fetch-concurrency cap shared across ALL callers (single-fetch + bulk seeds + Tier-3
+// render subresources). Sized ≥ the admission cap (8) so single-fetch never queues.
+// (server.ts is hosted-only; the local binary keeps the raw fetcher — single-user.)
+const fetcher = new LimitingFetcher(createWreqGuardedFetcher(), config.bulk.globalFetchConcurrency());
 const captatum = createCaptatumUseCase({
-  fetcher: createWreqGuardedFetcher(),
+  fetcher,
   extractHtml,
   transformer: await createDefaultLlmTransformer(),
   renderer: createRenderer(),
   clock,
 });
-// captatum_bulk: hosted ships BEHIND CAPTATUM_BULK_ENABLED (default off — BULK-GATE: no
-// global fetch-concurrency cap across concurrent bulks yet). Built with the UNWRAPPED captatum
-// executor so the route's one-slot admission wrap bounds the whole call, not per-seed fan-out.
+// captatum_bulk: hosted ships ON (CAPTATUM_BULK_ENABLED default true as of PR 3 — the
+// LimitingFetcher (BULK-2) + BulkQuotaPort (BULK-1) gate has landed). Built with the UNWRAPPED
+// captatum executor so the route's one-slot admission wrap bounds the whole call, not per-seed
+// fan-out. The per-tenant quota (BULK-1) bounds cross-call amplification, fail-closed.
 const bulk = config.bulk.enabled()
   ? createCaptatumBulkUseCase({
     executor: captatum,
@@ -62,6 +70,11 @@ const bulk = config.bulk.enabled()
       crawlDelayMs: config.bulk.crawlDelayMs(),
       maxConcurrency: config.bulk.maxConcurrency(),
     },
+    quota: new InMemoryBulkQuotaPort({
+      clock,
+      windowSeconds: config.bulk.quotaWindowSeconds(),
+      limit: config.bulk.quotaSeedLimit(),
+    }),
   })
   : undefined;
 const app = await createHttpApp({

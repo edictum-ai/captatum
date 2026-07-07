@@ -6,6 +6,7 @@ import type { PlaywrightFrame, PlaywrightRequest, PlaywrightRoute } from "./play
 import { safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { FetcherRouteFulfiller, type RouteFulfiller } from "./route-fulfill.ts";
 import { authorizePostForward, CORS_ALLOW_ORIGIN, materializePostForward, planOptionsPreflight } from "./post-forward.ts";
+import { RenderEgressHosts } from "./render-egress.ts";
 import { Semaphore } from "./semaphore.ts";
 import { hostnameOf, isNavigation, shouldAbortWithoutBody } from "./route-helpers.ts";
 
@@ -66,6 +67,8 @@ export class RenderRouteState {
   private essentialBytes = 0;
   private budgetExceeded = false;
   private essentialBudgetExceeded = false;
+  // Registrable domains of fulfilled subresources → Result.renderEgressHosts (BULK-3).
+  private readonly egressHostsList = new RenderEgressHosts();
 
   constructor(input: RenderInput, actions: RenderAction[], guard: BrowserUrlGuard) {
     this.input = input;
@@ -89,6 +92,16 @@ export class RenderRouteState {
   setMainFrame(frame: PlaywrightFrame): void {
     this.mainFrame = frame;
   }
+
+  /** Total network egress for the render (every fulfilled subresource's bytes) →
+   *  `Result.egressBytes` (BULK-5). Distinct from `fetchResult.bytes` (rendered DOM). */
+  egressBytes(): number { return this.bytesFulfilled + this.essentialBytes; }
+
+  /** Registrable domains the render loaded subresources from → bulk per-host union (BULK-3). */
+  egressHosts(): string[] { return this.egressHostsList.get(); }
+
+  /** Record a fulfilled subresource's host (only on a real `route.fulfill`). */
+  private noteEgressHost(url: string): void { this.egressHostsList.note(url); }
 
   /**
    * request.frame() throws for a navigation request Playwright hasn't created the
@@ -142,18 +155,14 @@ export class RenderRouteState {
       // from intermediate hops isn't carried. Playwright can't follow a fulfilled redirect for a
       // nav. Cross-origin-redirect only; every hop was guard-validated, not an SSRF gap.
     }
-    // TIER3-DOS-1: each pool (essential vs non-essential) is capped. The essential cap is
-    // ESSENTIAL_BUDGET_MULTIPLIER× the non-essential cap so heavy client apps (Cursor, Jira)
-    // load instead of crashing into an error boundary. The response that crosses its pool's
-    // cap: NON-essential is aborted; ESSENTIAL is still fulfilled (aborting a script/fetch
-    // mid-load crashes the client app — e.g. Clerk on cerebralvalley.ai), but the pool is
-    // marked exceeded so subsequent resources in it are aborted. Total egress ~4×maxBytes.
+    // TIER3-DOS-1: each pool (essential vs non-essential) is capped. Essential cap is
+    // ESSENTIAL_BUDGET_MULTIPLIER× non-essential so heavy client apps (Cursor, Jira) load
+    // instead of crashing an error boundary. NON-essential crossing → aborted; ESSENTIAL
+    // crossing → still fulfilled (aborting mid-load crashes the app), pool marked exceeded.
     const essential = isEssentialRenderType(resourceType);
-    // Re-check AFTER resolve: the early check ran before this `await`, so a CONCURRENT
-    // essential may have blown the pool while this request was in flight. The first
-    // essential to cross the cap is fulfilled; every essential that finds the pool
-    // already blown is aborted. (The check + counter update below are synchronous, so
-    // two handlers can't both pass the crossing check — one sets the flag first.)
+    // Re-check AFTER resolve: a CONCURRENT essential may have blown the pool while this
+    // was in flight. The first to cross is fulfilled; the rest find it blown + abort.
+    // (check + update are synchronous, so two can't both pass — one sets the flag first.)
     if (essential ? this.essentialBudgetExceeded : this.budgetExceeded) {
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
@@ -169,6 +178,7 @@ export class RenderRouteState {
     }
     if (essential) this.essentialBytes += outcome.body.byteLength;
     else this.bytesFulfilled += outcome.body.byteLength;
+    this.noteEgressHost(url);
     await route.fulfill({
       status: outcome.status,
       body: outcome.body,
@@ -176,8 +186,7 @@ export class RenderRouteState {
     });
   }
 
-  /** #111: a non-GET Tier-3 request — a first-party CORS preflight (OPTIONS) gets a synthesized permissive
-   *  response; a first-party POST (fetch/xhr) forwards through FetcherPort (body reserved, released on reject); else aborts. */
+  /** #111: non-GET Tier-3 — OPTIONS preflight → synthesized permissive response; first-party POST → forwarded via FetcherPort (body reserved, released on reject); else aborts. */
   private async handleNonGet(route: PlaywrightRoute, request: PlaywrightRequest, url: string, resourceType: string): Promise<void> {
     // CORS preflight (OPTIONS) for a cross-origin POST: synthesize a permissive first-party response (#111 codex P1).
     if (request.method() === "OPTIONS") {
@@ -215,6 +224,7 @@ export class RenderRouteState {
       }
       this.essentialBytes += outcome.body.byteLength;
       this.actions.push({ type: "request-forwarded-post", outcome: "ok", url: safeRenderUrl(url), resourceType, method: "POST", bodyBytes: plan.body.byteLength, responseBytes: outcome.body.byteLength });
+      this.noteEgressHost(url);
       // ACAO:* admits the cross-origin POST response (#111 codex P1). Credentialed CORS (credentials:"include") would need the Origin echoed — known limitation (rare; cookies stripped).
       await route.fulfill({
         status: outcome.status,
@@ -227,23 +237,13 @@ export class RenderRouteState {
     }
   }
 
-  private async abortBlockedType(
-    route: PlaywrightRoute,
-    url: string,
-    resourceType: string,
-  ): Promise<void> {
+  private async abortBlockedType(route: PlaywrightRoute, url: string, resourceType: string): Promise<void> {
     const blocked = await this.guard.check(url, AbortSignal.timeout(this.input.timeoutMs));
     const reason = blocked?.code ?? `blocked_${resourceType}`;
     await this.abort(route, url, resourceType, reason, "resource-aborted");
   }
 
-  private async abort(
-    route: PlaywrightRoute,
-    url: string,
-    resourceType: string,
-    reason: string,
-    type: RenderAction["type"] = "request-blocked",
-  ): Promise<void> {
+  private async abort(route: PlaywrightRoute, url: string, resourceType: string, reason: string, type: RenderAction["type"] = "request-blocked"): Promise<void> {
     this.actions.push({ type, reason, url: safeRenderUrl(url), resourceType });
     await route.abort("blockedbyclient");
   }

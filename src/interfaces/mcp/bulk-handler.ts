@@ -26,7 +26,8 @@ export async function callBulk(args: unknown, deps: CaptatumMcpServerDeps): Prom
     // not dropped as a generic error. Bulk reuses fetch:read / fetch:transform (no bulk:read in v1);
     // raw default → fetch:read, summary/extract → fetch:transform.
     requireScope(deps.auth, requiredScopeForCaptatum(args, "raw"));
-    bulk = await deps.bulk!.execute(args, { fetchedAt: new Date(deps.clock.nowMs()).toISOString() } satisfies CaptatumContext);
+    // Thread clientId so the orchestrator can key the per-tenant BulkQuotaPort reservation (BULK-1).
+    bulk = await deps.bulk!.execute(args, { fetchedAt: new Date(deps.clock.nowMs()).toISOString(), clientId: deps.auth.clientId } satisfies CaptatumContext);
   } catch (error) {
     await auditBulkFailure(deps, args, started, error);
     throw toMcpError(error);
