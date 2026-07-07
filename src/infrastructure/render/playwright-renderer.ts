@@ -64,7 +64,7 @@ export class PlaywrightRenderer implements RenderPort {
     let context: PlaywrightContext | undefined;
     let page: PlaywrightPage | undefined;
     let ownsBrowser = false;
-
+    let onSignalAbort: (() => void) | undefined;
     try {
       const playwright = await this.loadPlaywright();
       if (this.cdpEndpoint) {
@@ -86,6 +86,13 @@ export class PlaywrightRenderer implements RenderPort {
         acceptDownloads: false,
       });
       page = await context.newPage();
+      // CANCEL the render on the bulk wall signal (codex R4 P2): close the page so an abandoned
+      // render can't keep a browser slot + egress after the bulk returns (close rejects goto/settle).
+      if (input.signal) {
+        onSignalAbort = (): void => { void page?.close().catch(() => {}); };
+        if (input.signal.aborted) onSignalAbort();
+        else input.signal.addEventListener("abort", onSignalAbort, { once: true });
+      }
       state.setMainFrame(page.mainFrame());
       await installPageControls(page, actions, input.timeoutMs);
       await page.route("**/*", (route) => state.handle(route));
@@ -125,6 +132,7 @@ export class PlaywrightRenderer implements RenderPort {
     } catch (error) {
       return renderFailure(state.fatal ?? rejectFromError(error), actions, state);
     } finally {
+      if (onSignalAbort && input.signal) input.signal.removeEventListener("abort", onSignalAbort);
       await closeQuietly(page);
       await closeQuietly(context);
       // Only close a browser we launched; the CDP sidecar is shared + long-lived.
@@ -150,11 +158,7 @@ async function installPageControls(
 
 function blockDownload(value: PlaywrightEventValue, actions: RenderAction[]): void {
   const download = value as PlaywrightDownload;
-  actions.push({
-    type: "download-blocked",
-    reason: "downloads disabled",
-    url: safeRenderUrl(download.url()),
-  });
+  actions.push({ type: "download-blocked", reason: "downloads disabled", url: safeRenderUrl(download.url()) });
   void download.cancel?.();
 }
 
@@ -199,18 +203,14 @@ function capRenderedBytes(content: string, maxBytes: number): { bytes: Uint8Arra
 }
 
 function renderFailure(rejected: RejectResult, actions: RenderAction[], state: RenderRouteState): RenderFailure {
-  // A failed render may have fulfilled subresources before failing — carry the partial egress so the
-  // bulk byte budget + per-host gate see it (codex R2 P2). 0/empty when nothing was fulfilled.
+  // A failed render may have fulfilled subresources before failing — carry the partial egress (codex R2 P2).
   const egressHosts = state.egressHosts();
   return { ...rejected, rendered: false, actions, egressBytes: state.egressBytes(), ...(egressHosts.length ? { egressHosts } : {}) };
 }
 
 async function defaultLoadPlaywright(): Promise<PlaywrightModule> {
-  try {
-    return await import("playwright") as unknown as PlaywrightModule;
-  } catch {
-    throw new RenderError("render_unavailable", "Playwright is not installed");
-  }
+  try { return await import("playwright") as unknown as PlaywrightModule; }
+  catch { throw new RenderError("render_unavailable", "Playwright is not installed"); }
 }
 
 class RenderError extends Error {

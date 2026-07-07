@@ -7,6 +7,10 @@ export interface RenderInput {
   timeoutMs: number;
   maxHops: number;
   fetcher: FetcherPort;
+  /** Optional abort signal (e.g. the captatum_bulk wall deadline). When it fires, the renderer
+   *  CANCELS the in-flight render (closes the page) so an abandoned render cannot keep acquiring
+   *  a browser slot + egressing subresources after the bulk returns (codex R4 P2). Additive. */
+  signal?: AbortSignal;
 }
 
 export type RenderActionType =

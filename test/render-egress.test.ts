@@ -94,3 +94,29 @@ test("maybeRender: a FAILED render still surfaces its partial Tier-3 egress (cod
   assert.equal(out.egressBytes, 4000, "egressBytes = Tier-1 (1000) + partial Tier-3 (3000) even on a failed render");
   assert.ok(out.renderEgressHosts?.includes("victim.test"), "partial render hosts surfaced on failure");
 });
+
+test("maybeRender: threads the bulk-wall signal to the renderer (codex R4 P2 — abandoned render is cancelable)", async () => {
+  // The wall signal MUST reach renderer.render so an abandoned render (wall fired mid-render) can be
+  // CANCELED (page close), not just un-awaited — otherwise it keeps a browser slot + egresses post-bulk.
+  const ac = new AbortController();
+  let received: AbortSignal | undefined;
+  const base: Result = {
+    url: "https://a.test/x", bytes: 100, code: 200, codeText: "OK", durationMs: 5, result: "",
+    schemaVersion: 1, finalUrl: "https://a.test/x", redirects: [], tier: 1, output: "raw",
+    platform: { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" },
+    jsRequired: true, resolvedVia: "tier1-shell-gate", attempts: [], contentType: "text/html",
+    timings: { totalMs: 5, fetchMs: 5 }, errors: [],
+  };
+  const renderer: RenderPort = {
+    async render(input): Promise<RenderOutput> {
+      received = input.signal;
+      return { rendered: false, rejected: true, code: "render_unavailable", message: "x", actions: [] };
+    },
+  };
+  await maybeRender({
+    result: base,
+    request: { url: "https://a.test/x", allowRender: true, maxBytes: 1_000_000, renderTimeoutMs: 5000, maxHops: 3, timeoutMs: 5000 } as never,
+    renderer, fetcher: noopFetcher, extractHtml, clock, signal: ac.signal,
+  });
+  assert.equal(received, ac.signal, "the wall signal is threaded into renderer.render");
+});

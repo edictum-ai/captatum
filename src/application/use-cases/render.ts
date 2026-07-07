@@ -16,6 +16,9 @@ export interface MaybeRenderInput {
   fetcher: FetcherPort;
   extractHtml: HtmlExtractor;
   clock: ClockPort;
+  /** Optional abort signal (the bulk wall) — threaded into the render so an abandoned render is
+   *  CANCELED, not just un-awaited (codex R4 P2). */
+  signal?: AbortSignal;
 }
 
 export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
@@ -116,6 +119,7 @@ async function safeRender(input: MaybeRenderInput): Promise<RenderOutput> {
       timeoutMs: input.request.renderTimeoutMs,
       maxHops: input.request.maxHops,
       fetcher: input.fetcher,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
   } catch (error) {
     return {

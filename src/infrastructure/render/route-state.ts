@@ -118,9 +118,8 @@ export class RenderRouteState {
     const request = route.request();
     const url = request.url();
     const resourceType = request.resourceType();
-    // The main-frame document navigation is the page the user asked to fetch — it is
-    // never an ad/tracker (even when its host is a blocklisted vendor apex like
-    // amplitude.com), and it owns provenance below. Computed once and reused.
+    // The main-frame document navigation is the page the user asked to fetch — never an ad/tracker
+    // (even when its host is a blocklisted vendor apex like amplitude.com); owns provenance below.
     const mainFrameNav = isNavigation(request) && this.isMainFrame(request);
     if (!mainFrameNav && shouldAbortWithoutBody(url, resourceType, this.mainHost)) {
       return this.abortBlockedType(route, url, resourceType);
@@ -128,9 +127,8 @@ export class RenderRouteState {
     if (!mainFrameNav && request.method() !== "GET") {
       return this.handleNonGet(route, request, url, resourceType);
     }
-    // Once a pool is blown, subsequent resources in THAT pool are aborted before any
-    // network. Essentials and non-essentials have separate pools, so a blown
-    // non-essential budget still lets essential scripts/data through.
+    // Once a pool is blown, subsequent resources in THAT pool abort before network. Essentials
+    // and non-essentials have separate pools, so a blown non-essential budget still lets essentials through.
     if (isEssentialRenderType(resourceType) ? this.essentialBudgetExceeded : this.budgetExceeded) {
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
@@ -153,16 +151,15 @@ export class RenderRouteState {
       // hop was guard-validated, not an SSRF gap.
     }
     const essential = isEssentialRenderType(resourceType);
-    // Count a fetched body + its redirect/final hosts for EVERY resolved body — including ones then
-    // aborted by the byte cap — because the egress already happened (codex R2 P2). Essential cap is
-    // ESSENTIAL_BUDGET_MULTIPLIER× non-essential; NON-essential crossing → abort, ESSENTIAL → fulfill.
+    // Count EVERY resolved body + its redirect/final hosts — including ones then aborted by the byte
+    // cap — because the egress already happened (codex R2 P2). Essential cap is ESSENTIAL_BUDGET_MULTIPLIER×
+    // non-essential; NON-essential crossing → abort, ESSENTIAL → fulfill.
     const countFetched = (): void => {
       if (essential) this.essentialBytes += outcome.body.byteLength;
       else this.bytesFulfilled += outcome.body.byteLength;
       this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
     };
-    // Re-check AFTER resolve: a CONCURRENT essential may have blown the pool while this was in
-    // flight. The body was fetched — count it, then abort the route.
+    // Re-check AFTER resolve: a CONCURRENT essential may have blown the pool while this was in flight.
     if (essential ? this.essentialBudgetExceeded : this.budgetExceeded) {
       countFetched();
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
@@ -214,8 +211,11 @@ export class RenderRouteState {
         this.essentialBytes -= plan.body.byteLength;
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
       }
-      if (this.essentialBudgetExceeded) { // a concurrent POST may have blown the pool in flight (#111 codex P2)
-        this.essentialBytes -= plan.body.byteLength;
+      if (this.essentialBudgetExceeded) { // a concurrent POST blew the pool in flight (#111 codex P2)
+        // The POST fully egressed (request body + this response) — count both + the host even though
+        // we abort the route. (codex R4 P2: was `-= plan.body.byteLength` → released → undercount.)
+        this.essentialBytes += outcome.body.byteLength;
+        this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
         return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
       }
       // The crossing POST marks the pool exceeded but is still fulfilled (aborting mid-load 400s the page).
