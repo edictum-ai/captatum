@@ -100,9 +100,6 @@ export class RenderRouteState {
   /** Registrable domains the render loaded subresources from → bulk per-host union (BULK-3). */
   egressHosts(): string[] { return this.egressHostsList.get(); }
 
-  /** Record a fulfilled subresource's host (only on a real `route.fulfill`). */
-  private noteEgressHost(url: string): void { this.egressHostsList.note(url); }
-
   /**
    * request.frame() throws for a navigation request Playwright hasn't created the
    * frame for yet (see Playwright's Request.frame docs). Treat that — and a
@@ -178,7 +175,7 @@ export class RenderRouteState {
     }
     if (essential) this.essentialBytes += outcome.body.byteLength;
     else this.bytesFulfilled += outcome.body.byteLength;
-    this.noteEgressHost(url);
+    this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
     await route.fulfill({
       status: outcome.status,
       body: outcome.body,
@@ -224,7 +221,7 @@ export class RenderRouteState {
       }
       this.essentialBytes += outcome.body.byteLength;
       this.actions.push({ type: "request-forwarded-post", outcome: "ok", url: safeRenderUrl(url), resourceType, method: "POST", bodyBytes: plan.body.byteLength, responseBytes: outcome.body.byteLength });
-      this.noteEgressHost(url);
+      this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
       // ACAO:* admits the cross-origin POST response (#111 codex P1). Credentialed CORS (credentials:"include") would need the Origin echoed — known limitation (rare; cookies stripped).
       await route.fulfill({
         status: outcome.status,

@@ -40,12 +40,23 @@ export async function executeSeedWithRetry(
   await abortableSleep(wait, ctx.signal);
   if (ctx.signal.aborted || ctx.wallExceeded()) return { result: first, retried: false };
   const second = await run();
-  // Both attempts egressed to the network (the 429/503 body is read up to maxBytes); fold the
-  // first attempt's bytes into the retry result's egressBytes so the byte budget, totals, and
-  // BulkSeedResult.egressBytes all reflect the real network egress (BULK-5 honesty on retry).
+  // Both attempts egressed to the network. Fold the FIRST attempt's egress into the retry result:
+  // bytes (the 429/503 body is read up to maxBytes), the redirect/finalUrl hosts, AND any render
+  // subresource hosts — so the byte budget + the per-host union count gate see the real first-
+  // attempt egress (codex P2: dropping the first attempt's hosts lets a retried redirect/render
+  // funnel evade maxPerHostInBulk across many retried seeds). finalUrl + bytes stay the retry's.
   const firstEgress = first.egressBytes ?? first.bytes;
   const secondEgress = second.egressBytes ?? second.bytes;
-  return { result: { ...second, egressBytes: firstEgress + secondEgress }, retried: true };
+  const mergedRenderHosts = [...(first.renderEgressHosts ?? []), ...(second.renderEgressHosts ?? [])];
+  return {
+    result: {
+      ...second,
+      egressBytes: firstEgress + secondEgress,
+      redirects: [...first.redirects, ...second.redirects],
+      ...(mergedRenderHosts.length > 0 ? { renderEgressHosts: mergedRenderHosts } : {}),
+    },
+    retried: true,
+  };
 }
 
 function isRetriable(r: Result): boolean {

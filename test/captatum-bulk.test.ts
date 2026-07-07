@@ -562,6 +562,25 @@ test("bulk retry: BOTH attempts' egress is counted (the 429 body is real network
   assert.equal(res.totals.egressBytes, 1500, "the byte budget reflects both attempts' egress");
 });
 
+test("bulk retry: BOTH attempts' egress HOSTS are preserved (codex P2 — first-attempt redirects)", async () => {
+  // First attempt 429s but only AFTER redirecting to victim1; the retry redirects to victim2. The
+  // retried seed's redirect hosts must include BOTH victims (was: only the retry's) so the per-host
+  // union count gate sees the first attempt's real egress across many retried seeds.
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", okResult("https://a.test/x", { redirects: ["https://victim2.test/x"] }));
+  let calls = 0;
+  const realExec = exec.execute.bind(exec);
+  exec.execute = async (input: unknown, ctx?: CaptatumContext) => {
+    calls++;
+    const url = (input as { url: string }).url;
+    if (calls === 1) return { ...rejectResult(url, "http_429", "Too Many Requests"), code: 429, retryAfterMs: 50, redirects: [{ url: "https://victim1.test/x", status: 302 }] };
+    return realExec(input, ctx);
+  };
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1 }).execute({ urls: ["https://a.test/x"] });
+  assert.ok(res.results[0].redirectHosts.some((h) => h.includes("victim1")), "first-attempt redirect host preserved on retry");
+  assert.ok(res.results[0].redirectHosts.some((h) => h.includes("victim2")), "retry redirect host preserved");
+});
+
 test("bulk maxRenderedSeeds: an empty/failed render ATTEMPT still consumes the budget (tier!==3 regression)", async () => {
   // Adversarial run of empty SPA shells: each seed is jsRequired=true but the render returns empty
   // (tier "error", render_empty) — NOT tier 3. The OLD check (tier===3) missed these, so the cap

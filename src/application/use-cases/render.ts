@@ -45,11 +45,15 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
   input.result.timings.renderMs = renderMs;
   // Surface the render's network egress + subresource hosts onto the Tier-1 result
   // EARLY so every downstream path (promote, render-empty, render-rejected-success)
-  // carries them: egressBytes for honest byte accounting (BULK-5), renderEgressHosts
-  // for the per-host union count gate (BULK-3). A true render FAILURE (rendered=false)
-  // has no RenderSuccess egress info — correctly unset (no subresources fulfilled).
+  // carries them. egressBytes = the Tier-1 document fetch (input.result.bytes — the seed
+  // already spent it to decide jsRequired) PLUS the Tier-3 render's subresource bytes
+  // (codex P2: counting only the Tier-3 pass underreports by up to one initial fetch per
+  // rendered seed). renderEgressHosts for the per-host union count gate (BULK-3). A true
+  // render FAILURE (rendered=false) has no Tier-3 egress — correctly only the Tier-1 bytes.
   if (rendered.rendered) {
-    if (rendered.egressBytes !== undefined) input.result.egressBytes = rendered.egressBytes;
+    const tier1Bytes = input.result.bytes ?? 0;
+    const renderEgress = rendered.egressBytes ?? 0;
+    input.result.egressBytes = tier1Bytes + renderEgress;
     if (rendered.egressHosts && rendered.egressHosts.length > 0) input.result.renderEgressHosts = rendered.egressHosts;
   }
 
