@@ -91,8 +91,7 @@ export class RenderRouteState {
     });
   }
 
-  /** Set after the page exists; main-frame requests are told apart from iframe
-    * documents by frame === page.mainFrame(). */
+  /** Set after the page exists; main-frame requests are told apart from iframe documents by frame === page.mainFrame(). */
   setMainFrame(frame: PlaywrightFrame): void {
     this.mainFrame = frame;
   }
@@ -117,6 +116,14 @@ export class RenderRouteState {
     }
   }
 
+  /** Re-gate after fetchSem.acquire (#143): without it a burst of M requests passes the pre-fetch gate
+   *  before any marks exceeded → M×maxBytes; false = pool blew while queued (fetchSem released), caller aborts without fetching → bounded to N. Shared GET+POST (fetchSem shared; codex P1). */
+  private postAcquireGate(essential: boolean): boolean {
+    if (!this.pool.isExceeded(essential)) return true;
+    this.fetchSem.release();
+    return false;
+  }
+
   async handle(route: PlaywrightRoute): Promise<void> {
     const request = route.request();
     const url = request.url();
@@ -134,13 +141,8 @@ export class RenderRouteState {
     if (this.pool.isExceeded(isEssentialRenderType(resourceType))) {
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
-    // Bound concurrent render fetches (codex R11 P1) + RE-GATE after acquire (#143): without the re-gate a
-    // page bursting M requests egresses M×maxBytes; re-gating bounds past-the-gate fetches into resolve() to N → N×maxBytes per pool.
-    await this.fetchSem.acquire();
-    if (this.pool.isExceeded(isEssentialRenderType(resourceType))) {
-      this.fetchSem.release();
-      return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
-    }
+    await this.fetchSem.acquire(); // codex R11 P1: bound concurrent render fetches; postAcquireGate re-gates (#143).
+    if (!this.postAcquireGate(isEssentialRenderType(resourceType))) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     let outcome;
     try { outcome = await this.fulfiller.resolve(url, resourceType); } finally { this.fetchSem.release(); }
     if (outcome.kind === "reject") {
@@ -206,6 +208,7 @@ export class RenderRouteState {
     if (this.pool.used(true) > this.pool.cap(true)) this.pool.markExceeded(true); // crossing reservation marks the pool blown synchronously (#111 codex P2)
     try {
       await this.fetchSem.acquire(); // POST fetches bounded by the render fetch semaphore too (codex R13 P2)
+      if (!this.postAcquireGate(true)) { this.pool.releaseEssential(plan.body.byteLength); return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted"); }
       let outcome;
       try { outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit); }
       finally { this.fetchSem.release(); }
@@ -213,15 +216,12 @@ export class RenderRouteState {
         this.pool.releaseEssential(plan.body.byteLength);
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
       }
-      if (this.pool.isExceeded(true)) { // a concurrent POST blew the pool in flight (#111 codex P2)
-        // The POST fully egressed (request body + this response) — count both + the host even though
-        // we abort the route. (codex R4 P2: was released → undercount.)
+      if (this.pool.isExceeded(true)) { // a concurrent POST blew the pool in flight; the POST fully egressed (body+response) — count both + host, then abort (codex R4 P2).
         this.pool.add(true, outcome.body.byteLength);
         this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
         return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
       }
-      // The crossing POST marks the pool exceeded but is still fulfilled (aborting mid-load 400s the page).
-      if (this.pool.used(true) + outcome.body.byteLength > this.pool.cap(true)) this.pool.markExceeded(true);
+      if (this.pool.used(true) + outcome.body.byteLength > this.pool.cap(true)) this.pool.markExceeded(true); // crossing POST: fulfill (aborting mid-load 400s the page)
       this.pool.add(true, outcome.body.byteLength);
       this.actions.push({ type: "request-forwarded-post", outcome: "ok", url: safeRenderUrl(url), resourceType, method: "POST", bodyBytes: plan.body.byteLength, responseBytes: outcome.body.byteLength });
       this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);

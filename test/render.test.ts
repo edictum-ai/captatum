@@ -347,6 +347,35 @@ test("render byte budget bounds a CONCURRENT essential burst to ~cap + N×maxByt
   assert.ok(egress >= ESSENTIAL_RENDER_BYTES, `essentials loaded up to the cap; got ${egress}`);
 });
 
+test("render byte budget bounds a CONCURRENT GET+POST burst — the POST path's post-acquire re-gate (codex P1)", async () => {
+  // The POST path (handleNonGet) shares fetchSem with GET, so its post-acquire re-gate (postAcquireGate)
+  // bounds POST-response crossing to N too. Without it, up to postSemaphore (6) POSTs past the pre-fetch
+  // gate each fetch a full maxBytes response after the pool blows — codex P1. POSTs alone can't cross the
+  // 48MB cap (postSemaphore×6MB=36MB), so this mixes 8 GETs (40MB, under cap) with 6 first-party POSTs
+  // (1MB body + 5MB response) so the cap blows on POST responses. Dispatched CONCURRENTLY (Promise.all).
+  const fiveMb = 5 * 1024 * 1024;
+  const oneMb = 1024 * 1024;
+  const gets = Array.from({ length: 8 }, (_, i) => `https://public.test/g${i}`);
+  const posts = Array.from({ length: 6 }, (_, i) => `https://public.test/api/p${i}`);
+  const results: Record<string, FetcherResult> = {};
+  for (const u of [...gets, ...posts]) results[u] = fetchResult("x".repeat(fiveMb), u);
+  const state = new RenderRouteState(renderInput(new FakeFetcher(results), { maxBytes: fiveMb }), [], new FakeGuard({}));
+  const postBody = new TextEncoder().encode("z".repeat(oneMb));
+  const mk = (u: string, method: "GET" | "POST"): PlaywrightRoute => ({
+    request: () => ({
+      url: () => u, method: () => method, resourceType: () => "fetch", isNavigationRequest: () => false, frame: () => null,
+      ...(method === "POST" ? { headers: () => ({ "content-type": "application/json", "content-length": String(oneMb) }), postDataBuffer: () => postBody } : {}),
+    }),
+    fulfill: async () => {}, abort: async () => {}, continue: async () => {},
+  } as unknown as PlaywrightRoute);
+  await Promise.all([...gets.map((u) => mk(u, "GET")), ...posts.map((u) => mk(u, "POST"))].map((r) => state.handle(r)));
+  const egress = state.egressBytes();
+  // Without the POST re-gate this approaches 8×5MB (GETs) + 6×1MB (POST bodies) + 6×5MB (POST responses)
+  // = 76MB (all 6 POST responses fetch past the blown pool). The re-gate bounds POST responses to N crossing.
+  assert.ok(egress < 70 * 1024 * 1024, `POST re-gate bounded the mixed burst (codex P1 gap was ~76MB); got ${egress}`);
+  assert.ok(egress >= ESSENTIAL_RENDER_BYTES, `the burst crossed the cap (GETs+POSTs did load); got ${egress}`);
+});
+
 test("renderer concatenates captured iframe content into the rendered HTML", async () => {
   const harness = new BrowserHarness({
     content: "<html><head><title>Host Page</title></head><body>host body text</body></html>",
