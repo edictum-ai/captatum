@@ -118,6 +118,7 @@ export class LlmTransformer implements TransformPort {
         throw new TransformError(
           "transform_provider_failed",
           errorMessage(lastError, `All ${tried.length} candidate model(s) failed`),
+          accumulatedCostUsd || undefined,
         );
       }
       const provider = this.providers[pick.provider];
@@ -189,7 +190,17 @@ export class LlmTransformer implements TransformPort {
         continue;
       }
 
-      const finalized = finalize(input, generated.text, pick.model, this.router, generated.outTokens);
+      let finalized;
+      try {
+        finalized = finalize(input, generated.text, pick.model, this.router, generated.outTokens);
+      } catch (error) {
+        // finalize threw (e.g. extract_invalid_json) AFTER billing — re-throw with accumulated cost.
+        throw new TransformError(
+          error instanceof TransformError ? error.code : "extract_finalize_failed",
+          errorMessage(error, "Extract finalize failed"),
+          accumulatedCostUsd || undefined,
+        );
+      }
       return {
         result: finalized.result,
         info: {

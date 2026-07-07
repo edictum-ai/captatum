@@ -329,6 +329,23 @@ test("a shorter later truncation still syncs best's cost (no dropped billed atte
   assert.equal(result.info.costUsd, 0.003, "best's cost includes the later (shorter) billed attempt");
 });
 
+test("a billed extract failure carries the cost (for the bulk cap — codex P1)", async () => {
+  // The provider bills $0.05 but returns invalid JSON → finalize throws. Pre-fix the thrown error
+  // carried no cost, so applyOutputMode + the bulk budget recorded $0 (the cap never tripped).
+  // Post-fix TransformError carries the accumulated cost.
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "paid/model", { free: false })],
+    async generate(): Promise<LlmGenerateResult> { return { text: '{"invalid"', costUsd: 0.05 }; },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const schema = { type: "object", properties: { x: { type: "string" } } };
+  await assert.rejects(
+    transformer.transform({ mode: "extract", output: "extract", content: "page", prompt: "p", schema }),
+    (err: unknown) => err instanceof TransformError && err.costUsd === 0.05,
+  );
+});
+
 test("#131 P2-B: an extract that never completes surfaces truncated (never throws extract_invalid_json)", async () => {
   // The model always truncates, so the incomplete JSON is never parseable. Pre-fix this threw
   // extract_invalid_json; post-fix the cap escalates then surfaces the longest raw text as

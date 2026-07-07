@@ -154,7 +154,12 @@ export function redactSignedQueryParams(url: string): string {
   if (q >= 0) out = redactParamRange(out, q, hash0 > q ? hash0 : normalized.length);
   if (hash0 >= 0) { // re-find '#' (redacting the query may have shifted it) + redact the fragment
     const hash = out.indexOf("#");
-    if (hash >= 0) out = redactParamRange(out, hash, out.length);
+    if (hash >= 0) {
+      // Hash-router form: #/cb?access_token=… — parse from the fragment's first '?' (mirrors
+      // fragmentCredentialReason). Simple form: #access_token=… — parse the whole fragment.
+      const fragQ = out.indexOf("?", hash);
+      out = redactParamRange(out, fragQ >= 0 ? fragQ : hash, out.length);
+    }
   }
   return out;
 }

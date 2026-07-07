@@ -136,6 +136,14 @@ test("bulk structured: fragment tokens + HTML-escaped separators in failure URLs
   assert.ok(!json.includes("AMPSECRET"), "HTML-escaped-separator signature redacted");
 });
 
+test("bulk structured: hash-router fragment tokens (#/cb?access_token=…) are redacted", () => {
+  // A hash-router form (#/cb?access_token=…) hides the token behind a path prefix + inner '?'.
+  // The fragment redaction must parse from the fragment's first '?' (mirrors fragmentCredentialReason).
+  const failures = [{ url: "https://bad host/p?x=1#/cb?access_token=HASHSECRET", code: "invalid_url", message: "bad" }];
+  const bulk: BulkResult = { ...makeBulk(0, 50), results: [], count: 0, passed: 0, failed: 1, status: "fail", ok: false, failures };
+  assert.ok(!JSON.stringify(buildBulkStructuredContent(bulk)).includes("HASHSECRET"), "hash-router fragment token redacted");
+});
+
 test("bulk structured: compact-tier row diagnostics are clipped (no ceiling overflow from long messages)", () => {
   // 50 rows each with a 2KB warning message would overflow the 25 KB ceiling from warnings[] alone.
   const longMsg = "w".repeat(2000);

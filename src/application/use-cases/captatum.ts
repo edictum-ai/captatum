@@ -171,7 +171,7 @@ export class CaptatumUseCase {
     } catch (error) {
       transformMs = elapsed(transformStartMs, this.clock.nowMs());
       base.output = "raw";
-      base.transform = { provider: "none", reason: "failed", latencyMs: transformMs };
+      base.transform = { provider: "none", reason: "failed", latencyMs: transformMs, ...(error instanceof TransformError && error.costUsd ? { costUsd: error.costUsd } : {}) };
       base.timings.transformMs = transformMs;
       base.errors.push({ code: transformErrorCode(error), message: errorMessage(error, "Transform failed") });
       // A Tier-2 result is a structured roster (contentType application/json); a failed/absent
