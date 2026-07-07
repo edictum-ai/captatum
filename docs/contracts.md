@@ -254,18 +254,17 @@ hosted depends on both.
 
 - **`LimitingFetcher` (BULK-2) — global fetch-concurrency cap.** On hosted, the
   `FetcherPort` constructed in `src/server.ts` is wrapped in a
-  `LimitingFetcher`: a process-wide semaphore bounding the number of concurrent
+  `LimitingFetcher`: a process-wide FIFO semaphore bounding the number of concurrent
   `fetchGuarded` calls across ALL callers (every single-fetch + every bulk seed +
   every Tier-3 render subresource routes through it). Capacity
-  (`CAPTATUM_GLOBAL_FETCH_CONCURRENCY`, default 16) is sized ≥ the admission cap
-  (8) so a single-fetch call never queues (only concurrent bulks, which multiplex
-  up to `maxConcurrency` fetches each, push past it). An acquire that cannot get a
-  slot within the fetch's own `timeoutMs` (or the bulk wall signal, whichever
-  fires first) rejects as `timeout` — no caller can hang on the global gate. The
-  local binary uses the RAW fetcher (single-user; a user saturating their own
-  machine is their own concern, and per-call caps bound each call). Without this,
-  8 concurrent bulks × `maxConcurrency` 4 = up to 32 concurrent fetches would
-  exceed the 2 vCPU / 4 GiB admission sizing.
+  (`CAPTATUM_GLOBAL_FETCH_CONCURRENCY`, default 24) bounds the unbounded worst case
+  (admission 8 calls × `maxConcurrency` 4 = up to 32 concurrent fetches) below the
+  2 vCPU / 4 GiB sizing, while leaving headroom. Single-fetch shares the same FIFO
+  pool as bulk seeds (no priority): under heavy concurrent bulk load a single-fetch
+  MAY briefly queue, FIFO-fair, and if its own `timeoutMs` elapses it rejects as a
+  retriable `timeout` (no caller hangs on the global gate). The local binary uses
+  the RAW fetcher (single-user; a user saturating their own machine is their own
+  concern, and per-call caps bound each call).
 - **`BulkQuotaPort` (BULK-1) — per-tenant rolling seed-window quota.** Each hosted
   bulk call reserves its seed count against the calling tenant's rolling window
   (`CAPTATUM_BULK_QUOTA_WINDOW_SECONDS` default 60s /

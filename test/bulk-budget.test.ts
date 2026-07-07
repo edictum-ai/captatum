@@ -99,3 +99,19 @@ test("BudgetTracker: a $0 cost cap (perSeed clamps to 0) skips the transform —
   assert.equal(b.dispatch, true, "the fetch still happens");
   assert.equal(b.runTransform, false, "a $0 ceiling skips the transform entirely");
 });
+
+test("BudgetTracker: cancelReservation releases a dispatch reservation without recording settled bytes", () => {
+  const clock = fakeClock();
+  const t = new BudgetTracker({ clock, maxGlobalEgressBytes: 100, maxGlobalWallMs: 5000, maxTransformCostUsd: 1, perSeedTransformCostUsd: 0.02, perSeedMaxBytes: 60 });
+  // Reserve a seed (60 of 100), then cancel (abort path — never executed). The budget must recover
+  // so a later seed can reserve the full 60 (was: the reservation leaked → later seeds falsely blocked).
+  const b = t.beforeSeed();
+  assert.equal(b.dispatch, true);
+  t.cancelReservation(b.runTransform);
+  assert.equal(t.bytesUsed, 0, "nothing settled");
+  // A fresh reservation for the full 60 must now fit (settled 0 + reserved 0 + 60 <= 100).
+  const again = t.beforeSeed();
+  assert.equal(again.dispatch, true, "the canceled reservation did not leak — a full-size seed still fits");
+  t.afterSeed({ bytes: 60, transformReserved: again.runTransform });
+  assert.equal(t.bytesUsed, 60);
+});

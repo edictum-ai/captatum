@@ -8,9 +8,12 @@
 //
 // The acquire is bounded: a fetch that cannot get a global slot within its own
 // timeoutMs (or the bulk wall signal, whichever fires first) rejects as
-// `timeout` — no caller hangs on the global gate. Capacity is sized ≥ the
-// admission cap (8) so a single-fetch call never queues; only concurrent bulks
-// push past it. The inner fetch's timeoutMs is reduced by the time spent waiting
+// `timeout` — no caller hangs on the global gate. Capacity bounds the unbounded
+// worst case (admission 8 calls × maxConcurrency 4 = up to 32 fetches) below the
+// 2 vCPU/4 GiB sizing. Single-fetch shares the FIFO pool with bulk seeds — it has
+// NO priority, so under heavy concurrent bulk load a single-fetch MAY briefly queue
+// (FIFO-fair; fails gracefully as a retriable `timeout` if its timeoutMs elapses).
+// The inner fetch's timeoutMs is reduced by the time spent waiting
 // for a slot so total wall stays ≈ the caller's timeoutMs (the per-tier timeout
 // semantics are unchanged for single-fetch, which never waits). The SSRF guards,
 // redirect re-validation, and Retry-After parsing all live in the INNER guarded

@@ -415,6 +415,21 @@ test("bulk quota (BULK-1): an allowing quota proceeds + the call passes", async 
   assert.equal(exec.calls, 1);
 });
 
+test("bulk quota receipt (BULK-1 auditability): the BulkResult carries the reservation for the summary audit event", async () => {
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", okResult("https://a.test/x"));
+  const quota = new FakeQuotaPort({ ok: true, reserved: 1, windowSeconds: 60, limit: 300, used: 5 });
+  const res = await makeBulk(exec, fakeClock(), {}, quota).execute({ urls: ["https://a.test/x"] }, { clientId: "tenant-A" });
+  assert.deepEqual(res.quota, { reserved: 1, windowSeconds: 60, limit: 300 }, "the quota receipt is threaded onto BulkResult for the audit summary event");
+});
+
+test("bulk quota receipt: absent on the local flavor (no quota port configured)", async () => {
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", okResult("https://a.test/x"));
+  const res = await makeBulk(exec).execute({ urls: ["https://a.test/x"] });
+  assert.equal(res.quota, undefined, "no quota receipt when no quota port is configured (local)");
+});
+
 test("bulk quota (BULK-1): a store-error refusal is fail-closed (BulkQuotaError, non-retryable)", async () => {
   const exec = new FakeExecutor();
   exec.results.set("https://a.test/x", okResult("https://a.test/x"));
@@ -526,4 +541,37 @@ test("bulk retry: a 429 with NO retryAfterMs is NOT retried (single attempt, no 
   const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1 }).execute({ urls: ["https://a.test/x"] });
   assert.equal(calls, 1, "no retry without a Retry-After");
   assert.ok(!res.results[0].warnings.some((w) => w.code === "bulk_retried_429"), "no retry warning");
+});
+
+test("bulk retry: BOTH attempts' egress is counted (the 429 body is real network egress, BULK-5 on retry)", async () => {
+  // First attempt: 429 with a 1000-byte body + Retry-After. Second attempt: 200 with a 500-byte body.
+  // The seed's egressBytes must be 1500 (both attempts), not just the retry's 500.
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", { ...okResult("https://a.test/x"), bytes: 500 });
+  let calls = 0;
+  const realExec = exec.execute.bind(exec);
+  exec.execute = async (input: unknown, ctx?: CaptatumContext) => {
+    calls++;
+    const url = (input as { url: string }).url;
+    if (calls === 1) return { ...rejectResult(url, "http_429", "Too Many Requests"), code: 429, bytes: 1000, retryAfterMs: 50 };
+    return realExec(input, ctx);
+  };
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1 }).execute({ urls: ["https://a.test/x"] });
+  assert.equal(calls, 2, "retried once");
+  assert.equal(res.results[0].egressBytes, 1500, "egressBytes sums both attempts (1000 + 500)");
+  assert.equal(res.totals.egressBytes, 1500, "the byte budget reflects both attempts' egress");
+});
+
+test("bulk maxRenderedSeeds: an empty/failed render ATTEMPT still consumes the budget (tier!==3 regression)", async () => {
+  // Adversarial run of empty SPA shells: each seed is jsRequired=true but the render returns empty
+  // (tier "error", render_empty) — NOT tier 3. The OLD check (tier===3) missed these, so the cap
+  // never bound. The fix counts render ATTEMPTS (renderAllowed && jsRequired): with maxRenderedSeeds=2
+  // + 5 such seeds, exactly 2 attempt + 3 are downgraded (warned).
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 5 }, (_, i) => `https://src${i}.test/p`);
+  for (const u of urls) exec.results.set(u, { ...okResult(u), tier: "error", jsRequired: true, codeText: "render_empty" });
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1, maxPerHostInflight: 50, maxRenderedSeeds: 2 }).execute({ urls, allowRender: true });
+  const downgraded = res.results.filter((r) => r.warnings.some((w) => w.code === "bulk_render_cap_exceeded"));
+  assert.ok(downgraded.length >= 1, `>=1 empty-shell seed downgraded past the cap (was: 0 with the tier===3 bug); got ${downgraded.length}`);
+  assert.ok(downgraded.length >= 3, `3 of 5 empty-shell seeds downgraded (cap=2); got ${downgraded.length}`);
 });

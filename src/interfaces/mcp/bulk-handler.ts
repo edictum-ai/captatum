@@ -85,6 +85,8 @@ async function auditBulkResult(deps: CaptatumMcpServerDeps, bulk: BulkResult): P
     transformCostUsd: bulk.totals.transformCostUsd,
     transformInTokens: bulk.totals.transformInTokens,
     transformOutTokens: bulk.totals.transformOutTokens,
+    // BULK-1: the per-tenant reservation, so per-tenant bulk spend is auditable (hosted only).
+    ...(bulk.quota ? { quotaReserved: bulk.quota.reserved, quotaWindowSeconds: bulk.quota.windowSeconds } : {}),
   });
 }
 

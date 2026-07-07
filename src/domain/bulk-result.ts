@@ -57,6 +57,15 @@ export interface BulkClamp {
   totalClampedTo: number | null;
 }
 
+/** Disclosure of the per-tenant quota reservation (BULK-1) — present on hosted when a
+ *  BulkQuotaPort is configured. Carried onto the summary audit event (quotaReserved /
+ *  quotaWindowSeconds) so per-tenant bulk spend is auditable. Absent on the local flavor. */
+export interface BulkQuotaReceipt {
+  reserved: number;
+  windowSeconds: number;
+  limit: number;
+}
+
 export interface BulkResult {
   schemaVersion: 1;
   kind: "bulk";
@@ -77,6 +86,8 @@ export interface BulkResult {
   failures: BulkFailure[];
   warnings: { code: string; message: string }[];
   errors: { code: string; message: string }[];
+  /** Per-tenant quota reservation receipt (hosted, BULK-1). Absent on local (no quota port). */
+  quota?: BulkQuotaReceipt;
 }
 
 export const EMPTY_BULK_TOTALS: BulkTotals = {

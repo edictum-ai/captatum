@@ -48,6 +48,12 @@ export interface ToolAuditEvent {
   /** Failed-primary model list when the router fell back to a later candidate (#82). Operator-only
    *  (the user-facing receipt is silent on a successful fallback); surface in your observability sink. */
   transformFallbackFrom?: string;
+  /** Seeds reserved against the calling tenant's per-call quota window (BULK-1). Present only on
+   *  the captatum_bulk SUMMARY event when a BulkQuotaPort is configured (hosted); absent on local. */
+  quotaReserved?: number;
+  /** The quota window length in seconds (BULK-1). Present only on the captatum_bulk SUMMARY event
+   *  when a BulkQuotaPort is configured (hosted). */
+  quotaWindowSeconds?: number;
 }
 
 export interface AuditLoggerPort {

@@ -49,10 +49,9 @@ export interface CaptatumBulkDeps {
   quota?: BulkQuotaPort;
 }
 
-/** A run-level short-circuit. `hard` = true means a cap that the FETCH itself would violate
- *  (egress bytes / per-host directed-DoS) → a queued seed must ABORT, not fail-soft to raw +
- *  execute (executing would bypass the cap). `hard` = false (transform-cost only) → the fetch is
- *  fine; fail-soft to raw (skip the LLM). */
+/** A run-level short-circuit. `hard` = true means a cap the FETCH itself would violate (egress
+ *  bytes / per-host directed-DoS) → a queued seed must ABORT, not fail-soft to raw + execute.
+ *  `hard` = false (transform-cost only) → the fetch is fine; fail-soft to raw (skip the LLM). */
 interface ShortCircuit { code: string; message: string; hard: boolean; }
 
 export class CaptatumBulkUseCase {
@@ -76,8 +75,9 @@ export class CaptatumBulkUseCase {
     const shaped = shapeBulkInput(toProcess, guard);
     // Per-tenant seed-window quota (BULK-1): reserve the processed-seed count
     // BEFORE any dispatch. A refusal fails the WHOLE call (fail-closed). Skipped
-    // when no quota port is configured (the local-binary flavor).
-    await reserveBulkQuota(this.deps.quota, context.clientId, shaped.seeds.length);
+    // when no quota port is configured (the local-binary flavor). The QuotaAllow is
+    // carried onto the BulkResult so the per-tenant reservation is auditable.
+    const quotaAllow = await reserveBulkQuota(this.deps.quota, context.clientId, shaped.seeds.length);
     const wallController = new AbortController();
     const wallTimer = setTimeout(() => wallController.abort(), guard.maxGlobalWallMs);
     let ran: { results: BulkSeedResult[]; capBreaches: string[]; budget: BudgetTracker };
@@ -89,6 +89,7 @@ export class CaptatumBulkUseCase {
     return assembleBulkResult({
       bulkId: `bulk-${randomUUID()}`, fenceToken: generateFenceToken(), guard, costClamped, shaped, toProcessCount: toProcess.length,
       ran, normalized, boardRejected, ashbyRejected, startMs, clock: this.deps.clock,
+      ...(quotaAllow ? { quotaReserved: quotaAllow.reserved, quotaWindowSeconds: quotaAllow.windowSeconds, quotaLimit: quotaAllow.limit } : {}),
     });
   }
 
@@ -147,6 +148,7 @@ export class CaptatumBulkUseCase {
           if (effectiveOutput !== "raw") {
             transformSlotHeld = await transformSem.acquire(signal);
             if (!transformSlotHeld) {
+              budget.cancelReservation(before.runTransform); // never executed → release the reservation
               record("bulk_deadline_exceeded");
               results[idx] = abortedSeedResult(seed, "bulk_deadline_exceeded", "wall deadline reached");
               return;
@@ -155,6 +157,7 @@ export class CaptatumBulkUseCase {
             // top check is unsound here — assert the declared type so the hard-abort path type-checks.
             const sc = shortCircuit as ShortCircuit | null;
             if (sc && sc.hard) {
+              budget.cancelReservation(before.runTransform); // never executed → release the reservation
               transformSem.release();
               transformSlotHeld = false;
               results[idx] = abortedSeedResult(seed, sc.code, sc.message);
@@ -167,12 +170,10 @@ export class CaptatumBulkUseCase {
             }
           }
           const downgradedByCost = request.requestedOutput !== "raw" && effectiveOutput === "raw";
-          // maxRenderedSeeds (BULK-3 OOM guard): bound ACTUAL renders per call. A seed with
-          // allowRender:true is allowed only while renderedCount < maxRenderedSeeds; once the cap
-          // is hit, further allowRender:true seeds are downgraded (render-blocked at Tier-1). The
-          // check runs pre-dispatch against the SETTLED count, so up to maxConcurrency renders can
-          // be in flight before the count catches up (overshoot ≤ maxConcurrency — honest, matches
-          // the redirect-discovery pattern). Actual concurrent browsers are bounded by the renderer.
+          // maxRenderedSeeds (BULK-3 OOM guard): allowRender:true seeds are allowed only while
+          // renderedCount < maxRenderedSeeds; past the cap they're downgraded (render-blocked at
+          // Tier-1). Checked pre-dispatch against the settled count → overshoot ≤ maxConcurrency
+          // (in-flight attempts). Actual concurrent browsers are bounded by the renderer (DOS-2).
           const renderAllowed = request.allowRender && renderedCount < guard.maxRenderedSeeds;
           const renderDowngraded = request.allowRender && !renderAllowed;
           const execInput = { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: renderAllowed, debug: request.debug };
@@ -192,8 +193,10 @@ export class CaptatumBulkUseCase {
           } finally {
             if (transformSlotHeld) transformSem.release();
           }
-          // Count ACTUAL renders post-settle (drives the maxRenderedSeeds cap above).
-          if (seedResult.tier === 3) renderedCount++;
+          // Count render ATTEMPTS post-settle (drives the maxRenderedSeeds cap): attempted iff
+          // renderAllowed AND jsRequired (tier-3 success OR empty/failed — both keep jsRequired=true,
+          // so empty shells can't spawn browsers past the cap). A content page doesn't consume it.
+          if (renderAllowed && seedResult.jsRequired) renderedCount++;
           // The wall may have fired DURING the in-flight execute — disclose it (the result flows
           // straight here, not a record branch). transformReserved mirrors before.runTransform.
           if (signal.aborted) record("bulk_deadline_exceeded");
@@ -216,15 +219,16 @@ export class CaptatumBulkUseCase {
               record("bulk_per_host_cap");
             }
           }
-          // Settled Result.output; a cost-cap / render-cap downgrade or a retry is a warning on any
-          // non-fail row (a `pass` row flips to `partial`; an already-partial row keeps its status).
+          // Settled Result.output. Cost-cap/retry warnings describe a degraded-but-successful seed
+          // (skip fail rows; pass→partial). The render-cap warning is emitted regardless of status —
+          // for a downgraded JS shell it is the cause of the resulting render-blocked fail.
           const row = toBulkSeedResult(seed, seedResult, seedResult.output);
-          if ((downgradedByCost || renderDowngraded || retried) && row.status !== "fail") {
+          if ((downgradedByCost || retried) && row.status !== "fail") {
             if (row.status === "pass") row.status = "partial";
             if (downgradedByCost) row.warnings.push({ code: "transform_skipped_cost_cap", message: "Requested summary/extract ran as raw — the per-call transform cost cap was reached." });
-            if (renderDowngraded) row.warnings.push({ code: "bulk_render_cap_exceeded", message: "allowRender downgraded to false — the per-call maxRenderedSeeds cap was reached." });
             if (retried) row.warnings.push({ code: "bulk_retried_429", message: "Seed returned 429/503 and was retried once after the server's Retry-After." });
           }
+          if (renderDowngraded) row.warnings.push({ code: "bulk_render_cap_exceeded", message: "allowRender downgraded to false — the per-call maxRenderedSeeds cap was reached." });
           results[idx] = row;
         } finally {
           gate.release(seedKey);

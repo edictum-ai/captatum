@@ -284,14 +284,14 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
   (founder decision 7); bulk reuses `fetch:read` / `fetch:transform`.
 - **`captatum_bulk` — global fetch cap across concurrent bulks (BULK-2, RESOLVED in
   PR 3).** A process-wide `LimitingFetcher` wraps the hosted `FetcherPort`:
-  `CAPTATUM_GLOBAL_FETCH_CONCURRENCY` (default 16) bounds concurrent `fetchGuarded`
-  calls across ALL callers (single-fetch + bulk seeds + Tier-3 render subresources).
-  Sized ≥ the admission cap (8) so a single-fetch call never queues; only concurrent
-  bulks (each multiplexing up to `maxConcurrency` fetches) push past it. An acquire
-  that cannot get a slot within the fetch's `timeoutMs` (or the bulk wall signal)
-  rejects as `timeout` — no caller hangs on the global gate. This bounds the
-  previously-unbounded 8 bulks × 4 = 32 concurrent fetches. Local flavor uses the
-  raw fetcher (single-user).
+  `CAPTATUM_GLOBAL_FETCH_CONCURRENCY` (default 24) bounds concurrent `fetchGuarded`
+  calls across ALL callers (single-fetch + bulk seeds + Tier-3 render subresources),
+  bounding the unbounded worst case (8 bulks × 4 = 32) below the box sizing.
+  Single-fetch shares the FIFO pool with bulk seeds (no priority): under heavy
+  concurrent bulk load a single-fetch MAY briefly queue, FIFO-fair, rejecting as a
+  retriable `timeout` if its `timeoutMs` elapses (no caller hangs on the gate). The
+  previously-unbounded 8 bulks × 4 = 32 concurrent fetches is now bounded. Local
+  flavor uses the raw fetcher (single-user).
 - **`captatum_bulk` — Tier-3 fan-out + the render-path union gap (BULK-3, RESOLVED
   in PR 3).** On a Tier-3 render the browser egresses script/xhr/fetch
   **subresources** through `fetchGuarded` whose hosts never appear in the seed's

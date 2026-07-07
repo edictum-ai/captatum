@@ -119,9 +119,12 @@ export const config = {
     crawlDelayMs: () => envPositiveInteger("CAPTATUM_BULK_CRAWL_DELAY_MS", 1000),
     maxConcurrency: () => envPositiveInteger("CAPTATUM_BULK_MAX_CONCURRENCY", 4),
     /** BULK-2: process-wide GLOBAL fetch-concurrency cap on hosted (LimitingFetcher).
-     *  Sized ≥ the admission cap (8) so single-fetch never queues; only concurrent bulks
-     *  (each up to maxConcurrency fetches) push past it. Bounds 8 bulks × maxConcurrency. */
-    globalFetchConcurrency: () => envPositiveInteger("CAPTATUM_GLOBAL_FETCH_CONCURRENCY", 16),
+     *  Bounds the unbounded worst case (admission 8 CALLS × maxConcurrency 4 = up to 32
+     *  concurrent fetches) below the 2 vCPU/4 GiB sizing. Default 24: below 32 (bounds the
+     *  box) while leaving headroom so single-fetch rarely queues under bulk load. Single-fetch
+     *  shares the FIFO pool with bulk seeds — under heavy concurrent bulk load it MAY briefly
+     *  queue, bounded by its own timeoutMs (fails gracefully as a retriable `timeout`). */
+    globalFetchConcurrency: () => envPositiveInteger("CAPTATUM_GLOBAL_FETCH_CONCURRENCY", 24),
     /** BULK-1: per-tenant rolling seed-window quota window length (seconds). */
     quotaWindowSeconds: () => envPositiveInteger("CAPTATUM_BULK_QUOTA_WINDOW_SECONDS", 60),
     /** BULK-1: per-tenant rolling seed-window quota seed limit (max seeds/window). */

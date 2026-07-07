@@ -133,6 +133,17 @@ export class BudgetTracker {
     return { shortCircuit: false };
   }
 
+  /** Release a seed's dispatch-time reservation WITHOUT recording settled bytes/cost — for an
+   *  abort path that reserved in `beforeSeed` but never executed (e.g. the wall fired while
+   *  waiting for the transform slot, or a HARD short-circuit landed right after). `transformReserved`
+   *  MUST mirror the `runTransform` returned by this seed's `beforeSeed`. Without this the
+   *  bytesReserved/costReserved counters would stay inflated, violating the settled+reserved≤cap
+   *  invariant and prematurely exhausting the budget for later seeds. */
+  cancelReservation(transformReserved: boolean): void {
+    this.bytesReserved -= this.opts.perSeedMaxBytes;
+    if (transformReserved) this.costReserved -= this.opts.perSeedTransformCostUsd;
+  }
+
   get bytesUsed(): number { return this.bytesSettled; }
   get costUsed(): number { return this.costSettled; }
   get transformInTokens(): number { return this.inTokensUsed; }

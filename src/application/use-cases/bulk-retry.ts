@@ -26,7 +26,9 @@ export interface SeedRetryCtx {
  *  the wall budget allows, wait + run it once more. `run` is the per-attempt
  *  executor call (including the raceWallAbort wrapper when a transform slot is
  *  held — the slot stays held across both attempts). Returns the final result +
- *  whether a retry occurred. */
+ *  whether a retry occurred. The returned result's `egressBytes` is the SUM of both
+ *  attempts' egress (the first 429/503 body IS read from the network up to maxBytes,
+ *  so it must be counted against the byte budget — not discarded). */
 export async function executeSeedWithRetry(
   run: () => Promise<Result>,
   ctx: SeedRetryCtx,
@@ -37,7 +39,13 @@ export async function executeSeedWithRetry(
   const wait = Math.min(RETRY_WAIT_CAP_MS, first.retryAfterMs) + randomInt(0, RETRY_JITTER_MAX_MS);
   await abortableSleep(wait, ctx.signal);
   if (ctx.signal.aborted || ctx.wallExceeded()) return { result: first, retried: false };
-  return { result: await run(), retried: true };
+  const second = await run();
+  // Both attempts egressed to the network (the 429/503 body is read up to maxBytes); fold the
+  // first attempt's bytes into the retry result's egressBytes so the byte budget, totals, and
+  // BulkSeedResult.egressBytes all reflect the real network egress (BULK-5 honesty on retry).
+  const firstEgress = first.egressBytes ?? first.bytes;
+  const secondEgress = second.egressBytes ?? second.bytes;
+  return { result: { ...second, egressBytes: firstEgress + secondEgress }, retried: true };
 }
 
 function isRetriable(r: Result): boolean {

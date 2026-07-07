@@ -89,17 +89,18 @@ test("LimitingFetcher: the inner timeoutMs is reduced by the slot-wait (total wa
   const realFetch = inner.fetchGuarded.bind(inner);
   inner.fetchGuarded = async (url, opts) => { seenTimeouts.push(opts.timeoutMs); return realFetch(url, opts); };
   const first = lim.fetchGuarded("https://1.test/", { ...OPTS, timeoutMs: 10_000 });
-  await new Promise((r) => setTimeout(r, 60)); // first holds the slot for ~60ms
-  // Second call waits ~60ms for the slot, so its inner timeout should be reduced by ~60ms.
+  // first holds the slot for ~150ms (a wide-enough hold that event-loop jitter doesn't flip the
+  // reduced-timeout assertion; the reduction is ~150ms of a 2000ms budget → ~1850ms, well within
+  // the (>1500, <2000) window and above the MIN_INNER_TIMEOUT_MS=1000 floor).
+  await new Promise((r) => setTimeout(r, 150));
   const secondP = lim.fetchGuarded("https://2.test/", { ...OPTS, timeoutMs: 2000 });
-  await new Promise((r) => setTimeout(r, 20));
-  inner.release(1);
-  await new Promise((r) => setTimeout(r, 20));
-  inner.release(1);
+  await new Promise((r) => setTimeout(r, 30));
+  inner.release(1); // first returns → second acquires the slot after its ~wait
+  await new Promise((r) => setTimeout(r, 30));
+  inner.release(1); // second returns
   await Promise.all([first, secondP]);
-  // first (no wait) gets the full 10_000; second (waited) gets < 2000.
   assert.equal(seenTimeouts[0], 10_000, "the non-waiting fetch keeps its full timeout");
-  assert.ok(seenTimeouts[1] < 2000 && seenTimeouts[1] >= 1000, `the waiting fetch's timeout was reduced (got ${seenTimeouts[1]}); floored at MIN_INNER_TIMEOUT_MS=1000`);
+  assert.ok(seenTimeouts[1] >= 1000 && seenTimeouts[1] < 2000, `the waiting fetch's timeout was reduced by the slot-wait + floored at 1000 (got ${seenTimeouts[1]}); the 150ms hold guarantees waited>0 so it is strictly < 2000, robust to event-loop jitter`);
 });
 
 test("LimitingFetcher: delegates to the inner fetcher (SSRF/redirect/Retry-After live there) + passes opts/postInit", async () => {

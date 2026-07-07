@@ -21,6 +21,10 @@ export function assembleBulkResult(args: {
   ashbyRejected: ValidatedSeed[];
   startMs: number;
   clock: ClockPort;
+  /** Per-tenant quota reservation receipt (hosted, BULK-1); undefined on local. */
+  quotaReserved?: number;
+  quotaWindowSeconds?: number;
+  quotaLimit?: number;
 }): BulkResult {
   const { bulkId, fenceToken, guard, costClamped, shaped, toProcessCount, ran, normalized, boardRejected, ashbyRejected, startMs, clock } = args;
   const { results, capBreaches, budget } = ran;
@@ -59,6 +63,9 @@ export function assembleBulkResult(args: {
     results, failures,
     warnings: costClamped.map((c) => ({ code: "bulk_cost_clamped", message: `${c} was clamped to the server ceiling` })),
     errors: [],
+    ...(args.quotaReserved !== undefined && args.quotaWindowSeconds !== undefined && args.quotaLimit !== undefined
+      ? { quota: { reserved: args.quotaReserved, windowSeconds: args.quotaWindowSeconds, limit: args.quotaLimit } }
+      : {}),
   };
 }
 

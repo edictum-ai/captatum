@@ -3,7 +3,7 @@
 // the per-tenant quota reservation (BULK-1), and the Ashby-embed jid extractor.
 // See docs/contracts.md §"Tool: captatum_bulk" / "Hosted amplification controls".
 import type { PlatformAdapterRegistry } from "../ports/platform-adapter.ts";
-import type { BulkQuotaPort } from "../ports/bulk-quota.ts";
+import type { BulkQuotaPort, QuotaAllow } from "../ports/bulk-quota.ts";
 import { BulkQuotaError } from "../ports/bulk-quota.ts";
 import type { ValidatedSeed } from "../../domain/bulk-policy.ts";
 
@@ -35,11 +35,12 @@ export function rejectPerEntryBulk(adapters: PlatformAdapterRegistry, seeds: rea
 /** Reserve the call's processed-seed count against the calling tenant's rolling window.
  *  Fail-closed: a refusal (window exhausted OR store error OR missing tenant) throws
  *  BulkQuotaError → a tool-level error (retryable for `exceeded`, fail-closed refusal for
- *  `store_error`). No-op when no quota port is configured (local-binary flavor). */
-export async function reserveBulkQuota(quota: BulkQuotaPort | undefined, tenant: string | undefined, seeds: number): Promise<void> {
-  if (!quota) return;
+ *  `store_error`). Returns the QuotaAllow on success (for the audit summary event) or undefined
+ *  when no quota port is configured (local-binary flavor). */
+export async function reserveBulkQuota(quota: BulkQuotaPort | undefined, tenant: string | undefined, seeds: number): Promise<QuotaAllow | undefined> {
+  if (!quota) return undefined;
   const res = await quota.tryReserve({ tenant: tenant ?? "", seeds });
-  if (res.ok) return;
+  if (res.ok) return res;
   if (res.code === "bulk_quota_exceeded") {
     throw new BulkQuotaError(
       "bulk_quota_exceeded",
