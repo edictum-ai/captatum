@@ -354,9 +354,10 @@ one `fail` entry + a `failures[]` row, NOT a tool-level error.
    + the Ashby-embed resolver (the two live fetch paths a bulk seed takes), and the
    guarded fetcher composes it with its own per-tier timeout via `AbortSignal.any`
    so the bulk wall deadline aborts in-flight fetches (surfaced as a per-seed
-   `code:"timeout"`). Render/transform abort stays dispatch-level in v1 (the
-   orchestrator stops dispatching + abandons in-flight transforms; bounded by the
-   post-transform cost re-check). The Tier-2 board short-circuit is not signal-
+   `code:"timeout"`). Render abort is FULLY signal-threaded in v1 (the signal flows into
+   RenderInput → PlaywrightRenderer closes the page on abort + every subresource fetchGuarded is
+   composed with it); transform abort is dispatch-level (raceWallAbort abandons slow LLM calls).
+   The Tier-2 board short-circuit is not signal-
    threaded (it does no fetch for a non-board URL, and bulk pre-rejects board roots).
    Additive: single-fetch callers pass nothing and are unchanged.
 2. `ToolAuditEvent.tool` widens to `"captatum" | "captatum_bulk"` and gains
