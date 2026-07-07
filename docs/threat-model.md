@@ -157,24 +157,27 @@ to a legitimate host AND the directed-DoS bound against a victim:
 | Attack class | Bound |
 | --- | --- |
 | Directed DoS to a victim (count) | `maxPerHostInBulk` (10), **union-keyed on egress hosts** (seed registrable domain ∪ redirect hosts ∪ `finalUrl` ∪ Tier-2-resolved, incl. failed-redirect targets). Pre-egress: truncate each seed domain; post-egress: quarantine (stop dispatching) once a redirect-discovered victim crosses the cap. Honest worst case: a victim is added to the union only after a seed settles, so the redirect-discovery wave (≤ `maxConcurrency` = 4) can push the per-victim SEED count to `maxPerHostInBulk + maxConcurrency` (= 14 worst case; pure-direct floods are tighter at `maxPerHostInBulk` via shaping). Per-victim REQUEST count ≤ that × `maxHops`. See "In-flight discovery overshoot" in contracts.md. |
-| Directed DoS to a victim (rate) | `maxPerHostInflight` (2, configurable) token-bucket burst + `crawlDelayMs` (1000, 500 floor) refill, keyed on the SEED registrable domain in v1 (the only host known pre-egress — NOT union-keyed). It rate-bounds a victim only when the victim IS a seed domain (direct flood) or a repeating funnel source; a pure cross-domain funnel victim is rate-bounded only by the global `maxConcurrency` (4) semaphore in v1. Union-keyed rate spacing lands with the quarantine hardening. |
+| Directed DoS to a victim (rate) | `maxPerHostInflight` (2, configurable) token-bucket burst + `crawlDelayMs` (1000, 500 floor) refill, keyed on the SEED registrable domain (the only host known pre-egress — NOT union-keyed). It rate-bounds a victim only when the victim IS a seed domain (direct flood) or a repeating funnel source; a pure cross-domain funnel victim is rate-bounded only by the global `maxConcurrency` (4) semaphore. Union-keyed rate spacing for undiscovered funnel victims is the documented future quarantine hardening. |
 | Unbounded crawl | `maxUrls` (50 raw / 10 summary\|extract) total + seed-list-only (no discovery/recursion/`depth`) + per-host count cap. |
-| Egress amplification (bandwidth) | `maxGlobalEgressBytes` (100 MB), host-agnostic global sum from `result.bytes`. Worst-case aggregate is ~120 MB (in-flight overshoot ≤ `maxConcurrency × perSeedMaxBytes` = 4 × 5 MB before the post-seed re-check; a PR 2 dispatch-time reservation tightens it). |
-| Browser time / OOM | `maxGlobalWallMs` (180 s) — dispatch-level wall in v1 (PR 2 makes it fetch-aborting via the `CaptatumContext.signal`); render-on-bulk is **rejected** in v1 (`bulk_render_not_supported`), so `maxRenderedSeeds` is inactive until render-on-bulk lands. |
+| Cross-call amplification (a tenant looping bulk calls) | `BulkQuotaPort` (PR 3, BULK-1) — per-tenant rolling seed-window quota (`quotaWindowSeconds` / `quotaSeedLimit`), fail-closed on store error. |
+| Cross-bulk fetch flood (concurrent bulks × `maxConcurrency`) | `LimitingFetcher` (PR 3, BULK-2) — process-wide global fetch-concurrency cap (`CAPTATUM_GLOBAL_FETCH_CONCURRENCY`, default 16) wrapping the hosted `FetcherPort`. |
+| Egress amplification (bandwidth) | `maxGlobalEgressBytes` (100 MB), host-agnostic global sum from `result.egressBytes ?? result.bytes` (deep egress incl. Tier-3 subresources — PR 3, BULK-5). Worst-case aggregate is ~120 MB (in-flight overshoot ≤ `maxConcurrency × perSeedMaxBytes` = 4 × 5 MB before the post-seed re-check; a dispatch-time reservation tightens it). |
+| Browser time / OOM | `maxGlobalWallMs` (180 s) — fetch-aborting via the `CaptatumContext.signal` + dispatch-level abandonment. `maxRenderedSeeds` (10, PR 3 active) bounds how many seeds may attempt a Tier-3 render per call; the render byte pool bounds per-render subresource bytes. |
 | Cost amplification (LLM $) | `maxTransformCostUsd` ($0.50, caller-set + clamped) re-checked after each transform + `perSeedTransformCostUsd` ($0.05) concurrent-overshoot bound + `maxUrls=10` for summary/extract. |
 
-**Union-keyed per-host gate (defeats redirect/Tier-2 host-evasion).** A directed
-attack can spread seeds across N distinct domains that all 302→`victim.com`; keyed
-on the seed host these pass trivially. The per-host inflight + count caps are
-therefore keyed on the UNION of egress hosts, computed as each seed settles. This
-is the cross-domain directed-DoS control.
+**Union-keyed per-host gate (defeats redirect/Tier-2/render host-evasion).** A
+directed attack can spread seeds across N distinct domains that all 302→`victim.com`;
+keyed on the seed host these pass trivially. The per-host inflight + count caps are
+therefore keyed on the UNION of egress hosts, computed as each seed settles. As of
+PR 3 the union ALSO includes the hosts a Tier-3 render loaded subresources from
+(`renderEgressHosts`), so a render-path directed victim is bounded too (BULK-3).
+This is the cross-domain directed-DoS control.
 
-**Egress-byte accounting honesty (v1).** `maxGlobalEgressBytes` is summed from
-`result.bytes` (document bytes) — exact for the raw-default Tier-1 path. v1
-structurally rejects `allowRender:true` on bulk (BULK-3), so no renders occur and
-there is no Tier-3 subresource byte path to undercount. The deep `egressBytes`
-plumbing (subresource bytes → `Result.egressBytes`) lands together with
-render-on-bulk so the byte cap stays honest on the render path.
+**Egress-byte accounting honesty.** `maxGlobalEgressBytes` is summed from
+`result.egressBytes ?? result.bytes`. For the raw-default Tier-1 path this is the
+document bytes (exact). For a Tier-3 render, `egressBytes` is the render's total
+network egress (`essentialBytes + bytesFulfilled`), so subresource bytes ARE
+counted (BULK-5 resolved). `maxRenderedSeeds` bounds render attempts per call.
 
 **No cross-seed content concatenation.** Per-seed transform isolation is a
 contract invariant: one LLM call per seed, never N bodies in one prompt (forbids
@@ -266,35 +269,42 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
   refuses an authorization header over cleartext http to a non-loopback host), so a
   misconfigured base URL cannot leak the key in plaintext.
 
-- **`captatum_bulk` — no cross-bulk state in v1 (BULK-1).** There is no per-tenant
-  `BulkQuotaPort` and no separate `bulk:read` scope in v1 (founder decision 7), so
-  the per-call BulkGuard caps are the ONLY amplification bound. A determined tenant
-  can loop bulk calls up to the per-call caps, bounded only by admission concurrency
-  (8 slots) and their own rate. The local-binary flavor is single-user / unbounded
-  by design. Per-tenant rolling seed-window quota (`BulkQuotaPort`, TTL-aware
-  reservations, fail-closed on store error) is a v1 follow-up; it introduces a new
-  failure surface (store outage → bulk refused, fail-closed).
-- **`captatum_bulk` — no GLOBAL fetch cap across concurrent bulks in v1 (BULK-2).**
-  v1 bounds fetches inside the orchestrator (`maxConcurrency=4` per call + union-
-  keyed per-host gate) but has no process-wide fetch semaphore shared across
-  concurrent bulk calls. 8 concurrent bulks × 4 = up to 32 concurrent fetches,
-  exceeding the 2 vCPU / 4 GiB admission sizing. **Therefore hosted bulk ships
-  BEHIND `CAPTATUM_BULK_ENABLED` (default OFF) until a global fetch-concurrency
-  cap (`LimitingFetcher`) + `BulkQuotaPort` land and OOM/admission behavior is
-  monitored.** Local flavor ships ON (single-user; a user saturating their own
-  machine is their own concern, and per-call caps bound each call).
-- **`captatum_bulk` — Tier-3 fan-out + the render-path union gap (BULK-3).** The
-  per-host union gate keys on a seed's seed/redirect/finalUrl hosts. On a Tier-3
-  render, the browser also egresses script/xhr/fetch **subresources** through
-  `fetchGuarded`, and those hosts never reach the orchestrator's union accounting.
-  A malicious seed that rendered could therefore direct many small subresource
-  requests at a victim the union never sees — a render-path directed-DoS the
-  `maxPerHostInBulk`/`maxPerHostInflight` caps would NOT bind. **v1 structurally
-  closes this by REJECTING `allowRender:true` on bulk** (`bulk_render_not_supported`,
-  a tool-level input-validation reject) — not merely defaulting it false. Render-on-
-  bulk lands only WITH the render-egress-host union plumbing (subresource hosts fed
-  into the per-host gate) + deep `egressBytes`. `maxRenderedSeeds` is thus inactive
-  in v1 (zero renders) and activates with that plumbing.
+- **`captatum_bulk` — per-tenant quota (BULK-1, RESOLVED in PR 3).** A per-tenant
+  `BulkQuotaPort` bounds a tenant's aggregate seed throughput across calls: each
+  hosted bulk call reserves its seed count against a rolling window
+  (`CAPTATUM_BULK_QUOTA_WINDOW_SECONDS` / `CAPTATUM_BULK_QUOTA_SEED_LIMIT`), and a
+  reservation that would exceed the window fails the whole call
+  (`bulk_quota_exceeded`, retryable). The port is **fail-closed** — a store error
+  (or a missing tenant id when a quota port is configured) refuses the bulk
+  (`bulk_quota_store_error`) rather than running unbounded, introducing a new
+  failure surface (store outage → bulk refused) accepted as the safe direction.
+  The default impl is an in-memory rolling window (per-process); a distributed
+  store is the multi-instance scale path. The local-binary flavor is single-user /
+  unbounded (noop quota port) by design. No separate `bulk:read` scope in v1
+  (founder decision 7); bulk reuses `fetch:read` / `fetch:transform`.
+- **`captatum_bulk` — global fetch cap across concurrent bulks (BULK-2, RESOLVED in
+  PR 3).** A process-wide `LimitingFetcher` wraps the hosted `FetcherPort`:
+  `CAPTATUM_GLOBAL_FETCH_CONCURRENCY` (default 16) bounds concurrent `fetchGuarded`
+  calls across ALL callers (single-fetch + bulk seeds + Tier-3 render subresources).
+  Sized ≥ the admission cap (8) so a single-fetch call never queues; only concurrent
+  bulks (each multiplexing up to `maxConcurrency` fetches) push past it. An acquire
+  that cannot get a slot within the fetch's `timeoutMs` (or the bulk wall signal)
+  rejects as `timeout` — no caller hangs on the global gate. This bounds the
+  previously-unbounded 8 bulks × 4 = 32 concurrent fetches. Local flavor uses the
+  raw fetcher (single-user).
+- **`captatum_bulk` — Tier-3 fan-out + the render-path union gap (BULK-3, RESOLVED
+  in PR 3).** On a Tier-3 render the browser egresses script/xhr/fetch
+  **subresources** through `fetchGuarded` whose hosts never appear in the seed's
+  redirect/finalUrl chain — a render-path directed-DoS the seed-keyed union would
+  not bind. PR 3 resolves this: render-on-bulk is ALLOWED (`allowRender:true`)
+  together with (a) the render's subresource hosts collected per render
+  (`renderEgressHosts`) and fed into the post-settle per-host count gate, so a
+  render-path victim IS bounded by `maxPerHostInBulk`; (b) `maxRenderedSeeds`
+  bounding render attempts per call; (c) the per-render byte pool (`~4×maxBytes`)
+  bounding per-render subresource volume; (d) deep `egressBytes` (BULK-5) bounding
+  the aggregate; (e) the `LimitingFetcher` global fetch cap bounding concurrency. A
+  seed that renders N subresources to `victim.com` counts as one seed touching
+  `victim.com` (count bound), with its subresource bytes counted in full.
 - **`captatum_bulk` — directed-DoS to a victim is inherent (BULK-4).** Any bulk
   fetch tool can be aimed at a victim host; the per-host count + rate caps bound
   but do not eliminate it. Residual: captatum's egress IPs could be blacklisted by
@@ -302,12 +312,11 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
   defaults (low concurrency + crawl-delay + per-host gate) and the founder's
   caller-authorizes-ToS stance (captatum is a targeted agent fetcher, not an open
   crawler). robots.txt respect is deferred to the future `captatum_crawl`.
-- **`captatum_bulk` — render-subresource egress undercount (BULK-5).** v1 sums
-  `result.bytes` (document bytes) against `maxGlobalEgressBytes`. This is exact for
-  the raw-default Tier-1 path; Tier-3 subresource bytes would be undercounted — but
-  v1 rejects `allowRender:true` on bulk (BULK-3), so no renders occur and the
-  undercount is dormant. It re-activates when render-on-bulk lands alongside the
-  deep `egressBytes` plumbing (subresource bytes → `Result.egressBytes`).
+- **`captatum_bulk` — render-subresource egress undercount (BULK-5, RESOLVED in
+  PR 3).** The byte cap now sums `result.egressBytes ?? result.bytes`. For a
+  Tier-3 render, `egressBytes` is the render's total network egress
+  (`essentialBytes + bytesFulfilled`) — subresource bytes ARE counted, so the cap
+  is honest on the render path. For Tier-1/Tier-2, `egressBytes` = document bytes.
 
 ## Sensitive-content detection
 
@@ -390,38 +399,36 @@ and a caller who fetches a presigned SOURCE url is still blocked at the source c
 - No public hosted deployment before `OAUTH_SIGNING_PRIVATE_JWK` injection, the
   TiDB OAuth migration/provisioning, explicit `MCP_ALLOWED_HOSTS` /
   `MCP_ALLOWED_ORIGINS`, and authenticated client compatibility tests pass.
-- Tier-3 is **shell-gated**, not unconditional: `allowRender` defaults **true**,
-  but a render fires only when Tier-1 extraction finds an empty JS shell
-  (`jsRequired`) — a normal content-bearing page never spawns a browser. Set
-  `allowRender:false` to opt out (`render-blocked`). `captatum_bulk` **rejects
-  `allowRender:true`** in v1 (`bulk_render_not_supported`) — the per-host union
-  gate does not yet cover Tier-3 subresource egress hosts (BULK-3), so render-on-
-  bulk is structurally closed, not merely defaulted false; it lands with the
-  render-egress-host union plumbing. The in-process launch keeps the OS sandbox ON
+- Tier-3 is **shell-gated**, not unconditional: `allowRender` defaults **true**
+  (single-fetch) / **false** (bulk), but a render fires only when Tier-1 extraction
+  finds an empty JS shell (`jsRequired`) — a normal content-bearing page never
+  spawns a browser. Set `allowRender:false` to opt out (`render-blocked`).
+  `captatum_bulk` allows `allowRender:true` as of PR 3 — the render's subresource
+  hosts feed the per-host union count gate (`renderEgressHosts`, BULK-3),
+  `maxRenderedSeeds` bounds render attempts, and deep `egressBytes` (BULK-5) counts
+  the subresource bytes. The in-process launch keeps the OS sandbox ON
   (`chromiumSandbox` default true); `--no-sandbox` in-process is a release blocker.
   (Cleanup flag: `config.render.allowRenderDefault` is dead — never consumed; the
   live default is `DEFAULT_CAPTATUM_DEFAULTS.allowRender`. Either wire it or drop
   it.)
-- **`captatum_bulk` implementation gate (BULK-GATE).** No hosted bulk ship
-  (`CAPTATUM_BULK_ENABLED` must stay OFF) until ALL of: (a) BulkGuard unit tests
-  prove each cap short-circuits (incl. the union-keyed per-host gate on a
-  redirect-funnel fixture); (b) an SSRF bulk fixture (50 seeds: private IPs +
-  redirects-to-private + legitimate) asserts ZERO private-IP egress — every
-  private seed is a per-seed `FETCH_REJECTED`, never a fetched body; (c) a
-  cross-domain directed-DoS fixture (seeds on N distinct domains all 302→victim)
-  asserting the union-keyed count cap aborts the overflow; (d) a Tier-3 bulk
-  regression asserting every render subrequest routes through `route.fulfill` /
-  `fetchGuarded` AND `maxRenderedSeeds` short-circuits (N/A in v1 — bulk rejects
-  `allowRender:true`, so zero renders: the regression is the reject itself); (e) a
-  global fetch-concurrency cap (`LimitingFetcher`) + per-tenant `BulkQuotaPort`
-  have landed; (f) a REAL 50-URL run (not a synthetic green fixture) verifying
-  egress-byte accounting and wall-clock against the 2 vCPU / 4 GiB sizing (the
-  cerebralvalley render-byte-budget lesson). **v1 status (PR 2):** (a)–(d) + (f)
-  pass — the local flavor ships ON; (b) drives the REAL `GuardedHttpFetcher`
-  through the orchestrator (`test/bulk-ssrf.test.ts`); (f) ran via
-  `src/dev/bulk-probe.ts` (49 real URLs → 7.88 MB egress, ~79–111 s wall, under
-  the 100 MB / 180 s caps; per-host cap truncated a 13-seed host to 10). (e)
-  (`LimitingFetcher` + `BulkQuotaPort`) remains the hosted-enablement gate — PR 3.
+- **`captatum_bulk` implementation gate (BULK-GATE).** Hosted bulk ships
+  (`CAPTATUM_BULK_ENABLED` default ON) once ALL of: (a) BulkGuard unit tests prove
+  each cap short-circuits (incl. the union-keyed per-host gate on a redirect-funnel
+  fixture); (b) an SSRF bulk fixture (50 seeds: private IPs + redirects-to-private
+  + legitimate) asserts ZERO private-IP egress — every private seed is a per-seed
+  `FETCH_REJECTED`, never a fetched body; (c) a cross-domain directed-DoS fixture
+  (seeds on N distinct domains all 302→victim) asserting the union-keyed count cap
+  aborts the overflow; (d) a Tier-3 bulk regression asserting every render
+  subrequest routes through `route.fulfill` / `fetchGuarded`, the render's
+  subresource hosts feed the union count gate (`renderEgressHosts`), AND
+  `maxRenderedSeeds` downgrades the overflow; (e) a global fetch-concurrency cap
+  (`LimitingFetcher`) + per-tenant `BulkQuotaPort` have landed; (f) a REAL 50-URL
+  run (not a synthetic green fixture) verifying egress-byte accounting and
+  wall-clock against the 2 vCPU / 4 GiB sizing (the cerebralvalley render-byte-budget
+  lesson). **PR 3 status: (a)–(f) ALL pass.** (e) = `LimitingFetcher` (BULK-2) +
+  `BulkQuotaPort` (BULK-1); (d) = render-on-bulk with the render-egress-host union
+  (BULK-3) + deep `egressBytes` (BULK-5); (f) re-ran via `src/dev/bulk-probe.ts`
+  with `CAPTATUM_BULK_ENABLED=true`. Local flavor has shipped ON since PR 2.
   **Funnel bound (quarantine):** once a REDIRECT-discovered victim (a host in a seed's
   union that is NOT its own seed domain) crosses `maxPerHostInBulk`, the orchestrator
   QUARANTINES — it stops dispatching the remaining seeds (a one-time global pause on

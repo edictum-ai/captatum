@@ -96,7 +96,7 @@ Input (v0):
 | `output` | no | **DEFAULT `raw`** for bulk (flipped from single-fetch's provider-conditional default). `summary`/`extract` run the Transform router once per seed and drop the URL cap to 10. |
 | `schema` | no | Uniform JSON schema for `output: extract`. |
 | `budget`, `transform`, `maxBytes`, `timeoutMs`, `debug` | no | Uniform; same semantics as single-fetch. Bulk `timeoutMs` default **8 s** (per-seed Tier-1/2). |
-| `allowRender` | no | **v1 REJECTS `true` on bulk** (per-call `invalid_input`: `bulk_render_not_supported`). Bulk is raw-extraction-first; render-on-bulk lands in a follow-up WITH the render-egress-host union plumbing (so Tier-3 subresource egresses are counted in the per-host caps) + deep `egressBytes`. Today the per-host union gate only sees seed/redirect/finalUrl hosts — it would NOT bind a render-path directed victim (BULK-3), so render-on-bulk is structurally closed off rather than merely defaulted false. |
+| `allowRender` | no | **Defaults `false`** (bulk is raw-extraction-first). **`true` is allowed** (render-on-bulk landed in PR 3): a seed that is a true JS shell (`jsRequired`) renders under the same Tier-3 controls as single-fetch. Two PR-3 controls keep it honest: (a) the render's **subresource egress hosts** are fed into the per-host union count gate (`renderEgressHosts` → `hostCounts`), so a render-path directed victim IS bounded by `maxPerHostInBulk` (BULK-3); (b) **deep `egressBytes`** counts the render's subresource bytes (`essentialBytes + bytesFulfilled`) against `maxGlobalEgressBytes` (BULK-5). `maxRenderedSeeds` bounds how many seeds may attempt a render per call. |
 | `maxTransformCostUsd` | no | Per-call transform cost ceiling (USD). Caller-set, clamped to the server ceiling `$0.50`. Over-ceiling caller value is clamped + disclosed. |
 | `perSeedTransformCostUsd` | no | Per-seed transform cost ceiling (USD). Caller-set, clamped to the server ceiling `$0.05`. Bounds concurrent overshoot. |
 
@@ -107,20 +107,24 @@ break). **No `depth`/`scope` field** — its absence is the anti-crawler guarant
 
 ### BulkGuard — the caps (cross-domain v1)
 
-These caps are the ONLY amplification bound in v1 (there is no per-tenant
-`BulkQuotaPort` and no separate `bulk:read` scope yet — see threat-model.md).
-Server ceilings are NOT caller-overridable; caller values for the cost knobs are
-**clamped** to the ceiling and the clamp is disclosed.
+The per-call BulkGuard caps bound a SINGLE call. Two further hosted controls
+land in PR 3 and bound cross-call amplification (see "Hosted amplification
+controls" below): a process-wide `LimitingFetcher` (global fetch-concurrency
+cap, BULK-2) and a per-tenant `BulkQuotaPort` (rolling seed-window quota,
+BULK-1, fail-closed). Server ceilings are NOT caller-overridable; caller values
+for the cost knobs are **clamped** to the ceiling and the clamp is disclosed.
+There is no separate `bulk:read` scope in v1 (founder decision 7 — bulk reuses
+`fetch:read` / `fetch:transform`); the `BulkQuotaPort` is the per-tenant bound.
 
 | Cap | Default | Attack it bounds |
 | --- | --- | --- |
 | `maxUrls` | 50 (`raw`) / 10 (`summary`\|`extract`) | unbounded crawl (total across all hosts); over-ceiling → CLAMP + DISCLOSE |
 | `maxPerHostInBulk` | 10 | directed DoS — COUNT per victim; **union-keyed on egress hosts** (seed + redirect + finalUrl + Tier-2-resolved); truncate + disclose + quarantine. Worst-case per-victim count is `maxPerHostInBulk + maxConcurrency` (redirect-discovery overshoot; pure-direct is `maxPerHostInBulk` via shaping — see § In-flight discovery overshoot). |
-| `maxGlobalEgressBytes` | 100 MB | egress amplification (host-agnostic global sum; v1 sums `result.bytes` — see honesty note) |
+| `maxGlobalEgressBytes` | 100 MB | egress amplification (host-agnostic global sum from `result.egressBytes ?? result.bytes` — deep egress incl. Tier-3 subresource bytes once render-on-bulk is allowed; exact for the raw Tier-1 path) |
 | `maxGlobalWallMs` | 180 000 | browser-time / orphaned-call (hard, NOT caller-raisable). At the deadline a global `AbortController` fires: it aborts in-flight Tier-1 fetches via `CaptatumContext.signal` (composed with each fetch's per-tier timeout) AND the orchestrator stops dispatching, marking remaining seeds `bulk_deadline_exceeded`. (Render/transform abort is dispatch-level abandonment in v1, bounded by the post-transform cost re-check.) |
 | `maxConcurrency` | 4 | directed DoS — global fetch concurrency (shared across all hosts in a call) |
-| `maxRenderedSeeds` | 10 | Tier-3 OOM (count of seeds that escalate to render). **Inactive in v1** — bulk rejects `allowRender:true`, so zero seeds render; this cap activates when render-on-bulk lands. |
-| `maxPerHostInflight` | 2 (CONFIGURABLE) | directed DoS — per-host token-bucket **burst**, keyed on the SEED registrable domain in v1 (the union-keyed rate gating of discovered funnel victims is deferred to the quarantine hardening); tune empirically |
+| `maxRenderedSeeds` | 10 | Tier-3 OOM (count of seeds that may ATTEMPT a render per call). **Active** — once `maxRenderedSeeds` seeds have been allowed to render, further `allowRender:true` seeds are downgraded to `allowRender:false` (render-blocked at Tier-1, with a `bulk_render_cap_exceeded` warning) rather than spawning another browser. Bounds concurrent + total browser spawns per call. |
+| `maxPerHostInflight` | 2 (CONFIGURABLE) | directed DoS — per-host token-bucket **burst**, keyed on the SEED registrable domain in v1 (the only host known pre-egress — NOT union-keyed); tune empirically |
 | `crawlDelayMs` | 1000 (500 floor, server-clamped) | per-host token-bucket **refill** (politeness per victim) |
 | `maxTransformCostUsd` | 0.50 (CONFIGURABLE per-call; clamped) | cost amplification — global, re-checked after each transform |
 | `perSeedTransformCostUsd` | 0.05 (CONFIGURABLE per-call; clamped) | cost amplification — concurrent-overshoot bound. **Clamped to `maxTransformCostUsd / maxConcurrency`** (disclosed): up to `maxConcurrency` transforms run before the post-transform global re-check, so sizing per-seed to `global / concurrency` keeps the first in-flight wave ≤ the caller's ceiling (the invariant `maxConcurrency × perSeed ≤ maxTransformCostUsd`). A runtime reservation in the budget tracker (PR 2) tightens this further. |
@@ -176,23 +180,37 @@ are bounded; the quarantine (stop dispatching once a redirect victim is discover
 is implemented in v1. A future hardening (serialize ALL unknown-egress dispatch
 once any seed discovers a victim) bounds the discovery wave too.
 
-**Egress-byte accounting honesty (v1).** `maxGlobalEgressBytes` is summed from
-`result.bytes` (document bytes), which is exact for the raw-default Tier-1 path.
-v1 structurally rejects `allowRender:true` on bulk (`bulk_render_not_supported` —
-see input table), so no renders occur and there is no Tier-3 subresource byte path
-to undercount. When render-on-bulk lands (with the render-egress-host union
-plumbing), it lands alongside the deep `egressBytes` accounting (subresource bytes
-→ `Result.egressBytes`) so the byte cap stays honest on the render path too.
+**Egress-byte accounting honesty.** `maxGlobalEgressBytes` is summed from
+`result.egressBytes ?? result.bytes`. For the raw-default Tier-1 path,
+`egressBytes` is the fetched document bytes (== `result.bytes`, exact). For a
+Tier-3 render, `egressBytes` is the render's total network egress
+(`essentialBytes + bytesFulfilled` — every subresource the browser loaded through
+`route.fulfill`), which is HONEST subresource accounting (BULK-5 resolved), not
+the rendered DOM size. `result.bytes` stays the document/DOM byte count for
+WebFetch-shape compatibility; `egressBytes` is the network-egress truth the cap
+sums. A Tier-2 roster short-circuit contributes its `bytes` (one fetch).
+
+**Render subresource hosts in the union (BULK-3 resolved).** When a seed renders,
+the browser egresses script/xhr/fetch **subresources** through `fetchGuarded`
+whose hosts never appear in the seed's redirect/finalUrl chain. Those hosts are
+collected per render (`renderEgressHosts`) and fed into the orchestrator's
+post-settle per-host count gate alongside `unionEgressHosts` — so a render-path
+directed victim IS bounded by `maxPerHostInBulk` (a seed that renders N
+subresources to `victim.com` counts as one seed touching `victim.com`, and the
+per-render byte pool `~4×maxBytes` bounds the per-render subresource volume).
+Combined with `maxRenderedSeeds` (render attempts), the global deep-`egressBytes`
+cap, and the `LimitingFetcher` global fetch cap, the render path is bounded on
+count, rate, bytes, and concurrency.
 
 **Egress cap in-flight overshoot (honest bound).** The global byte cap is summed
-from `result.bytes` AFTER each seed returns, so up to `maxConcurrency` seeds can be
-in flight when the running sum is just under the cap. Worst-case aggregate egress
-is therefore **`maxGlobalEgressBytes + maxConcurrency × perSeedMaxBytes`**
-(= 100 MB + 4 × 5 MB = ~120 MB at the defaults) before the post-seed re-check
-short-circuits the remaining seeds. This is a bounded overshoot of a hard cap,
-documented honestly like the transform-cost concurrent-overshoot; PR 2's budget
-tracker can tighten it by reserving `perSeedMaxBytes` against the global budget at
-dispatch (analogous to the cost-cap reservation).
+from `result.egressBytes ?? result.bytes` AFTER each seed returns, so up to
+`maxConcurrency` seeds can be in flight when the running sum is just under the cap.
+Worst-case aggregate egress is therefore **`maxGlobalEgressBytes + maxConcurrency ×
+perSeedMaxBytes`** (= 100 MB + 4 × 5 MB = ~120 MB at the defaults) before the
+post-seed re-check short-circuits the remaining seeds. This is a bounded overshoot
+of a hard cap, documented honestly like the transform-cost concurrent-overshoot;
+the budget tracker tightens it by reserving `perSeedMaxBytes` against the global
+budget at dispatch (analogous to the cost-cap reservation).
 
 ### Input shaping (before any egress)
 
@@ -227,6 +245,39 @@ instead by the BulkGuard (`maxConcurrency` + union-keyed per-host gate).
 `-32050`, whole-call) and is NEVER swallowed as a per-seed `tier:"error"`. This
 is the only consistent accounting: never wrap bulk's inner per-seed `execute()`
 with admission.
+
+### Hosted amplification controls (PR 3 — the flip gate)
+
+Two process-wide controls bound amplification ACROSS concurrent bulk calls
+(BULK-1 + BULK-2). Both ship in PR 3; flipping `CAPTATUM_BULK_ENABLED` to ON on
+hosted depends on both.
+
+- **`LimitingFetcher` (BULK-2) — global fetch-concurrency cap.** On hosted, the
+  `FetcherPort` constructed in `src/server.ts` is wrapped in a
+  `LimitingFetcher`: a process-wide semaphore bounding the number of concurrent
+  `fetchGuarded` calls across ALL callers (every single-fetch + every bulk seed +
+  every Tier-3 render subresource routes through it). Capacity
+  (`CAPTATUM_GLOBAL_FETCH_CONCURRENCY`, default 16) is sized ≥ the admission cap
+  (8) so a single-fetch call never queues (only concurrent bulks, which multiplex
+  up to `maxConcurrency` fetches each, push past it). An acquire that cannot get a
+  slot within the fetch's own `timeoutMs` (or the bulk wall signal, whichever
+  fires first) rejects as `timeout` — no caller can hang on the global gate. The
+  local binary uses the RAW fetcher (single-user; a user saturating their own
+  machine is their own concern, and per-call caps bound each call). Without this,
+  8 concurrent bulks × `maxConcurrency` 4 = up to 32 concurrent fetches would
+  exceed the 2 vCPU / 4 GiB admission sizing.
+- **`BulkQuotaPort` (BULK-1) — per-tenant rolling seed-window quota.** Each hosted
+  bulk call reserves its seed count against the calling tenant's rolling window
+  (`CAPTATUM_BULK_QUOTA_WINDOW_SECONDS` default 60s /
+  `CAPTATUM_BULK_QUOTA_SEED_LIMIT` default 300, both operator-tunable) BEFORE any
+  dispatch. A reservation that would exceed the window → whole-call fail
+  `bulk_quota_exceeded` (retryable, with `retryAfterMs` hint). The port is
+  **fail-closed**: a store error (or a missing tenant id when a quota port is
+  configured) refuses the bulk (`bulk_quota_store_error`) rather than running
+  unbounded. The local binary uses a NOOP quota port (single-user, unbounded by
+  design). The default in-memory rolling-window impl is per-process; a distributed
+  store is the multi-instance scale path (documented). Tenant id =
+  `CaptatumContext.clientId` (the OAuth client; single-fetch reuses `fetch:read`).
 
 ### BulkResult envelope (new, `src/domain/bulk-result.ts`)
 
@@ -278,14 +329,23 @@ BulkResult {
 
 ### Bulk error codes (per-seed `fail` unless noted)
 
-`bulk_per_host_cap` (directed-DoS count bound, union-keyed),
+Per-seed `fail`: `bulk_per_host_cap` (directed-DoS count bound, union-keyed —
+incl. render subresource hosts once `allowRender:true`),
 `tier2_board_not_supported_in_bulk` (board-root seed rejected per-entry),
-`bulk_deadline_exceeded` (wall deadline — remaining seeds marked failed; dispatch-level in v1),
+`ashby_embed_not_supported_in_bulk` (ashby-embed seed rejected per-entry),
+`bulk_deadline_exceeded` (wall deadline — remaining seeds marked failed),
 `bulk_budget_exceeded` (egress-bytes or transform-cost cap bit — reason names
-which), `bulk_render_cap_exceeded` (maxRenderedSeeds). Partial failure is
-NORMAL — a per-seed SSRF block / 404 / timeout / captcha is one `fail` entry +
-a `failures[]` row, NOT a tool-level error. Tool-level error is reserved for
-input-validation, auth, and admission `OverloadedError` (`-32050`) only.
+which). Per-seed WARNING (the seed still runs, degraded):
+`bulk_render_cap_exceeded` (`maxRenderedSeeds` reached — the seed is downgraded
+to `allowRender:false`; a JS shell comes back render-blocked, a content page is
+unaffected), `bulk_retried_429` (the seed retried once after a 429/503).
+Tool-level error (whole call): input-validation (`invalid_input` /
+`too_many_urls`), auth (insufficient scope, `-32003`), admission
+`OverloadedError` (`-32050`), `bulk_quota_exceeded` (per-tenant seed-window
+exhausted — retryable, carries a `retryAfterMs` hint), and
+`bulk_quota_store_error` (quota store unavailable — fail-closed refusal).
+Partial failure is NORMAL — a per-seed SSRF block / 404 / timeout / captcha is
+one `fail` entry + a `failures[]` row, NOT a tool-level error.
 
 ### Recorded additive contract changes (not breaking)
 
@@ -305,19 +365,43 @@ input-validation, auth, and admission `OverloadedError` (`-32050`) only.
    `tool:"captatum_bulk"` + `bulkId` + `url_host`) plus one **summary** event
    (no per-url body; body allow-list unchanged) carrying `totals` +
    `capBreaches`. Flagged for CloudWatch consumers.
-3. (Follow-up, not v1) `Result.egressBytes?: number` (real egress incl. Tier-3
-   subresources) and `FetcherResult.retryAfterMs?: number` are deferred — v1
-   sums `result.bytes` and treats 429/503 as per-seed fails.
+3. `Result.egressBytes?: number` (real network egress — the fetched document
+   bytes for Tier-1/Tier-2; `essentialBytes + bytesFulfilled` for a Tier-3
+   render, i.e. honest subresource accounting). The budget tracker sums
+   `result.egressBytes ?? result.bytes`. `Result.renderEgressHosts?: string[]`
+   (the registrable domains a Tier-3 render loaded subresources from — fed into
+   the per-host union count gate, BULK-3). `Result.retryAfterMs?: number` (the
+   curated `Retry-After` on a 429/503, carried from `FetcherResult`). All
+   additive optional fields; absent on legacy single-fetch Tier-1 results.
+4. `FetcherResult.retryAfterMs?: number` — curated from the `Retry-After` header
+   on a 429/503 (seconds or HTTP-date). Surfaced on the `FetcherResult` and
+   threaded to `Result.retryAfterMs`; the bulk orchestrator performs ONE
+   jittered retry per 429/503 seed (bounded by the wall), disclosed as a
+   `bulk_retried_429` warning. Single-fetch surfaces `retryAfterMs` on the
+   receipt but does NOT auto-retry (unchanged behavior).
+5. `CaptatumContext` gains optional `clientId?: string` (the OAuth client id),
+   threaded by the MCP handler so the bulk orchestrator can key the
+   `BulkQuotaPort` reservation per tenant. Additive: single-fetch + local pass
+   nothing and are unchanged.
+6. `ToolAuditEvent` (already widened in PR 1/2 to `tool:"captatum"|"captatum_bulk"`
+   + `bulkId?`) gains optional `quotaReserved?: number` /
+   `quotaWindowSeconds?` on the bulk summary event when a `BulkQuotaPort` is
+   configured, so per-tenant spend is auditable.
 
 ### Two flavors (one core)
 
 - **Local binary:** ships ON (single-user, no auth, no admission cap,
-  `BulkQuotaPort` = noop). The BulkGuard caps bound each call.
-- **Hosted remote:** ships behind `CAPTATUM_BULK_ENABLED` (default **off**),
-  flipped on only after a GLOBAL fetch-concurrency cap (`LimitingFetcher`) +
-  per-tenant `BulkQuotaPort` land and OOM/admission behavior is monitored. The
-  8-slot admission wraps the bulk call (1 slot/call). Reuses `fetch:read` /
-  `fetch:transform` (no separate `bulk:read` scope in v1).
+  `BulkQuotaPort` = noop, raw `FetcherPort` — no global fetch cap). The
+  BulkGuard caps bound each call.
+- **Hosted remote:** ships ON as of PR 3 (`CAPTATUM_BULK_ENABLED` default
+  **true**), gated behind the `LimitingFetcher` (global fetch-concurrency cap,
+  BULK-2) + `BulkQuotaPort` (per-tenant seed-window quota, BULK-1) which both
+  landed in PR 3. The 8-slot admission wraps the bulk call (1 slot/call); the
+  `LimitingFetcher` wraps the `FetcherPort` (global fetch cap across all
+  callers); the `BulkQuotaPort` bounds per-tenant amplification across calls.
+  Reuses `fetch:read` / `fetch:transform` (no separate `bulk:read` scope in v1).
+  Operators may set `CAPTATUM_BULK_ENABLED=false` to disable hosted bulk
+  independently of the local flavor.
 
 ## Provenance / Result schema
 
@@ -522,7 +606,7 @@ Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). 
 - TIER-3 in-browser SSRF: `page.route` intercepts every browser request; **every non-aborted GET — and a first-party POST (same registrable domain, fetch/XHR only — #111) — is fulfilled through `FetcherPort`** (`route.fulfill`, never `route.continue`) so the browser makes no direct egress — connections are IP-pinned and every redirect hop is re-validated (`maxHops`, and a POST's method/body apply to the initial hop only); image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap (advisory truncation); browser in a separate process/container with no env — in-process launch keeps the OS sandbox ON (`chromiumSandbox` default true), and the hosted path uses a CDP sidecar container (`CAPTATUM_BROWSER_CDP_ENDPOINT`) where `--no-sandbox` is acceptable (container-isolated). The browser never runs in-process with `--no-sandbox` against the gateway. The first-party POST gate is PSL-aware (`isSameRegistrableDomain` via `psl`), POST-only, header-allowlisted (Content-Type only — never Cookie/Auth/Origin/Referer/Content-Length), body-capped (`CAPTATUM_RENDER_POST_MAX_BYTES`, never truncated) + concurrency-capped (`CAPTATUM_RENDER_POST_CONCURRENCY`), and the body is counted against the essential render-byte pool at dispatch and released on reject so N rejected POSTs cannot blow the pool. A same-registrable cross-origin POST (e.g. a page on developer.atlassian.com POSTing to api.atlassian.com) triggers a Chromium CORS preflight (`OPTIONS`) + a CORS check on the response; captatum synthesizes a permissive first-party preflight response (204 + `Access-Control-Allow-Origin: *` + allow-methods/headers) and adds `Access-Control-Allow-Origin: *` to the forwarded POST response, so the in-render browser admits the cross-origin exchange (captatum is its own controlled fetcher, not a real cross-origin client the upstream must authorize; the POST is already first-party-gated and carries no credentials).
 - Response guards: stream through a counting reader that **truncates** at `maxBytes` (advisory `truncated` flag, not a hard reject) — Content-Length is attacker-controlled so a pre-check would only stop honest oversized servers; the streamed cap is the real backstop.
 - Logging: allow-list only (tier, finalUrl, platform, status, bytes, timing, blockReason); never body, never `Set-Cookie`/`Authorization`; canonicalize logged URLs to scheme+host when host is private. Per-call audit event.
-- Concurrency: a process-wide `AdmissionLimiter` (`MAX_CONCURRENT_MCP=8`) bounds concurrent tool **executions** on hosted (one slot per single-fetch call, one slot per whole `captatum_bulk` call). The single-URL `guardedFetch` is otherwise stateless (no per-host throttle, no in-flight dedupe at the fetcher). `captatum_bulk` adds its own in-orchestrator bounds — `maxConcurrency` (global fetch pool within a call) + a union-keyed per-host token-bucket gate (`maxPerHostInflight` + `crawlDelayMs`) + the BulkGuard caps; a process-wide **global** fetch-concurrency cap across concurrent bulks (`LimitingFetcher`) is the hosted enablement gate (see "Tool: captatum_bulk").
+- Concurrency: a process-wide `AdmissionLimiter` (`MAX_CONCURRENT_MCP=8`) bounds concurrent tool **executions** on hosted (one slot per single-fetch call, one slot per whole `captatum_bulk` call). The single-URL `guardedFetch` is otherwise stateless (no per-host throttle, no in-flight dedupe at the fetcher). `captatum_bulk` adds its own in-orchestrator bounds — `maxConcurrency` (global fetch pool within a call) + a union-keyed per-host token-bucket gate (`maxPerHostInflight` + `crawlDelayMs`) + the BulkGuard caps; a process-wide **global** fetch-concurrency cap across all callers (`LimitingFetcher`, PR 3) wraps the hosted `FetcherPort`, and a per-tenant `BulkQuotaPort` bounds cross-call amplification (see "Tool: captatum_bulk" / "Hosted amplification controls").
 
 ## Storage
 
@@ -609,11 +693,13 @@ reject (Tier-1 pre-download) and a **non-fatal advisory** entry inside a
 `tier`/`code` distinguish the two — advisory entries never set `tier: "error"`.
 `captatum_bulk` per-seed failure codes (one `fail` entry in `BulkResult.failures`,
 not a tool-level error — partial failure is normal): `bulk_per_host_cap`,
-`tier2_board_not_supported_in_bulk`, `bulk_deadline_exceeded`,
-`bulk_budget_exceeded`, `bulk_render_cap_exceeded`. Tool-level errors for bulk are
+`tier2_board_not_supported_in_bulk`, `ashby_embed_not_supported_in_bulk`,
+`bulk_deadline_exceeded`, `bulk_budget_exceeded`. Tool-level errors for bulk are
 limited to input validation (`invalid_input` / `invalid_url` / `bulk_urls_empty` /
-`bulk_render_not_supported` — v1 rejects `allowRender:true`), auth, and admission
-`OverloadedError` (`-32050`).
+`too_many_urls`), auth, admission `OverloadedError` (`-32050`),
+`bulk_quota_exceeded` (retryable), and `bulk_quota_store_error` (fail-closed).
+`bulk_render_cap_exceeded` and `bulk_retried_429` are per-seed WARNINGS (the seed
+runs degraded), not fail codes.
 
 ## Audit event
 
