@@ -170,12 +170,11 @@ export class CaptatumBulkUseCase {
             }
           }
           const downgradedByCost = request.requestedOutput !== "raw" && effectiveOutput === "raw";
-          // maxRenderedSeeds (BULK-3, codex R10): reserve the render-attempt slot at dispatch (renderedCount++
-          // synchronously → maxConcurrency seeds can't all pass before the count catches up; a non-shell
-          // (jsRequired=false) releases its slot post-settle). reserveRender holds the byte invariant.
+          // maxRenderedSeeds (BULK-3): post-settle count over ACTUAL render attempts (attempts with tier 3 —
+          // success, empty, OR a 4xx/5xx render, all spawned a browser; codex R12 P2). Overshoot ≤
+          // maxConcurrentRenders (the renderer's concurrency cap). reserveRender holds the byte invariant.
           let reservedUnits = 1, renderAllowed = request.allowRender && renderedCount < guard.maxRenderedSeeds;
-          if (renderAllowed) renderedCount++;
-          if (renderAllowed && !budget.reserveRender()) { renderAllowed = false; renderedCount--; }
+          if (renderAllowed && !budget.reserveRender()) renderAllowed = false; // byte pool won't fit → refuse render
           if (renderAllowed) reservedUnits += RENDER_EGRESS_MULTIPLIER;
           const renderDowngraded = request.allowRender && !renderAllowed;
           const execInput = { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: renderAllowed, debug: request.debug };
@@ -195,8 +194,9 @@ export class CaptatumBulkUseCase {
           } finally {
             if (transformSlotHeld) transformSem.release();
           }
-          // Release the render-attempt slot for a seed that did NOT render (jsRequired=false — a content page or errored seed) (codex R10 P2).
-          if (renderAllowed && !seedResult.jsRequired) renderedCount--;
+          // Count ACTUAL render attempts post-settle: a tier-3 attempt trace = a browser spawned (success, empty,
+          // OR a 4xx/5xx render; codex R12 P2). A content page (no tier-3 attempt) doesn't consume the budget.
+          if (renderAllowed && seedResult.attempts.some((a) => a.tier === 3)) renderedCount++;
           // The wall may have fired DURING the in-flight execute — disclose it (the result flows
           // straight here, not a record branch). transformReserved mirrors before.runTransform.
           if (signal.aborted) record("bulk_deadline_exceeded");

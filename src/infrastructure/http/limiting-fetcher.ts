@@ -26,10 +26,6 @@ import type {
   RejectResult,
 } from "../../application/ports/fetcher.ts";
 
-/** Floor for the inner fetch's timeoutMs after an acquire wait, so a fetch that
- *  just barely gets a slot still has a usable window. */
-const MIN_INNER_TIMEOUT_MS = 1000;
-
 export class LimitingFetcher implements FetcherPort {
   private readonly inner: FetcherPort;
   private readonly capacity: number;
@@ -54,14 +50,16 @@ export class LimitingFetcher implements FetcherPort {
     }
     try {
       const waited = Date.now() - start;
-      // Reduce the inner timeout by the slot-wait so the caller's overall wall
-      // budget (timeoutMs) bounds wait + fetch. Only matters under global
-      // contention (single-fetch never waits: capacity ≥ admission). Floor so a
-      // fetch that waited nearly the full timeout still gets a usable window.
-      const innerOpts = waited > 0
-        ? { ...opts, timeoutMs: Math.max(MIN_INNER_TIMEOUT_MS, opts.timeoutMs - waited) }
-        : opts;
-      return await this.inner.fetchGuarded(url, innerOpts, postInit);
+      if (waited > 0) {
+        // Cap the inner timeout to the REMAINING caller budget (wait + fetch ≤ timeoutMs). If the wait
+        // consumed the whole budget, reject as timeout rather than running past it (codex R12 P2: the
+        // MIN_INNER_TIMEOUT_MS floor could push wait+fetch ~1s past a near-exhausted budget, and exceed
+        // sub-second caller timeouts entirely).
+        const remaining = opts.timeoutMs - waited;
+        if (remaining <= 0) return { rejected: true, code: "timeout", message: "Global fetch-concurrency limit reached" };
+        return await this.inner.fetchGuarded(url, { ...opts, timeoutMs: remaining }, postInit);
+      }
+      return await this.inner.fetchGuarded(url, opts, postInit);
     } finally {
       this.release();
     }
