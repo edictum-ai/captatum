@@ -289,6 +289,26 @@ test("#131 P2-B: a truncated extract escalates and completes instead of throwing
   assert.equal(result.info.truncated ?? false, false, "completed after escalation — no truncation advisory");
 });
 
+test("escalation accumulates cost across billable attempts (the bulk cost cap keys off this)", async () => {
+  // The truncated attempt bills $0.001, the escalated completion bills $0.002. Pre-fix only the
+  // LAST attempt's costUsd was returned ($0.002), so the bulk BudgetTracker undercounted real
+  // spend by the dropped escalation cost. Post-fix costUsd is the sum ($0.003).
+  const provider: LlmProvider = {
+    id: "openrouter",
+    candidates: () => [candidate("openrouter", "paid/model", { free: false, maxOutputTokens: 65_536 })],
+    async generate(input: LlmGenerateInput): Promise<LlmGenerateResult> {
+      const truncated = (input.maxOutputTokens ?? 0) < 30_000;
+      return truncated
+        ? { text: '{"title":"parti', truncated: true, costUsd: 0.001 }
+        : { text: '{"title":"Complete"}', costUsd: 0.002 };
+    },
+  };
+  const transformer = new LlmTransformer({ router: new ModelRouter(provider.candidates()), providers: { openrouter: provider } });
+  const schema = { type: "object", required: ["title"], properties: { title: { type: "string" } } };
+  const result = await transformer.transform({ mode: "extract", output: "extract", content: "page", prompt: "p", schema });
+  assert.equal(result.info.costUsd, 0.003, "escalation accumulates both billable attempts");
+});
+
 test("#131 P2-B: an extract that never completes surfaces truncated (never throws extract_invalid_json)", async () => {
   // The model always truncates, so the incomplete JSON is never parseable. Pre-fix this threw
   // extract_invalid_json; post-fix the cap escalates then surfaces the longest raw text as

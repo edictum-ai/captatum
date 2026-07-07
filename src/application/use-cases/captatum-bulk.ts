@@ -121,12 +121,11 @@ export class CaptatumBulkUseCase {
       const acquired = await sem.acquire(signal);
       if (!acquired) { record("bulk_deadline_exceeded"); results[idx] = abortedSeedResult(seed, "bulk_deadline_exceeded", "wall deadline reached"); return; }
       try {
-        if (shortCircuit || signal.aborted || budget.wallExceeded()) {
-          const wall = signal.aborted || budget.wallExceeded();
-          if (wall) record("bulk_deadline_exceeded");
-          results[idx] = abortedSeedResult(seed, wall ? "bulk_deadline_exceeded" : shortCircuit!.code, wall ? "wall deadline reached" : shortCircuit!.message);
-          return;
-        }
+        // CHECK A: wall or HARD short-circuit → abort. SOFT (transform-cost) falls through — beforeSeed
+        // fail-softs to raw. (shortCircuit is sibling-mutated; assert the declared type.)
+        const scTop = shortCircuit as ShortCircuit | null;
+        if (signal.aborted || budget.wallExceeded()) { record("bulk_deadline_exceeded"); results[idx] = abortedSeedResult(seed, "bulk_deadline_exceeded", "wall deadline reached"); return; }
+        if (scTop && scTop.hard) { results[idx] = abortedSeedResult(seed, scTop.code, scTop.message); return; }
         const seedKey = seedRegistrableKey(seed);
         if ((hostCounts.get(seedKey) ?? 0) >= guard.maxPerHostInBulk) {
           record("bulk_per_host_cap");

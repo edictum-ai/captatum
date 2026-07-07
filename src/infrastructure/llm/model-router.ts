@@ -108,6 +108,7 @@ export class LlmTransformer implements TransformPort {
     let best: TransformResult | undefined;
     let budgetFloor = input.budget; // grows on truncation
     let escalations = 0; // truncation-budget retries only — hard-fail fallback is candidate-bound
+    let accumulatedCostUsd = 0; // sum EVERY billable attempt (escalation/fallback re-bills input); only the last was recorded before, so a paid-fallback truncation silently undercounted spend vs the bulk cost cap
     for (;;) {
       // Reserve what this attempt will request so a long page is not rejected for a model MAX it won't use (codex P2 #125).
       const pick = this.router.pick(input.mode, inTokens, { ...baseOptions, exclude: tried, reserveOutputTokens: budgetFloor ?? this.maxOutputTokensDefault });
@@ -150,7 +151,7 @@ export class LlmTransformer implements TransformPort {
         process.stderr.write(`captatum transform: ${pick.model} failed: ${lastError.message}\n`);
         continue;
       }
-
+      accumulatedCostUsd += generated.costUsd ?? 0; // every successful (non-empty) generate bills
       const latencyMs = elapsed(started, this.nowMs());
       // Truncation is checked BEFORE finalize (#131 P2-B): a length-capped extract is incomplete
       // JSON, and finalize() would parse+throw extract_invalid_json before this branch could run.
@@ -168,7 +169,7 @@ export class LlmTransformer implements TransformPort {
             inTokens: generated.inTokens ?? inTokens,
             outTokens: generated.outTokens ?? estimateTokens(generated.text),
             latencyMs,
-            costUsd: generated.costUsd,
+            costUsd: accumulatedCostUsd,
             ...(tried.length > 0 ? { fallbackFrom: tried.join(", ") } : {}),
             truncated: true,
           },
@@ -195,7 +196,7 @@ export class LlmTransformer implements TransformPort {
           inTokens: generated.inTokens ?? inTokens,
           outTokens: finalized.outTokens,
           latencyMs,
-          costUsd: generated.costUsd,
+          costUsd: accumulatedCostUsd,
           ...(finalized.schemaIssue ? { schemaIssue: finalized.schemaIssue } : {}),
           ...(tried.length > 0 ? { fallbackFrom: tried.join(", ") } : {}),
         },

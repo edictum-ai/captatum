@@ -38,7 +38,11 @@ function envelope(bulk: BulkResult, tier: RowTier, debug: boolean): Record<strin
     totals: bulk.totals,
     guard: bulk.guard,
     capBreaches: bulk.capBreaches,
-    clamp: bulk.clamp,
+    // In the compact tier, clip the perHostTruncated host strings (up to ~18 × 2048-char hosts
+    // would overflow the 25 KB ceiling from clamp alone).
+    clamp: tier === "compact"
+      ? { ...bulk.clamp, perHostTruncated: bulk.clamp.perHostTruncated.map((t) => ({ ...t, host: t.host.length > COMPACT_URL_CHARS ? `${t.host.slice(0, COMPACT_URL_CHARS - 1)}…` : t.host })) }
+      : bulk.clamp,
     fenceToken: bulk.fenceToken,
     results: bulk.results.map((r) => leanRow(r, tier, debug)),
     failures: safeFailures(bulk.failures, tier === "compact"),

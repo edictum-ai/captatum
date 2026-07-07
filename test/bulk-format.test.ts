@@ -113,3 +113,21 @@ test("bulk structured: signed query params are redacted in FAILURE rows too (fai
   const bulk: BulkResult = { ...makeBulk(0, 50), results: [], count: 0, passed: 0, failed: 1, status: "fail", ok: false, failures };
   assert.ok(!JSON.stringify(buildBulkStructuredContent(bulk)).includes("SECRET123"), "presigned signature redacted from failure rows");
 });
+
+test("bulk structured: a MALFORMED-host presigned failure URL is still redacted (host-agnostic redactSignedQueryParams)", () => {
+  // A malformed host (space in host) makes `new URL()` throw — the old redactSignedQueryParams
+  // caught + returned the URL UNREDACTED, leaking the signature. The host-agnostic (substring)
+  // implementation redacts regardless.
+  const failures = [{ url: "https://s3.amazo naws.com/bucket/file?X-Amz-Signature=SECRET123&X-Amz-Date=x", code: "invalid_url", message: "bad host" }];
+  const bulk: BulkResult = { ...makeBulk(0, 50), results: [], count: 0, passed: 0, failed: 1, status: "fail", ok: false, failures };
+  assert.ok(!JSON.stringify(buildBulkStructuredContent(bulk)).includes("SECRET123"), "signature redacted even for a malformed host");
+});
+
+test("bulk structured: perHostTruncated hosts are clipped in the compact tier (no clamp ceiling overflow)", () => {
+  // ~18 distinct ~2030-char single-label hosts (within the 200-input / 2048-char caps) would
+  // overflow the 25 KB structured ceiling from clamp.perHostTruncated alone if not clipped.
+  const longHost = "h".repeat(2030);
+  const perHostTruncated = Array.from({ length: 18 }, (_, i) => ({ host: `${longHost}${i}`, kept: 10, dropped: 1 }));
+  const bulk: BulkResult = { ...makeBulk(1, 100), count: 1, passed: 1, clamp: { inputUrls: 1, afterDedupe: 1, afterPerHostCap: 1, processed: 1, perHostTruncated, totalClampedTo: null } };
+  assert.ok(JSON.stringify(buildBulkStructuredContent(bulk)).length <= 25_000, "compact tier with long perHostTruncated hosts stays ≤ 25 KB");
+});

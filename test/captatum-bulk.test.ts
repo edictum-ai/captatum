@@ -359,3 +359,15 @@ test("bulk P1: a summary seed queued on the transform slot ABORTS (no fetch) aft
   assert.ok(aborted.length >= 1, "queued transform seeds aborted after the hard quarantine");
   assert.ok(exec.calls < urls.length, `queued seeds did NOT fetch after the hard short-circuit; calls=${exec.calls} of ${urls.length}`);
 });
+
+test("bulk: a SOFT (transform-cost) short-circuit fail-softs to raw for seeds beyond wave 1 (not aborted at CHECK A)", async () => {
+  // seed 1's $0.06 transform > the $0.05 cap → a SOFT transform-cost shortCircuit (hard:false). Seeds
+  // 5-6 (beyond maxConcurrency=4, waiting on the semaphore) must fall through + fail-soft to raw,
+  // NOT abort at CHECK A (the sibling of the post-slot P1 — was aborted, losing safe raw fetches).
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 6 }, (_, i) => `https://h${i}.test/p${i}`);
+  for (const u of urls) exec.results.set(u, okResult(u, { output: "summary", costUsd: 0.06 }));
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4 }).execute({ urls, output: "summary", maxTransformCostUsd: 0.05 });
+  assert.equal(res.results.filter((r) => r.codeText === "bulk_budget_exceeded").length, 0, "no seed aborted for a SOFT (transform-cost) short-circuit");
+  assert.ok(res.results.filter((r) => r.output === "raw").length >= 1, "post-cap seeds fail-soft to raw (not aborted)");
+});

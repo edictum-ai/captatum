@@ -16,8 +16,9 @@
 //    reservation (the reservation is an estimate), so `afterSeed` records the real cost
 //    and re-checks the GLOBAL cap; a breach short-circuits the REMAINING seeds
 //    (`bulk_budget_exceeded`/transform_cost). The overshoot is bounded to one seed's
-//    actual-minus-reserved, itself bounded by the model's per-call max (the `budget`
-//    output-token cap).
+//    actual-minus-reserved; the per-seed actual is bounded by the transform's per-call cost
+//    (input ∝ maxBytes + output ∝ the budget cap, × escalation attempts, now accumulated in
+//    model-router so the recorded costUsd is the real per-seed spend).
 //
 // `beforeSeed`/`afterSeed` are SYNCHRONOUS and mutate shared counters; JS single-threaded
 // async keeps them atomic between awaits, so interleaved concurrent seeds see a correct

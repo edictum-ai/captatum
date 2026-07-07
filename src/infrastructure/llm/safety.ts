@@ -142,19 +142,24 @@ export function detectSensitiveTransformInput(input: {
   return { sensitive: false };
 }
 
-/** Redact signed/tokenized query-param values from a URL before display (INFOLEAK-1). */
+/** Redact signed/tokenized query-param values from a URL before display (INFOLEAK-1). HOST-AGNOSTIC:
+ *  uses a substring + URLSearchParams parse of the query (never `new URL(url)`, which throws on a
+ *  malformed host and would fail-open, leaking the signature). Mirrors signedUrlReason's approach so
+ *  detection + redaction agree on coverage. */
 export function redactSignedQueryParams(url: string): string {
-  try {
-    const parsed = new URL(url);
-    let redacted = false;
-    for (const key of parsed.searchParams.keys()) {
-      if (SIGNED_QUERY_KEYS.has(key.toLowerCase())) {
-        parsed.searchParams.set(key, "[REDACTED]");
-        redacted = true;
-      }
+  const q = url.indexOf("?");
+  if (q < 0) return url;
+  const hashIdx = url.indexOf("#", q);
+  const queryEnd = hashIdx < 0 ? url.length : hashIdx;
+  const params = new URLSearchParams(url.slice(q + 1, queryEnd));
+  let redacted = false;
+  for (const key of params.keys()) {
+    if (SIGNED_QUERY_KEYS.has(key.toLowerCase())) {
+      params.set(key, "[REDACTED]");
+      redacted = true;
     }
-    return redacted ? parsed.href : url;
-  } catch {
-    return url;
   }
+  if (!redacted) return url;
+  const newQuery = params.toString();
+  return url.slice(0, q + 1) + newQuery + (hashIdx < 0 ? "" : url.slice(hashIdx));
 }
