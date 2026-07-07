@@ -46,7 +46,8 @@ if (store) {
 }
 // BULK-2: wrap the hosted FetcherPort in a LimitingFetcher — a process-wide global
 // fetch-concurrency cap shared across ALL callers (single-fetch + bulk seeds + Tier-3
-// render subresources). Sized ≥ the admission cap (8) so single-fetch never queues.
+// render subresources). Bounds the 8 bulks × maxConcurrency worst case below the box sizing;
+// single-fetch shares the FIFO pool (may briefly queue under heavy bulk load — graceful timeout).
 // (server.ts is hosted-only; the local binary keeps the raw fetcher — single-user.)
 const fetcher = new LimitingFetcher(createWreqGuardedFetcher(), config.bulk.globalFetchConcurrency());
 const captatum = createCaptatumUseCase({
