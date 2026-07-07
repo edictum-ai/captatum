@@ -137,13 +137,11 @@ export function normalizeBulkInput(value: unknown): NormalizedBulkInput {
 type ParsedBulkInput = z.infer<typeof bulkInputSchema>;
 
 /** Strip `user:pass@` from a URL stored in a failure row so credentials are never echoed
- *  (normalizeContractUrl rejects userinfo BEFORE stripping it — for http(s) AND unsupported
- *  schemes like ftp://). Trim leading whitespace first — WHATWG trims it before parsing, so a
- *  `" https://user:pass@host"` is rejected as userinfo but the raw still carries credentials
- *  past the scheme anchor otherwise. Scheme-independent (ftp/gopher/etc. userinfo too). */
+ *  (normalizeContractUrl rejects userinfo BEFORE stripping it). Trim leading whitespace first
+ *  (WHATWG trims before parsing). Scheme-independent (http/ftp/gopher + protocol-relative //). */
 function redactUserinfo(u: string): string {
   const trimmed = u.replace(/^[\s\x00-\x1f]+/, "");
-  return trimmed.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#]+@/i, "$1");
+  return trimmed.replace(/^((?:[a-z][a-z0-9+.-]*:)?)\/\/[^/?#]+@/i, "$1//");
 }
 
 function parseInput(value: unknown): ParsedBulkInput {

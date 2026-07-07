@@ -137,3 +137,11 @@ test("normalizeBulkInput: non-http(s) scheme userinfo redacted (ftp://user:pass@
   assert.equal(out.invalid.length, 1);
   assert.ok(!out.invalid[0].url.includes("secretpass"), "ftp userinfo password redacted");
 });
+
+test("normalizeBulkInput: protocol-relative userinfo redacted (//user:pass@host)", () => {
+  // //user:pass@example.com has no scheme — normalizeContractUrl rejects it, but redactUserinfo
+  // must still strip the credentials (the regex requires no explicit scheme for //...@ forms).
+  const out = normalizeBulkInput({ urls: ["//user:secretpass@example.com/path"] });
+  assert.equal(out.invalid.length, 1);
+  assert.ok(!out.invalid[0].url.includes("secretpass"), "protocol-relative userinfo password redacted");
+});
