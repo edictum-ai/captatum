@@ -112,16 +112,17 @@ export class BudgetTracker {
     return { dispatch: true, runTransform };
   }
 
-  /** Reserve an ADDITIONAL per-seed byte unit for a 429/503 retry (the retry does a second fetch
-   *  of up to `perSeedMaxBytes`; `beforeSeed` reserved only one). Returns false (skip the retry)
-   *  when the second fetch's egress would not fit under the global byte cap — so a retried seed
-   *  cannot push egress past the hard cap (codex P2). The unit is released in `afterSeed` via
-   *  `byteUnits`. */
-  reserveRetry(): boolean { return this.reserveUnits(1); }
+  /** Reserve the retry's byte budget: 1 raw-fetch unit, PLUS the render pool
+   *  (RENDER_EGRESS_MULTIPLIER×) when the retried seed is render-capable — a render that returns
+   *  429/503 + Retry-After renders AGAIN on retry, so the retry's render egress must be reserved
+   *  too (codex R13 P1). Returns false (skip the retry) when it would not fit under the global cap. */
+  reserveRetry(withRender = false): boolean { return this.reserveUnits(1 + (withRender ? RENDER_EGRESS_MULTIPLIER : 0)); }
 
   /** Release a retry reservation that did not run (e.g. the 2nd attempt threw) — reverse of
-   *  reserveRetry, so the unit does not leak against later seeds. */
-  cancelRetry(): void { this.bytesReserved -= this.opts.perSeedMaxBytes; }
+   *  reserveRetry (codex R8 P2). */
+  cancelRetry(withRender = false): void {
+    this.bytesReserved -= this.opts.perSeedMaxBytes * (1 + (withRender ? RENDER_EGRESS_MULTIPLIER : 0));
+  }
 
   /** Reserve the render byte pool (RENDER_EGRESS_MULTIPLIER × perSeedMaxBytes) before enabling a
    *  render — a render egresses the nav + essential/non-essential subresource pools (several×

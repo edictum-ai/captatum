@@ -97,8 +97,7 @@ export class RenderRouteState {
     this.mainFrame = frame;
   }
 
-  /** Total network egress for the render (every fulfilled subresource's bytes) →
-   *  `Result.egressBytes` (BULK-5). Distinct from `fetchResult.bytes` (rendered DOM). */
+  /** Total render network egress → `Result.egressBytes` (BULK-5). */
   egressBytes(): number { return this.pool.total(); }
 
   /** Registrable domains the render loaded subresources from → bulk per-host union (BULK-3). */
@@ -157,8 +156,7 @@ export class RenderRouteState {
       // base stays the original origin; intermediate Set-Cookie isn't carried). Every hop was guard-validated.
     }
     const essential = isEssentialRenderType(resourceType);
-    // Count EVERY resolved body + its redirect/final hosts — including ones then aborted by the byte cap —
-    // because the egress already happened (codex R2 P2). Essential crossing → fulfill; NON-essential → abort.
+    // Count EVERY resolved body + hosts — including cap-aborted ones (egress already happened; codex R2 P2).
     const countFetched = (): void => {
       this.pool.add(essential, outcome.body.byteLength);
       this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
@@ -207,7 +205,10 @@ export class RenderRouteState {
     this.pool.add(true, plan.body.byteLength); // reserve the request body at dispatch; released on reject
     if (this.pool.used(true) > this.pool.cap(true)) this.pool.markExceeded(true); // crossing reservation marks the pool blown synchronously (#111 codex P2)
     try {
-      const outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit);
+      await this.fetchSem.acquire(); // POST fetches bounded by the render fetch semaphore too (codex R13 P2)
+      let outcome;
+      try { outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit); }
+      finally { this.fetchSem.release(); }
       if (outcome.kind === "reject") {
         this.pool.releaseEssential(plan.body.byteLength);
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");

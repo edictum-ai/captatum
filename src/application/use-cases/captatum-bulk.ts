@@ -181,14 +181,13 @@ export class CaptatumBulkUseCase {
           const execCtx = { ...(context.fetchedAt !== undefined ? { fetchedAt: context.fetchedAt } : {}), signal };
           let seedResult: Result;
           let retried = false, retryReserved = false;
+          const retryUnits = 1 + (renderAllowed ? RENDER_EGRESS_MULTIPLIER : 0); // retried render re-renders (codex R13 P1)
           try {
-            // Race EVERY seed against the bulk wall (not just transforms): a raw Tier-1 fetch already
-            // aborts on the signal, but a Tier-3 RENDER (allowRender:true) settles in Playwright + the
-            // render-concurrency queue, which do NOT observe the signal — without this race a slow JS
-            // shell can hold Promise.all past maxGlobalWallMs (codex R2 P2). The wall abandons it
-            // (dispatch-level). executeSeedWithRetry performs ONE jittered 429/503 retry (wall-bounded).
+            // Race EVERY seed vs the bulk wall (a raw fetch aborts on the signal; a Tier-3 RENDER settles
+            // in Playwright which doesn't observe it — without the race a slow shell holds the bulk past
+            // maxGlobalWallMs; codex R2 P2). executeSeedWithRetry performs ONE jittered 429/503 retry.
             const run = (): Promise<Result> => raceWallAbort(this.deps.executor.execute(execInput, execCtx), signal, seed);
-            ({ result: seedResult, retried, retryReserved } = await executeSeedWithRetry(run, { signal, wallExceeded: () => budget.wallExceeded(), reserveRetry: () => budget.reserveRetry(), releaseRetry: () => budget.cancelRetry() }));
+            ({ result: seedResult, retried, retryReserved } = await executeSeedWithRetry(run, { signal, wallExceeded: () => budget.wallExceeded(), reserveRetry: () => budget.reserveRetry(renderAllowed), releaseRetry: () => budget.cancelRetry(renderAllowed) }));
           } catch (err) {
             seedResult = syntheticFail(seed, err);
           } finally {
@@ -200,7 +199,7 @@ export class CaptatumBulkUseCase {
           // The wall may have fired DURING the in-flight execute — disclose it (the result flows
           // straight here, not a record branch). transformReserved mirrors before.runTransform.
           if (signal.aborted) record("bulk_deadline_exceeded");
-          const after = budget.afterSeed({ bytes: seedResult.egressBytes ?? seedResult.bytes, costUsd: seedResult.transform?.costUsd, inTokens: seedResult.transform?.inTokens, outTokens: seedResult.transform?.outTokens, transformReserved: before.runTransform, byteUnits: reservedUnits + (retryReserved ? 1 : 0) });
+          const after = budget.afterSeed({ bytes: seedResult.egressBytes ?? seedResult.bytes, costUsd: seedResult.transform?.costUsd, inTokens: seedResult.transform?.inTokens, outTokens: seedResult.transform?.outTokens, transformReserved: before.runTransform, byteUnits: reservedUnits + (retryReserved ? retryUnits : 0) });
           if (after.shortCircuit) {
             shortCircuit = shortCircuit ?? budgetMsg(after.reason as BudgetCapReason);
             record(`bulk_budget_exceeded:${after.reason}`);
