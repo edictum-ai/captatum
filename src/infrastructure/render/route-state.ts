@@ -55,14 +55,12 @@ export class RenderRouteState {
   private readonly postMaxBytes: number;
   private readonly postSemaphore: Semaphore;
   status = 200;
-  finalUrl = "";
-  redirects: FetcherResult["redirects"] = [];
+  finalUrl = ""; redirects: FetcherResult["redirects"] = [];
   fatal?: RejectResult;
   private mainFrame?: PlaywrightFrame;
-  // Two cumulative byte pools, each capped at maxBytes: non-essential (stylesheets,
-  // etc.) and essential (script/fetch/xhr/document). Splitting them means a page
-  // whose non-essential budget is blown still gets its essential scripts/data (so the
-  // client app doesn't crash), while total egress stays bounded at ~2×maxBytes.
+  // Two cumulative byte pools, each capped at maxBytes: non-essential (stylesheets) + essential
+  // (script/fetch/xhr/document). A blown non-essential budget still gets essential scripts/data (so
+  // the client app doesn't crash); total egress bounded at ~2×maxBytes.
   private bytesFulfilled = 0;
   private essentialBytes = 0;
   private budgetExceeded = false;
@@ -75,15 +73,17 @@ export class RenderRouteState {
     this.actions = actions;
     this.guard = guard;
     this.mainHost = hostnameOf(input.url);
-    // Computed ONCE from the page URL; NEVER recomputed on a same-tab navigation — the
-    // POST first-party scope never expands mid-render (a security property, not accident).
+    // Computed ONCE from the page URL; NEVER recomputed on a same-tab nav — the POST first-party
+    // scope never expands mid-render (a security property, not accident).
     this.mainRegistrableDomain = registrableDomain(this.mainHost);
     this.postMaxBytes = config.render.postMaxBytes();
     this.postSemaphore = new Semaphore(config.render.postConcurrency());
+    // Thread the bulk-wall signal into every render subresource fetch (codex R6 P2): an in-flight
+    // route fulfillment runs through the guarded Node fetcher, so page.close() alone can't cancel it —
+    // without the signal it holds a global fetch slot + egresses after the bulk is abandoned.
     this.fulfiller = new FetcherRouteFulfiller(input.fetcher, {
-      maxBytes: input.maxBytes,
-      timeoutMs: input.timeoutMs,
-      maxHops: input.maxHops,
+      maxBytes: input.maxBytes, timeoutMs: input.timeoutMs, maxHops: input.maxHops,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
   }
 
