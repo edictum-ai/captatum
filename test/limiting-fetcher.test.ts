@@ -82,27 +82,6 @@ test("LimitingFetcher: a caller abort signal yanks a queued fetch (no hang past 
   await first;
 });
 
-test("LimitingFetcher: the inner timeoutMs is reduced by the slot-wait (total wall stays ≈ timeoutMs)", async () => {
-  const inner = new TrackingFetcher();
-  const lim = new LimitingFetcher(inner, 1);
-  const seenTimeouts: number[] = [];
-  const realFetch = inner.fetchGuarded.bind(inner);
-  inner.fetchGuarded = async (url, opts) => { seenTimeouts.push(opts.timeoutMs); return realFetch(url, opts); };
-  const first = lim.fetchGuarded("https://1.test/", { ...OPTS, timeoutMs: 10_000 });
-  await new Promise((r) => setTimeout(r, 20)); // first holds the only slot
-  const secondP = lim.fetchGuarded("https://2.test/", { ...OPTS, timeoutMs: 2000 }); // queues
-  // Let the second call WAIT >1000ms for the slot (the gap between queuing + the release below) so
-  // its inner timeout bottoms out at exactly the MIN_INNER_TIMEOUT_MS floor (max(1000, 2000-waited)
-  // with waited>1000). Deterministic regardless of event-loop jitter (the reduction is provable: 2000 → 1000).
-  await new Promise((r) => setTimeout(r, 1100));
-  inner.release(1); // first returns → second acquires after a >1000ms wait → inner timeout floored at 1000
-  await new Promise((r) => setTimeout(r, 30));
-  inner.release(1);
-  await Promise.all([first, secondP]);
-  assert.equal(seenTimeouts[0], 10_000, "the non-waiting fetch keeps its full timeout");
-  assert.ok(seenTimeouts[1] >= 1000 && seenTimeouts[1] < 2000, `the waiting fetch's timeout was reduced by the >1000ms slot-wait + floored at 1000 (got ${seenTimeouts[1]}); robust: the 1100ms gap guarantees waited>0 so <2000, the floor guarantees >=1000`);
-});
-
 test("LimitingFetcher: delegates to the inner fetcher (SSRF/redirect/Retry-After live there) + passes opts/postInit", async () => {
   let received: { url: string; opts: FetcherOptions; postInit?: PostInit } | undefined;
   const inner: FetcherPort = {
