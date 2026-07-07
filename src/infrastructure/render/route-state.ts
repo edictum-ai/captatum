@@ -147,35 +147,38 @@ export class RenderRouteState {
       this.status = outcome.status;
       this.finalUrl = outcome.finalUrl;
       this.redirects = outcome.redirects;
-      // Fidelity limit: the nav body is served against the ORIGINAL request URL, so a cross-origin
-      // redirect's base URL stays the original origin (relative subresources may miss) + Set-Cookie
-      // from intermediate hops isn't carried. Playwright can't follow a fulfilled redirect for a
-      // nav. Cross-origin-redirect only; every hop was guard-validated, not an SSRF gap.
+      // Fidelity limit: the nav body is served against the ORIGINAL request URL (a cross-origin
+      // redirect's base stays the original origin; relative subresources may miss; intermediate
+      // Set-Cookie isn't carried — Playwright can't follow a fulfilled redirect for a nav). Every
+      // hop was guard-validated, not an SSRF gap.
     }
-    // TIER3-DOS-1: each pool (essential vs non-essential) is capped. Essential cap is
-    // ESSENTIAL_BUDGET_MULTIPLIER× non-essential so heavy client apps (Cursor, Jira) load
-    // instead of crashing an error boundary. NON-essential crossing → aborted; ESSENTIAL
-    // crossing → still fulfilled (aborting mid-load crashes the app), pool marked exceeded.
     const essential = isEssentialRenderType(resourceType);
-    // Re-check AFTER resolve: a CONCURRENT essential may have blown the pool while this
-    // was in flight. The first to cross is fulfilled; the rest find it blown + abort.
-    // (check + update are synchronous, so two can't both pass — one sets the flag first.)
+    // Count a fetched body + its redirect/final hosts for EVERY resolved body — including ones then
+    // aborted by the byte cap — because the egress already happened (codex R2 P2). Essential cap is
+    // ESSENTIAL_BUDGET_MULTIPLIER× non-essential; NON-essential crossing → abort, ESSENTIAL → fulfill.
+    const countFetched = (): void => {
+      if (essential) this.essentialBytes += outcome.body.byteLength;
+      else this.bytesFulfilled += outcome.body.byteLength;
+      this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
+    };
+    // Re-check AFTER resolve: a CONCURRENT essential may have blown the pool while this was in
+    // flight. The body was fetched — count it, then abort the route.
     if (essential ? this.essentialBudgetExceeded : this.budgetExceeded) {
+      countFetched();
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
     const cap = essential ? this.input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER : this.input.maxBytes;
     const poolBytes = essential ? this.essentialBytes : this.bytesFulfilled;
     if (poolBytes + outcome.body.byteLength > cap) {
       if (essential) {
-        this.essentialBudgetExceeded = true; // crossing essential: fulfill (fall through)
+        this.essentialBudgetExceeded = true; // crossing essential: fulfill (counted below)
       } else {
         this.budgetExceeded = true;
+        countFetched(); // non-essential crossing: body fetched — count it before aborting
         return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
       }
     }
-    if (essential) this.essentialBytes += outcome.body.byteLength;
-    else this.bytesFulfilled += outcome.body.byteLength;
-    this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
+    countFetched();
     await route.fulfill({
       status: outcome.status,
       body: outcome.body,

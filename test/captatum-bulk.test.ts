@@ -581,6 +581,16 @@ test("bulk retry: BOTH attempts' egress HOSTS are preserved (codex P2 — first-
   assert.ok(res.results[0].redirectHosts.some((h) => h.includes("victim2")), "retry redirect host preserved");
 });
 
+test("bulk wall (R2): a hanging RAW seed (no transform slot) is still raced against the wall + abandoned", async () => {
+  // raceWallAbort now wraps EVERY seed, not just transforms (codex R2 P2): a raw allowRender seed
+  // whose render hangs in Playwright must be abandoned at the wall, not hold Promise.all open.
+  const exec = new FakeExecutor();
+  exec.results.set("https://a.test/x", okResult("https://a.test/x"));
+  exec.execute = async () => new Promise<Result>(() => {}); // a hanging render (never resolves)
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1, maxGlobalWallMs: 1 }).execute({ urls: ["https://a.test/x"] });
+  assert.ok(res.capBreaches.includes("bulk_deadline_exceeded"), "the hanging raw seed was abandoned at the wall (raced)");
+});
+
 test("bulk maxRenderedSeeds: an empty/failed render ATTEMPT still consumes the budget (tier!==3 regression)", async () => {
   // Adversarial run of empty SPA shells: each seed is jsRequired=true but the render returns empty
   // (tier "error", render_empty) — NOT tier 3. The OLD check (tier===3) missed these, so the cap

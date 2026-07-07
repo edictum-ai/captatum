@@ -53,6 +53,12 @@ export interface RenderSuccess {
 export type RenderFailure = RejectResult & {
   rendered: false;
   actions: RenderAction[];
+  /** Partial Tier-3 network egress before the failure (every subresource fulfilled up to the
+   *  fatal error/timeout). Surfaced so a render that loads subresources then fails still counts
+   *  its real egress (codex R2 P2). */
+  egressBytes?: number;
+  /** Partial render egress hosts before the failure (for the per-host union count gate). */
+  egressHosts?: string[];
 };
 
 export type RenderOutput = RenderSuccess | RenderFailure;

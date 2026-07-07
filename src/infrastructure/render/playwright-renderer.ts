@@ -52,7 +52,7 @@ export class PlaywrightRenderer implements RenderPort {
     this.guard = deps.guard ?? new P1BrowserUrlGuard();
     this.cdpEndpoint = deps.cdpEndpoint;
     this.chromiumSandbox = deps.chromiumSandbox ?? true;
-    this.settleMs = deps.settleMs ?? 5000; // #110: was 3000; both waits return early when stable, so the larger cap only helps slow-hydrating SPAs not yet stable at 3000ms (total settle stays bounded by render timeoutMs).
+    this.settleMs = deps.settleMs ?? 5000; // #110: was 3000; both waits return early when stable, so a larger cap only helps slow-hydrating SPAs (total settle bounded by render timeoutMs).
     this.settleMinDwellMs = deps.settleMinDwellMs ?? 1500;
     this.settleStableMs = deps.settleStableMs ?? 400;
   }
@@ -68,10 +68,9 @@ export class PlaywrightRenderer implements RenderPort {
     try {
       const playwright = await this.loadPlaywright();
       if (this.cdpEndpoint) {
-        // TIER3-CDP-1: CDP endpoint must be loopback (operator-set, validate).
+        // TIER3-CDP-1: CDP endpoint must be loopback (operator-set, validate); sidecar Chromium is reused, never closed here.
         let cdpHost = ""; try { cdpHost = new URL(this.cdpEndpoint).hostname; } catch {}
         if (!["localhost", "127.0.0.1", "[::1]"].includes(cdpHost)) throw new RenderError("render_unavailable", "CDP endpoint must be loopback");
-        // Sidecar mode: connect to a long-lived Chromium; reuse, never close here.
         if (!this.cdpBrowser) this.cdpBrowser = await playwright.chromium.connectOverCDP(this.cdpEndpoint);
         browser = this.cdpBrowser;
       } else {
@@ -96,9 +95,8 @@ export class PlaywrightRenderer implements RenderPort {
         page.goto(input.url, { waitUntil: "domcontentloaded", timeout: input.timeoutMs }),
         input.timeoutMs,
       );
-      // Idle-aware settle: networkidle then a content-stability dwell for setTimeout/hydration content.
-      // The networkidle cap RESERVES settleMinDwellMs for the content-stability phase (codex P2); a
-      // 0 cap SKIPS the wait — Playwright timeout:0 means no-timeout, a hang risk (codex P1).
+      // Idle-aware settle: networkidle then a content-stability dwell. The networkidle cap RESERVES
+      // settleMinDwellMs for the content-stability phase; a 0 cap SKIPS the wait (timeout:0 = no-timeout hang).
       const networkidleCap = Math.min(this.settleMs, Math.max(0, remaining() - this.settleMinDwellMs));
       if (networkidleCap > 0) await page.waitForLoadState("networkidle", { timeout: networkidleCap }).catch(() => {});
       const settleCap = Math.min(this.settleMs, remaining());
@@ -107,7 +105,7 @@ export class PlaywrightRenderer implements RenderPort {
         minDwellMs: Math.min(this.settleMinDwellMs, settleCap),
         stableMs: this.settleStableMs,
       });
-      if (state.fatal) return renderFailure(state.fatal, actions);
+      if (state.fatal) return renderFailure(state.fatal, actions, state);
       let content = await page.content();
       try {
         const main = page.mainFrame();
@@ -125,7 +123,7 @@ export class PlaywrightRenderer implements RenderPort {
         : undefined;
       return renderSuccess(input, page, response?.status() ?? state.status, bytes, state, notice);
     } catch (error) {
-      return renderFailure(state.fatal ?? rejectFromError(error), actions);
+      return renderFailure(state.fatal ?? rejectFromError(error), actions, state);
     } finally {
       await closeQuietly(page);
       await closeQuietly(context);
@@ -200,8 +198,11 @@ function capRenderedBytes(content: string, maxBytes: number): { bytes: Uint8Arra
   return { bytes: full.subarray(0, cut), truncated: true };
 }
 
-function renderFailure(rejected: RejectResult, actions: RenderAction[]): RenderFailure {
-  return { ...rejected, rendered: false, actions };
+function renderFailure(rejected: RejectResult, actions: RenderAction[], state: RenderRouteState): RenderFailure {
+  // A failed render may have fulfilled subresources before failing — carry the partial egress so the
+  // bulk byte budget + per-host gate see it (codex R2 P2). 0/empty when nothing was fulfilled.
+  const egressHosts = state.egressHosts();
+  return { ...rejected, rendered: false, actions, egressBytes: state.egressBytes(), ...(egressHosts.length ? { egressHosts } : {}) };
 }
 
 async function defaultLoadPlaywright(): Promise<PlaywrightModule> {
@@ -233,9 +234,7 @@ function rejectFromError(error: unknown): RejectResult {
   return { rejected: true, code: "render_error", message: `Tier-3 render failed: ${detail}` };
 }
 
-function serviceWorkerAction(): RenderAction {
-  return { type: "service-workers-disabled", reason: "context serviceWorkers=block" };
-}
+function serviceWorkerAction(): RenderAction { return { type: "service-workers-disabled", reason: "context serviceWorkers=block" }; }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;

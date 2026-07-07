@@ -66,3 +66,31 @@ test("maybeRender: egressBytes includes the Tier-1 fetch bytes + the Tier-3 rend
   assert.equal(out.egressBytes, 6000, "egressBytes = Tier-1 fetch (1000) + Tier-3 render (5000)");
   assert.equal(out.bytes, 4000, "bytes stays the rendered DOM size");
 });
+
+test("maybeRender: a FAILED render still surfaces its partial Tier-3 egress (codex R2 P2)", async () => {
+  // A render that times out AFTER fulfilling some subresources returns a RenderFailure carrying
+  // the partial egress. The result must count Tier-1 + the partial Tier-3 egress + the hosts, not
+  // fall back to only the Tier-1 fetch (which would underreport an allowRender:true shell bulk).
+  const base: Result = {
+    url: "https://a.test/x", bytes: 1000, code: 200, codeText: "OK", durationMs: 10,
+    result: "", schemaVersion: 1, finalUrl: "https://a.test/x", redirects: [], tier: 1, output: "raw",
+    platform: { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" },
+    jsRequired: true, resolvedVia: "tier1-shell-gate", attempts: [], contentType: "text/html",
+    timings: { totalMs: 10, fetchMs: 10 }, errors: [],
+  };
+  const renderer: RenderPort = {
+    async render(): Promise<RenderOutput> {
+      return { rendered: false, rejected: true, code: "timeout", message: "render timed out", actions: [], egressBytes: 3000, egressHosts: ["victim.test"] };
+    },
+  };
+  const out = await maybeRender({
+    result: base,
+    request: { url: "https://a.test/x", allowRender: true, maxBytes: 1_000_000, renderTimeoutMs: 5000, maxHops: 3, timeoutMs: 5000 } as never,
+    renderer,
+    fetcher: noopFetcher,
+    extractHtml,
+    clock,
+  });
+  assert.equal(out.egressBytes, 4000, "egressBytes = Tier-1 (1000) + partial Tier-3 (3000) even on a failed render");
+  assert.ok(out.renderEgressHosts?.includes("victim.test"), "partial render hosts surfaced on failure");
+});

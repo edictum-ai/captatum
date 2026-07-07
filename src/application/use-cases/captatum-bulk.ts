@@ -181,12 +181,12 @@ export class CaptatumBulkUseCase {
           let seedResult: Result;
           let retried = false;
           try {
-            // A raw fetch aborts on the wall signal; a transform's LLM call doesn't — race it so the
-            // wall abandons a slow transform (dispatch-level) instead of holding the bulk open past 180s.
-            // executeSeedWithRetry performs ONE jittered 429/503 retry (bounded by the wall).
-            const run = (): Promise<Result> => transformSlotHeld
-              ? raceWallAbort(this.deps.executor.execute(execInput, execCtx), signal, seed)
-              : this.deps.executor.execute(execInput, execCtx);
+            // Race EVERY seed against the bulk wall (not just transforms): a raw Tier-1 fetch already
+            // aborts on the signal, but a Tier-3 RENDER (allowRender:true) settles in Playwright + the
+            // render-concurrency queue, which do NOT observe the signal — without this race a slow JS
+            // shell can hold Promise.all past maxGlobalWallMs (codex R2 P2). The wall abandons it
+            // (dispatch-level). executeSeedWithRetry performs ONE jittered 429/503 retry (wall-bounded).
+            const run = (): Promise<Result> => raceWallAbort(this.deps.executor.execute(execInput, execCtx), signal, seed);
             ({ result: seedResult, retried } = await executeSeedWithRetry(run, { signal, wallExceeded: () => budget.wallExceeded() }));
           } catch (err) {
             seedResult = syntheticFail(seed, err);

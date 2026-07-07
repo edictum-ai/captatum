@@ -58,6 +58,13 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
   }
 
   if (!rendered.rendered) {
+    // A FAILED render may still have fulfilled subresources before failing/timeout — surface that
+    // partial Tier-3 egress (codex R2 P2: otherwise an allowRender:true bulk of shells that load
+    // subresources then time out underreports totals, the byte cap, and the render-host union gate).
+    const tier1Bytes = input.result.bytes ?? 0;
+    const renderEgress = rendered.egressBytes ?? 0;
+    if (renderEgress > 0) input.result.egressBytes = tier1Bytes + renderEgress;
+    if (rendered.egressHosts && rendered.egressHosts.length > 0) input.result.renderEgressHosts = rendered.egressHosts;
     input.result.attempts.push(...controlAttempts);
     return renderRejected(input.result, rendered, renderMs);
   }
