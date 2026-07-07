@@ -23,29 +23,37 @@ export interface SeedRetryCtx {
   /** Reserve an additional per-seed byte unit for the retry's second fetch; returns false (skip
    *  the retry) when it would not fit under the global byte cap (codex P2). */
   reserveRetry: () => boolean;
+  /** Release a retry reservation whose 2nd attempt did not run (e.g. it threw) — codex R8 P2. */
+  releaseRetry: () => void;
 }
 
 /** Run a seed once; if the result is a retriable 429/503 with a `retryAfterMs` and
- *  the wall budget allows, wait + run it once more. `run` is the per-attempt
- *  executor call (including the raceWallAbort wrapper when a transform slot is
- *  held — the slot stays held across both attempts). Returns the final result +
- *  whether a retry occurred. The returned result's `egressBytes` is the SUM of both
- *  attempts' egress (the first 429/503 body IS read from the network up to maxBytes,
- *  so it must be counted against the byte budget — not discarded). */
+ *  the wall budget allows, wait + run it once more. Returns the final result, whether a retry
+ *  occurred (`retried`), AND whether a retry byte-unit was reserved (`retryReserved`) — the caller
+ *  MUST release `retryReserved` against the byte budget even when the retry is skipped after
+ *  reserving (e.g. the wall fires during the Retry-After sleep), or the unit leaks (codex R8 P2).
+ *  The returned result's `egressBytes` is the SUM of both attempts' egress (the first 429/503 body
+ *  IS read from the network up to maxBytes, so it must be counted — not discarded). */
 export async function executeSeedWithRetry(
   run: () => Promise<Result>,
   ctx: SeedRetryCtx,
-): Promise<{ result: Result; retried: boolean }> {
+): Promise<{ result: Result; retried: boolean; retryReserved: boolean }> {
   const first = await run();
-  if (!isRetriable(first) || first.retryAfterMs === undefined) return { result: first, retried: false };
-  if (ctx.signal.aborted || ctx.wallExceeded()) return { result: first, retried: false };
+  if (!isRetriable(first) || first.retryAfterMs === undefined) return { result: first, retried: false, retryReserved: false };
+  if (ctx.signal.aborted || ctx.wallExceeded()) return { result: first, retried: false, retryReserved: false };
   // Reserve a second per-seed byte unit for the retry's fetch; if it would breach the global byte
   // cap, skip the retry (settle with the first attempt) — codex P2.
-  if (!ctx.reserveRetry()) return { result: first, retried: false };
+  if (!ctx.reserveRetry()) return { result: first, retried: false, retryReserved: false };
   const wait = Math.min(RETRY_WAIT_CAP_MS, first.retryAfterMs) + randomInt(0, RETRY_JITTER_MAX_MS);
   await abortableSleep(wait, ctx.signal);
-  if (ctx.signal.aborted || ctx.wallExceeded()) return { result: first, retried: false };
-  const second = await run();
+  if (ctx.signal.aborted || ctx.wallExceeded()) return { result: first, retried: false, retryReserved: true };
+  let second: Result;
+  try {
+    second = await run();
+  } catch (err) {
+    ctx.releaseRetry(); // the reserved retry unit did not run (2nd attempt threw) — release it (codex R8 P2)
+    throw err;
+  }
   // Both attempts egressed to the network. Fold the FIRST attempt's egress into the retry result:
   // bytes (the 429/503 body is read up to maxBytes), the redirect/finalUrl hosts, AND any render
   // subresource hosts — so the byte budget + the per-host union count gate see the real first-
@@ -62,6 +70,7 @@ export async function executeSeedWithRetry(
       ...(mergedRenderHosts.length > 0 ? { renderEgressHosts: mergedRenderHosts } : {}),
     },
     retried: true,
+    retryReserved: true,
   };
 }
 

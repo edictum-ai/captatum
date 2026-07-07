@@ -179,7 +179,7 @@ export class CaptatumBulkUseCase {
           const execInput = { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: renderAllowed, debug: request.debug };
           const execCtx = { ...(context.fetchedAt !== undefined ? { fetchedAt: context.fetchedAt } : {}), signal };
           let seedResult: Result;
-          let retried = false;
+          let retried = false, retryReserved = false;
           try {
             // Race EVERY seed against the bulk wall (not just transforms): a raw Tier-1 fetch already
             // aborts on the signal, but a Tier-3 RENDER (allowRender:true) settles in Playwright + the
@@ -187,7 +187,7 @@ export class CaptatumBulkUseCase {
             // shell can hold Promise.all past maxGlobalWallMs (codex R2 P2). The wall abandons it
             // (dispatch-level). executeSeedWithRetry performs ONE jittered 429/503 retry (wall-bounded).
             const run = (): Promise<Result> => raceWallAbort(this.deps.executor.execute(execInput, execCtx), signal, seed);
-            ({ result: seedResult, retried } = await executeSeedWithRetry(run, { signal, wallExceeded: () => budget.wallExceeded(), reserveRetry: () => budget.reserveRetry() }));
+            ({ result: seedResult, retried, retryReserved } = await executeSeedWithRetry(run, { signal, wallExceeded: () => budget.wallExceeded(), reserveRetry: () => budget.reserveRetry(), releaseRetry: () => budget.cancelRetry() }));
           } catch (err) {
             seedResult = syntheticFail(seed, err);
           } finally {
@@ -200,7 +200,7 @@ export class CaptatumBulkUseCase {
           // The wall may have fired DURING the in-flight execute — disclose it (the result flows
           // straight here, not a record branch). transformReserved mirrors before.runTransform.
           if (signal.aborted) record("bulk_deadline_exceeded");
-          const after = budget.afterSeed({ bytes: seedResult.egressBytes ?? seedResult.bytes, costUsd: seedResult.transform?.costUsd, inTokens: seedResult.transform?.inTokens, outTokens: seedResult.transform?.outTokens, transformReserved: before.runTransform, byteUnits: reservedUnits + (retried ? 1 : 0) });
+          const after = budget.afterSeed({ bytes: seedResult.egressBytes ?? seedResult.bytes, costUsd: seedResult.transform?.costUsd, inTokens: seedResult.transform?.inTokens, outTokens: seedResult.transform?.outTokens, transformReserved: before.runTransform, byteUnits: reservedUnits + (retryReserved ? 1 : 0) });
           if (after.shortCircuit) {
             shortCircuit = shortCircuit ?? budgetMsg(after.reason as BudgetCapReason);
             record(`bulk_budget_exceeded:${after.reason}`);

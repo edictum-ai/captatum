@@ -84,6 +84,10 @@ export class LimitingFetcher implements FetcherPort {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
     const signal = opts.signal ? AbortSignal.any([controller.signal, opts.signal]) : controller.signal;
+    // If the composed signal is ALREADY aborted (caller wall already fired), AbortSignal.any is
+    // born-aborted but addEventListener("abort") below would NOT fire (the event already happened),
+    // leaving a dead waiter queued. Reject immediately — no slot taken (codex R8 P2).
+    if (signal.aborted) { clearTimeout(timer); return false; }
     let resolveSlot!: (ok: boolean) => void;
     const wait = new Promise<boolean>((resolve) => { resolveSlot = resolve; });
     this.waiters.push(resolveSlot);

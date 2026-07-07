@@ -119,6 +119,10 @@ export class BudgetTracker {
    *  `byteUnits`. */
   reserveRetry(): boolean { return this.reserveUnits(1); }
 
+  /** Release a retry reservation that did not run (e.g. the 2nd attempt threw) — reverse of
+   *  reserveRetry, so the unit does not leak against later seeds. */
+  cancelRetry(): void { this.bytesReserved -= this.opts.perSeedMaxBytes; }
+
   /** Reserve the render byte pool (RENDER_EGRESS_MULTIPLIER × perSeedMaxBytes) before enabling a
    *  render — a render egresses the nav + essential/non-essential subresource pools (several×
    *  perSeedMaxBytes), so the single beforeSeed unit under-reserves it. Returns false (refuse the

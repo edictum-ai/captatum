@@ -82,6 +82,23 @@ test("LimitingFetcher: a caller abort signal yanks a queued fetch (no hang past 
   await first;
 });
 
+test("LimitingFetcher: an ALREADY-aborted signal rejects before queueing (no dead waiter) (codex R8 P2)", async () => {
+  const inner = new TrackingFetcher();
+  const lim = new LimitingFetcher(inner, 1);
+  const first = lim.fetchGuarded("https://1.test/", { ...OPTS, timeoutMs: 10_000 });
+  await new Promise((r) => setTimeout(r, 20)); // first holds the only slot (capacity full)
+  const ac = new AbortController(); ac.abort(); // already aborted (bulk wall already fired)
+  // An already-aborted signal must reject immediately (no slot, no queueing) — was: a born-aborted
+  // AbortSignal.any doesn't fire addEventListener("abort"), leaving a dead waiter queued.
+  const second = await lim.fetchGuarded("https://2.test/", { ...OPTS, timeoutMs: 10_000, signal: ac.signal });
+  assert.ok(("rejected" in second) && second.rejected, "the already-aborted call rejected without queueing");
+  assert.equal(inner.calls.length, 1, "the aborted call never reached the inner fetcher");
+  // The waiter queue must be empty (the aborted call did not leave a dead waiter).
+  assert.equal(inner.pending, 1, "no dead waiter left queued (only the first's gate is pending)");
+  inner.release(1);
+  await first;
+});
+
 test("LimitingFetcher: delegates to the inner fetcher (SSRF/redirect/Retry-After live there) + passes opts/postInit", async () => {
   let received: { url: string; opts: FetcherOptions; postInit?: PostInit } | undefined;
   const inner: FetcherPort = {

@@ -7,6 +7,7 @@ import { PlatformAdapterRegistry } from "../src/application/ports/platform-adapt
 import type { Result } from "../src/domain/result.ts";
 import { CaptatumBulkUseCase } from "../src/application/use-cases/captatum-bulk.ts";
 import { Semaphore } from "../src/application/use-cases/bulk-concurrency.ts";
+import { executeSeedWithRetry } from "../src/application/use-cases/bulk-retry.ts";
 import { raceWallAbort } from "../src/application/use-cases/bulk-seed.ts";
 import type { BulkQuotaPort } from "../src/application/ports/bulk-quota.ts";
 
@@ -359,6 +360,30 @@ test("bulk P1: a summary seed queued on the transform slot ABORTS (no fetch) aft
   const aborted = res.results.filter((r) => r.codeText === "bulk_per_host_cap");
   assert.ok(aborted.length >= 1, "queued transform seeds aborted after the hard quarantine");
   assert.ok(exec.calls < urls.length, `queued seeds did NOT fetch after the hard short-circuit; calls=${exec.calls} of ${urls.length}`);
+});
+
+test("executeSeedWithRetry: reports retryReserved when the wall fires during the Retry-After sleep (caller releases the unit, no leak) (codex R8 P2)", async () => {
+  // First attempt 429s with retryAfterMs. reserveRetry succeeds. The bulk wall fires during the sleep
+  // → returns retried:false BUT retryReserved:true (so the caller releases the retry byte-unit via
+  // byteUnits, not leaking it against later seeds). releaseRetry is for the THROW path, not this one.
+  const ac = new AbortController();
+  let reserveCalls = 0, releaseCalls = 0, calls = 0;
+  const ctx = {
+    signal: ac.signal,
+    wallExceeded: () => false,
+    reserveRetry: () => { reserveCalls++; return true; },
+    releaseRetry: () => { releaseCalls++; },
+  };
+  const run = async (): Promise<Result> => {
+    calls++;
+    if (calls === 1) { setTimeout(() => ac.abort(), 10); return { ...rejectResult("https://a.test/x", "http_429", "TMN"), code: 429, retryAfterMs: 200 }; }
+    return okResult("https://a.test/x");
+  };
+  const out = await executeSeedWithRetry(run, ctx);
+  assert.equal(out.retried, false, "the retry did not run (wall fired during the sleep)");
+  assert.equal(out.retryReserved, true, "the retry unit WAS reserved → the caller must release it (no leak)");
+  assert.equal(reserveCalls, 1, "reserveRetry called once");
+  assert.equal(releaseCalls, 0, "releaseRetry is NOT called on the wall-skip path (caller releases via byteUnits)");
 });
 
 test("bulk: a SOFT (transform-cost) short-circuit fail-softs to raw for seeds beyond wave 1 (not aborted at CHECK A)", async () => {
