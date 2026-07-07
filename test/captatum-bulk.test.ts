@@ -647,3 +647,23 @@ test("bulk maxRenderedSeeds: an empty/failed render ATTEMPT still consumes the b
   assert.ok(downgraded.length >= 1, `>=1 empty-shell seed downgraded past the cap (was: 0 with the tier===3 bug); got ${downgraded.length}`);
   assert.ok(downgraded.length >= 3, `3 of 5 empty-shell seeds downgraded (cap=2); got ${downgraded.length}`);
 });
+
+test("bulk maxRenderedSeeds (codex R10): with maxConcurrency>1 the cap is enforced TIGHTLY (no wave overshoot)", async () => {
+  // The attempt slot is reserved at dispatch (synchronously), so even with maxConcurrency=4 +
+  // maxRenderedSeeds=1, only ONE shell renders (was: the post-settle count let all 4 in the first wave
+  // pass before the count caught up → 4 renders overshooting a cap of 1).
+  const exec = new FakeExecutor();
+  const urls = Array.from({ length: 4 }, (_, i) => `https://src${i}.test/p`);
+  for (const u of urls) exec.results.set(u, renderResult(u, { renderEgressHosts: [`cdn-${u}.test`], finalUrl: u }));
+  const realExec = exec.execute.bind(exec);
+  exec.execute = async (input: unknown) => {
+    const allow = (input as { allowRender?: boolean }).allowRender;
+    const url = (input as { url: string }).url;
+    const r = exec.results.get(url)!;
+    return allow ? { ...r } : { ...r, tier: 1 as const, jsRequired: false, resolvedVia: "tier1-text", egressBytes: undefined, renderEgressHosts: undefined };
+  };
+  void realExec;
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4, maxPerHostInflight: 50, maxRenderedSeeds: 1 }).execute({ urls, allowRender: true });
+  const rendered = res.results.filter((r) => r.tier === 3).length;
+  assert.equal(rendered, 1, `exactly maxRenderedSeeds rendered (tight bound, no maxConcurrency overshoot); got ${rendered}`);
+});

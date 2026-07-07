@@ -170,12 +170,14 @@ export class CaptatumBulkUseCase {
             }
           }
           const downgradedByCost = request.requestedOutput !== "raw" && effectiveOutput === "raw";
-          // maxRenderedSeeds (BULK-3) + render byte reservation (codex R5 P2): allowRender needs
-          // renderedCount < maxRenderedSeeds AND the render pool to fit the global cap (a render egresses
-          // several× perSeedMaxBytes; reserving it holds the in-flight invariant vs concurrent renders).
+          // maxRenderedSeeds (BULK-3, codex R10): reserve the render-attempt slot at dispatch (renderedCount++
+          // synchronously → maxConcurrency seeds can't all pass before the count catches up; a non-shell
+          // (jsRequired=false) releases its slot post-settle). reserveRender holds the byte invariant.
           let reservedUnits = 1, renderAllowed = request.allowRender && renderedCount < guard.maxRenderedSeeds;
-          if (renderAllowed && !budget.reserveRender()) renderAllowed = false; // pool won't fit → refuse render
-          const renderDowngraded = request.allowRender && !renderAllowed; if (renderAllowed) reservedUnits += RENDER_EGRESS_MULTIPLIER;
+          if (renderAllowed) renderedCount++;
+          if (renderAllowed && !budget.reserveRender()) { renderAllowed = false; renderedCount--; }
+          if (renderAllowed) reservedUnits += RENDER_EGRESS_MULTIPLIER;
+          const renderDowngraded = request.allowRender && !renderAllowed;
           const execInput = { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: renderAllowed, debug: request.debug };
           const execCtx = { ...(context.fetchedAt !== undefined ? { fetchedAt: context.fetchedAt } : {}), signal };
           let seedResult: Result;
@@ -193,10 +195,8 @@ export class CaptatumBulkUseCase {
           } finally {
             if (transformSlotHeld) transformSem.release();
           }
-          // Count render ATTEMPTS post-settle (drives the maxRenderedSeeds cap): attempted iff
-          // renderAllowed AND jsRequired (tier-3 success OR empty/failed — both keep jsRequired=true,
-          // so empty shells can't spawn browsers past the cap). A content page doesn't consume it.
-          if (renderAllowed && seedResult.jsRequired) renderedCount++;
+          // Release the render-attempt slot for a seed that did NOT render (jsRequired=false — a content page or errored seed) (codex R10 P2).
+          if (renderAllowed && !seedResult.jsRequired) renderedCount--;
           // The wall may have fired DURING the in-flight execute — disclose it (the result flows
           // straight here, not a record branch). transformReserved mirrors before.runTransform.
           if (signal.aborted) record("bulk_deadline_exceeded");
