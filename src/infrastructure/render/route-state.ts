@@ -70,13 +70,13 @@ export class RenderRouteState {
 
   constructor(input: RenderInput, actions: RenderAction[], guard: BrowserUrlGuard) {
     this.input = input;
-    this.actions = actions;
-    this.guard = guard;
+    this.actions = actions; this.guard = guard;
     this.mainHost = hostnameOf(input.url);
-    // Computed ONCE from the page URL; NEVER recomputed on a same-tab nav — the POST first-party
-    // scope never expands mid-render (a security property, not accident).
+    // Computed ONCE from the page URL; the POST first-party scope never expands mid-render (security property).
     this.mainRegistrableDomain = registrableDomain(this.mainHost);
-    this.postMaxBytes = config.render.postMaxBytes();
+    // POST body cap = min(postMaxBytes, maxBytes) (codex R9 P2): POST bodies are counted in the render
+    // egress pool, so a body > maxBytes would breach the 6×maxBytes render reservation on low-maxBytes bulk.
+    this.postMaxBytes = Math.min(config.render.postMaxBytes(), input.maxBytes);
     this.postSemaphore = new Semaphore(config.render.postConcurrency());
     // Thread the bulk-wall signal into every render subresource fetch (codex R6 P2): an in-flight
     // route fulfillment runs through the guarded Node fetcher, so page.close() alone can't cancel it —
