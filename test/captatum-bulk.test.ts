@@ -486,16 +486,19 @@ test("bulk egressBytes (BULK-5): a render seed's deep egressBytes (incl. subreso
 // ---- PR 3: render-on-bulk — render-egress-host union (BULK-3) + maxRenderedSeeds ----------
 
 test("bulk render-egress-host union (BULK-3): render subresource hosts feed the per-host count gate (quarantine)", async () => {
-  // 12 distinct-domain seeds that all RENDER, each loading a subresource from victim.test. The
-  // seed/redirect/finalUrl union does NOT contain victim.test — only renderEgressHosts does. Without
-  // the union merge, victim would be invisible; WITH it, victim crosses maxPerHostInBulk=10 → quarantine.
+  // 4 distinct-domain seeds that RENDER, each loading a subresource from victim.test. The seed union
+  // does NOT contain victim.test — only renderEgressHosts does. With maxPerHostInBulk=2, victim
+  // crosses the cap → quarantine. maxBytes is small so the render byte reservation (8×/render) fits
+  // the global cap for all 4 (4×9MB ≤ 100MB).
   const exec = new FakeExecutor();
-  const urls = Array.from({ length: 12 }, (_, i) => `https://src${i}.test/p`);
+  const urls = Array.from({ length: 4 }, (_, i) => `https://src${i}.test/p`);
   for (const u of urls) exec.results.set(u, renderResult(u, { renderEgressHosts: ["victim.test"], finalUrl: u }));
-  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4, maxPerHostInflight: 50 }).execute({ urls, allowRender: true });
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 4, maxPerHostInflight: 50, maxPerHostInBulk: 2 })
+    .execute({ urls, allowRender: true, maxBytes: 1024 * 1024 });
   assert.ok(res.capBreaches.some((c) => c.startsWith("bulk_per_host_cap")), `render-path victim quarantined: ${res.capBreaches}`);
   const touched = res.results.filter((r) => r.tier === 3).length;
-  assert.ok(touched <= 13, `render-victim-touching renders bounded ≤ maxPerHostInBulk + maxConcurrency; got ${touched}`);
+  assert.ok(touched >= 2, `at least maxPerHostInBulk rendered before the quarantine; got ${touched}`);
+  assert.ok(touched <= 2 + 4, `render-victim-touching renders bounded; got ${touched}`);
 });
 
 test("bulk maxRenderedSeeds: allowRender:true beyond the cap is downgraded (warned), not rendered", async () => {

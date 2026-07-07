@@ -133,21 +133,20 @@ test("BudgetTracker: reserveRetry reserves a 2nd byte unit but skips when it wou
   assert.equal(after.shortCircuit, false, "120 ≤ 200 → no breach");
 });
 
-test("BudgetTracker: reserveRender reserves the render pool (6× perSeed) but skips when it would breach the cap (codex R5/R7 P2)", () => {
+test("BudgetTracker: reserveRender reserves the render pool (8× perSeed) but skips when it would breach the cap (codex R5/R7/R11)", () => {
   const clock = fakeClock();
-  // perSeed 10, cap 100: beforeSeed reserves 10 (1 unit). reserveRender reserves 6×10=60 more → 70 ≤ 100 → fits.
+  // perSeed 10, cap 100: beforeSeed reserves 10 (1 unit). reserveRender reserves 8×10=80 more → 90 ≤ 100 → fits.
   const t = new BudgetTracker({ clock, maxGlobalEgressBytes: 100, maxGlobalWallMs: 5000, maxTransformCostUsd: 1, perSeedTransformCostUsd: 0.02, perSeedMaxBytes: 10 });
   const b = t.beforeSeed();
   assert.equal(b.dispatch, true);
-  assert.equal(t.reserveRender(), true, "1 unit (10) + render pool (60) = 70 ≤ 100 → render allowed");
-  // A render seed settles its actual egress (say 45) + releases 1+6=7 units.
-  const after = t.afterSeed({ bytes: 45, transformReserved: b.runTransform, byteUnits: 1 + 6 });
+  assert.equal(t.reserveRender(), true, "1 unit (10) + render pool (80) = 90 ≤ 100 → render allowed");
+  const after = t.afterSeed({ bytes: 45, transformReserved: b.runTransform, byteUnits: 1 + 8 });
   assert.equal(after.shortCircuit, false, "45 ≤ 100 → no breach");
 
-  // perSeed 15, cap 100: beforeSeed reserves 15. reserveRender needs 6×15=90 more → 15+90=105 > 100 → refuse.
-  const t2 = new BudgetTracker({ clock, maxGlobalEgressBytes: 100, maxGlobalWallMs: 5000, maxTransformCostUsd: 1, perSeedTransformCostUsd: 0.02, perSeedMaxBytes: 15 });
+  // perSeed 12, cap 100: beforeSeed reserves 12. reserveRender needs 8×12=96 more → 12+96=108 > 100 → refuse.
+  const t2 = new BudgetTracker({ clock, maxGlobalEgressBytes: 100, maxGlobalWallMs: 5000, maxTransformCostUsd: 1, perSeedTransformCostUsd: 0.02, perSeedMaxBytes: 12 });
   const b2 = t2.beforeSeed();
   assert.equal(b2.dispatch, true);
-  assert.equal(t2.reserveRender(), false, "1 unit (15) + render pool (90) = 105 > 100 → render refused");
+  assert.equal(t2.reserveRender(), false, "1 unit (12) + render pool (96) = 108 > 100 → render refused");
   t2.cancelReservation(b2.runTransform); // release the 1 unit (no render reserved)
 });

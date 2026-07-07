@@ -29,11 +29,11 @@ export type BudgetCapReason = "egress_bytes" | "transform_cost";
 
 /** The render byte pool worst-case as a multiple of perSeedMaxBytes. The Tier-3 render fulfills
  *  essential subresources (capped at ESSENTIAL_BUDGET_MULTIPLIER× = 3×) + non-essential (capped at
- *  1×), PLUS the one crossing response per pool that blows the cap but is still COUNTED (each
- *  response is per-request maxBytes-capped): essential ≤ 3×+1× = 4×, non-essential ≤ 1×+1× = 2× →
- *  6× total, on top of the Tier-1 fetch beforeSeed already reserved (1×). Keep in sync with
- *  route-state.ts's pools. (codex R7 P2: was 4×, which under-reserved the counted crossing responses.) */
-export const RENDER_EGRESS_MULTIPLIER = 6;
+ *  1×), PLUS up to RENDER_FETCH_CONCURRENCY (2) crossing responses per pool that blow the cap but are
+ *  still COUNTED (each per-request maxBytes-capped; in-flight fetches are bounded to 2 so the overage
+ *  is 2× per pool, codex R11 P1): essential ≤ 3×+2× = 5×, non-essential ≤ 1×+2× = 3× → 8× total, on
+ *  top of the Tier-1 fetch beforeSeed reserved (1×). Keep in sync with route-state.ts's pools. */
+export const RENDER_EGRESS_MULTIPLIER = 8;
 
 /** Result of reserving budget before dispatching a seed. */
 export interface BeforeSeed {
