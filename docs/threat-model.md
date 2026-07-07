@@ -300,8 +300,12 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
   together with (a) the render's subresource hosts collected per render
   (`renderEgressHosts`) and fed into the post-settle per-host count gate, so a
   render-path victim IS bounded by `maxPerHostInBulk`; (b) `maxRenderedSeeds`
-  bounding render attempts per call; (c) the per-render byte pool (`~4×maxBytes`)
-  bounding per-render subresource volume; (d) deep `egressBytes` (BULK-5) bounding
+  bounding render attempts per call; (c) the per-render byte pool (a fixed **48MB
+  essential cap** + a `maxBytes` non-essential cap, decoupled from `maxBytes` since
+  #143 — heavy SPAs ship far more essential JS than one response) bounding per-render
+  subresource volume — a post-acquire `isExceeded` re-gate bounds a concurrent request
+  burst to N×maxBytes crossing (without it a page bursting M requests egresses M×maxBytes);
+  (d) deep `egressBytes` (BULK-5) bounding
   the aggregate; (e) the `LimitingFetcher` global fetch cap bounding concurrency. A
   seed that renders N subresources to `victim.com` counts as one seed touching
   `victim.com` (count bound), with its subresource bytes counted in full.

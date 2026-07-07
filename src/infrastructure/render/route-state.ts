@@ -11,30 +11,30 @@ import { RenderEgressHosts } from "./render-egress.ts";
 import { AsyncSemaphore, Semaphore } from "./semaphore.ts";
 import { hostnameOf, isNavigation, shouldAbortWithoutBody } from "./route-helpers.ts";
 
-/** Render resource types the page's CLIENT APP needs to load, or it throws a
- *  client-side exception (Next.js "Application error: a client-side exception has
- *  occurred"): scripts, data fetches/XHR, and documents. These are EXEMPT from the
- *  cumulative render byte budget — aborting one mid-load (e.g. an auth script like
- *  Clerk, or a /api/flags fetch the app awaits) crashes the app and yields an
- *  error-boundary page instead of content. They remain per-response `maxBytes`-capped
- *  by the fetcher; image/font/media stay always-blocked; the render is `timeoutMs`-
- *  bounded — so the realistic DoS vectors (huge media, huge single responses, run
- *  time) stay bounded. (cerebralvalley.ai event pages: clerk.browser.js.) */
+/** Render resource types the page's CLIENT APP needs to load, or it throws a client-side
+ *  exception (Next.js "Application error…"): scripts, data fetches/XHR, documents. Aborting one
+ *  mid-load (an auth script like Clerk, a /api/flags the app awaits) crashes the app → error
+ *  boundary instead of content, so these get the larger essential pool below (cerebralvalley). */
 const ESSENTIAL_RENDER_TYPES = new Set(["script", "fetch", "xhr", "document"]);
 
-/** The essential pool (script/fetch/xhr/document) gets this many× the non-essential cap.
- *  Heavy modern docs/apps (Cursor, Jira) ship >5MB of JS/data; at a 1× cap those scripts are
- *  aborted mid-load and the client app crashes into an error boundary ("Something went wrong")
- *  instead of rendering content. 3× keeps total per-render egress bounded at ~4×maxBytes
- *  (~20MB at the 5MB default) while letting the client app actually load. Image/font/media stay
- *  always-blocked and the render stays timeoutMs-bounded, so the realistic DoS vectors remain
- *  capped. (#110) */
-export const ESSENTIAL_BUDGET_MULTIPLIER = 3;
+/** The essential pool (script/fetch/xhr/document) gets a FIXED byte budget, DECOUPLED from the
+ *  per-response `maxBytes` (#143). Coupling it (3×=15MB) aborted heavy-SPA bundles mid-load
+ *  (Notion ~19MB: UISpacePermissionGroupToken 3.7MB + 1.1MB getAppConfig + RecordMap/mainApp/…)
+ *  → hydration failed → render_empty — recurring every time a heavier SPA crossed the coupled cap
+ *  (cerebralvalley → Cursor/Jira → Notion). 48MB ≈ 2.5× today's heaviest measured SPA (stops the
+ *  whack-a-mole) yet a firm cumulative DoS backstop (per-response maxBytes, always-blocked media,
+ *  render timeoutMs remain). Non-essential (CSS etc.) keeps the 1× maxBytes cap. Bulk: renderEgressUnits(). */
+export const ESSENTIAL_RENDER_BYTES = 48 * 1024 * 1024;
 
-/** Max concurrent render subresource FETCHES. Bounds the byte pool's per-pool crossing overage to
- *  N× maxBytes so the bulk render reservation holds (codex R11 P1). Keep in sync with the budget's
- *  RENDER_EGRESS_MULTIPLIER (essential (3+N) + non-essential (1+N) = 4+2N = 8). */
+/** Max concurrent render subresource FETCHES; bounds the byte pool's per-pool crossing overage to N× maxBytes (codex R11 P1). */
 export const RENDER_FETCH_CONCURRENCY = 2;
+
+/** The bulk BudgetTracker reservation in perSeedMaxBytes units. = essentialCap(48MB) + non-essential(1×)
+ *  + crossing(2×N per pool) per SeedMaxBytes, ceil'd. Decoupling the essential cap from maxBytes made
+ *  this per-call (was a fixed 8× when essential was 3× maxBytes; codex R5/R11). */
+export function renderEgressUnits(perSeedMaxBytes: number): number {
+  return Math.ceil((ESSENTIAL_RENDER_BYTES + perSeedMaxBytes * (1 + 2 * RENDER_FETCH_CONCURRENCY)) / perSeedMaxBytes);
+}
 
 function isEssentialRenderType(resourceType: string): boolean {
   return ESSENTIAL_RENDER_TYPES.has(resourceType);
@@ -77,11 +77,11 @@ export class RenderRouteState {
     // Computed ONCE from the page URL; the POST first-party scope never expands mid-render (security property).
     this.mainRegistrableDomain = registrableDomain(this.mainHost);
     // POST body cap = min(postMaxBytes, maxBytes) (codex R9 P2): POST bodies are counted in the render
-    // egress pool, so a body > maxBytes would breach the 6×maxBytes render reservation on low-maxBytes bulk.
+    // egress pool, so a body > maxBytes would breach the renderEgressUnits(maxBytes) reservation on low-maxBytes bulk.
     this.postMaxBytes = Math.min(config.render.postMaxBytes(), input.maxBytes);
     this.postSemaphore = new Semaphore(config.render.postConcurrency());
     this.fetchSem = new AsyncSemaphore(RENDER_FETCH_CONCURRENCY);
-    this.pool = new RenderBytePool(input.maxBytes * ESSENTIAL_BUDGET_MULTIPLIER, input.maxBytes);
+    this.pool = new RenderBytePool(ESSENTIAL_RENDER_BYTES, input.maxBytes);
     // Thread the bulk-wall signal into every render subresource fetch (codex R6 P2): an in-flight
     // route fulfillment runs through the guarded Node fetcher, so page.close() alone can't cancel it —
     // without the signal it holds a global fetch slot + egresses after the bulk is abandoned.
@@ -130,14 +130,17 @@ export class RenderRouteState {
     if (!mainFrameNav && request.method() !== "GET") {
       return this.handleNonGet(route, request, url, resourceType);
     }
-    // Once a pool is blown, subsequent resources in THAT pool abort before network. Essentials
-    // and non-essentials have separate pools, so a blown non-essential budget still lets essentials through.
+    // Once a pool is blown, subsequent resources in THAT pool abort before network (essentials + non-essentials have separate pools).
     if (this.pool.isExceeded(isEssentialRenderType(resourceType))) {
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
     }
-    // Bound concurrent render fetches (codex R11 P1): a GET response size is unknown pre-fetch, so N
-    // concurrent fetches can each add a crossing body to the pool. The semaphore queues over-cap fetches.
+    // Bound concurrent render fetches (codex R11 P1) + RE-GATE after acquire (#143): without the re-gate a
+    // page bursting M requests egresses M×maxBytes; re-gating bounds past-the-gate fetches into resolve() to N → N×maxBytes per pool.
     await this.fetchSem.acquire();
+    if (this.pool.isExceeded(isEssentialRenderType(resourceType))) {
+      this.fetchSem.release();
+      return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
+    }
     let outcome;
     try { outcome = await this.fulfiller.resolve(url, resourceType); } finally { this.fetchSem.release(); }
     if (outcome.kind === "reject") {
@@ -145,15 +148,12 @@ export class RenderRouteState {
       return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
     }
     if (mainFrameNav) {
-      // The main-frame document navigation owns provenance (updated on EVERY main-frame nav,
-      // incl. a client-side same-tab nav). Subframe documents also satisfy isNavigationRequest();
-      // frame === page.mainFrame() tells them apart so an iframe never clobbers finalUrl/redirects
-      // and a subframe reject is not fatal.
+      // The main-frame nav owns provenance (updated on EVERY main-frame nav, incl. client-side same-tab
+      // nav). frame === page.mainFrame() tells subframe documents apart so an iframe never clobbers it.
       this.status = outcome.status;
       this.finalUrl = outcome.finalUrl;
       this.redirects = outcome.redirects;
-      // Fidelity limit: the nav body is served against the ORIGINAL request URL (a cross-origin redirect's
-      // base stays the original origin; intermediate Set-Cookie isn't carried). Every hop was guard-validated.
+      // Fidelity limit: the nav body is served against the ORIGINAL request URL (a cross-origin redirect's base stays the original origin; Set-Cookie isn't carried). Every hop was guard-validated.
     }
     const essential = isEssentialRenderType(resourceType);
     // Count EVERY resolved body + hosts — including cap-aborted ones (egress already happened; codex R2 P2).

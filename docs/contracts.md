@@ -197,7 +197,10 @@ collected per render (`renderEgressHosts`) and fed into the orchestrator's
 post-settle per-host count gate alongside `unionEgressHosts` — so a render-path
 directed victim IS bounded by `maxPerHostInBulk` (a seed that renders N
 subresources to `victim.com` counts as one seed touching `victim.com`, and the
-per-render byte pool `~4×maxBytes` bounds the per-render subresource volume).
+per-render byte pool — a fixed **48MB essential cap** + a `maxBytes` non-essential cap,
+decoupled from `maxBytes` since #143 (heavy SPAs like Notion ship ~19MB of essential JS;
+coupling the cap to `maxBytes` aborted their bundles mid-load → `render_empty`) — bounds
+the per-render subresource volume).
 Combined with `maxRenderedSeeds` (render attempts), the global deep-`egressBytes`
 cap, and the `LimitingFetcher` global fetch cap, the render path is bounded on
 count, rate, bytes, and concurrency.
