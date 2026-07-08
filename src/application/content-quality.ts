@@ -53,10 +53,10 @@ function detectLowValue(result: Result): boolean {
 }
 
 /** Classify content quality: "app_error" (demote) or "low_value" (warn). undefined = normal. App-error
- *  takes precedence (it is not real content). A failed fetch (tier:error) or an anti-bot challenge
- *  (challengeProvider) is already gated/not-content — not "low-quality content". */
+ *  takes precedence (it is not real content). Only for SUCCESSFUL fetches — a failed fetch (tier:error),
+ *  an anti-bot challenge, or a 4xx/5xx HTTP error is already a failure, not "low-quality content". */
 export function classifyContentQuality(result: Result): ContentQuality | undefined {
-  if (result.tier === "error" || result.challengeProvider) return undefined;
+  if (result.tier === "error" || result.challengeProvider || Number(result.code) >= 400) return undefined;
   if (detectAppError(result)) return "app_error";
   if (detectLowValue(result)) return "low_value";
   return undefined;

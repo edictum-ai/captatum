@@ -129,3 +129,10 @@ test("classifyContentQuality: an anti-bot challenge is NOT content-quality-class
   // A challenge is already gated (challengeProvider set), not "low-quality content".
   assert.equal(classifyContentQuality(result({ challengeProvider: "cloudflare", result: "Just a moment...", title: "Just a moment..." })), undefined);
 });
+
+test("classifyContentQuality: an HTTP 4xx/5xx page is NOT content-quality-classified (already a failure)", () => {
+  // A large text-poor 404/500 page stays tier 1 + http_error (NOT tier:error), but it is a failed
+  // fetch, not "low-quality content" — must not be stamped low_value (#159 codex).
+  assert.equal(classifyContentQuality(result({ code: 404, result: "Not Found", bytes: 250_000, title: "Home" })), undefined);
+  assert.equal(classifyContentQuality(result({ code: 503, result: "Service Unavailable", bytes: 250_000, title: "Home" })), undefined);
+});
