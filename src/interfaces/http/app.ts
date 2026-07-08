@@ -6,6 +6,7 @@ import type { AuthRuntimeConfig } from "../../application/use-cases/oauth-config
 import { createRequestAuthorizer } from "../../application/use-cases/request-auth.ts";
 import type { CaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import { config } from "../../config.ts";
+import { BULK_GUARD_DEFAULTS } from "../../domain/bulk-policy.ts";
 import { createCloudflareAccessJwtVerifier } from "../../infrastructure/auth/cloudflare-access-jwt.ts";
 import { registerOAuthRoutes } from "./oauth-routes.ts";
 import { registerMcpRoute } from "./mcp-route.ts";
@@ -51,13 +52,32 @@ export function assertHostedFlavor(runtime: AuthRuntimeConfig): void {
   }
 }
 
+/** HTTP request-timeout margin over the bulk wall (assembly + audit + network), so the
+ *  HTTP backstop can never sever the structured partial the wall assembles. */
+export const BULK_REQUEST_TIMEOUT_MARGIN_MS = 5_000;
+/** Non-bulk (single-fetch) whole-request wall — defense-in-depth beyond the per-tier `timeoutMs`. */
+export const NON_BULK_REQUEST_TIMEOUT_MS = 90_000;
+
+/**
+ * Resolve the Fastify `requestTimeout` from whether bulk is enabled. For bulk it tracks the
+ * bulk wall + margin (so the two can NEVER drift and the HTTP backstop never cuts off a
+ * wall-generated partial before it is returned); for single-fetch it is a fixed
+ * defense-in-depth wall beyond the per-tier `timeoutMs` cap. Pure + exported so the
+ * coupling + margin invariant can be teeth-checked (#148).
+ */
+export function resolveRequestTimeout(bulkEnabled: boolean): number {
+  return bulkEnabled
+    ? BULK_GUARD_DEFAULTS.maxGlobalWallMs + BULK_REQUEST_TIMEOUT_MARGIN_MS
+    : NON_BULK_REQUEST_TIMEOUT_MS;
+}
+
 export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance> {
   assertHostedFlavor(deps.runtime);
   // requestTimeout bounds the whole request — defense-in-depth beyond the per-tier timeoutMs cap
-  // (60s) so a hijacked/slow stream can't pin a connection. When bulk is enabled, the bulk wall is
-  // 180s, so the HTTP timeout must cover it (+20s margin for assembly/audit/network) — otherwise a
-  // legitimate 90-180s bulk is cut off before returning its partial receipt.
-  const requestTimeout = deps.bulk ? 200_000 : 90_000;
+  // (60s) so a hijacked/slow stream can't pin a connection. For bulk it tracks the bulk wall + a
+  // 5s margin (resolveRequestTimeout) so the wall's structured partial is never cut off by the HTTP
+  // backstop; the two are coupled so they cannot drift (#148).
+  const requestTimeout = resolveRequestTimeout(deps.bulk !== undefined);
   const app = Fastify({ logger: false, bodyLimit: config.http.bodyLimitBytes, requestTimeout });
   app.setErrorHandler((error, _request, reply) => sendHttpError(reply, error));
   app.get("/healthz", async () => ({ status: "ok" }));

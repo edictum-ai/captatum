@@ -134,7 +134,7 @@ test("bulk wall: a deadline-crossing clock marks every seed bulk_deadline_exceed
   exec.results.set("https://a.test/2", okResult("https://a.test/2"));
   // steppingClock: the first 2 nowMs() reads (execute start + budget construction) return the
   // base time; every subsequent read (the per-seed wallExceeded check) returns base+200s, past
-  // the 180s default wall → both seeds abort before fetching.
+  // the 55s default wall → both seeds abort before fetching.
   const res = await new CaptatumBulkUseCase({ executor: exec, adapters: new PlatformAdapterRegistry([]), clock: steppingClock(), operator: {} }).execute({ urls: ["https://a.test/1", "https://a.test/2"] });
   assert.equal(res.count, 2);
   assert.equal(res.results[0].status, "fail");

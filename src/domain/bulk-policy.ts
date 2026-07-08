@@ -30,7 +30,17 @@ export const BULK_GUARD_DEFAULTS: BulkGuard = {
   maxUrls: BULK_RAW_MAX_URLS,
   maxPerHostInBulk: 10,
   maxGlobalEgressBytes: 100 * 1024 * 1024,
-  maxGlobalWallMs: 180_000,
+  // Tuned to the MCP client tool-call timeout window (#148). The documented binding
+  // constraint is ~60 s: chatgpt.com's hosted MCP connector hard-closes a tool call at
+  // ~60 s (HTTP 424) and the Claude Code SDK at 60 s (DEFAULT_REQUEST_TIMEOUT_MSEC);
+  // claude.ai's hosted connector is undocumented but observed shorter than Claude Desktop's
+  // 300 s (Desktop is a separate surface). A taller wall assembles a partial the client
+  // never receives — the prod audit showed 74–137 s bulks finishing orphaned (124 `context
+  // canceled` drops). 55 s lands the structured partial inside the ~60 s window; the HTTP
+  // requestTimeout tracks this + a 5 s margin (resolveRequestTimeout) so the backstop never
+  // cuts the partial off. Lowering the hosted default from 180 s lost no real capability —
+  // a partial above the client window is orphaned by definition.
+  maxGlobalWallMs: 55_000,
   maxConcurrency: 4,
   maxRenderedSeeds: 10,
   maxPerHostInflight: 2,
@@ -44,7 +54,7 @@ export const BULK_GUARD_DEFAULTS: BulkGuard = {
 export const BULK_GUARD_CEILINGS = {
   maxUrls: BULK_RAW_MAX_URLS,
   maxGlobalEgressBytes: 100 * 1024 * 1024,
-  maxGlobalWallMs: 180_000,
+  maxGlobalWallMs: 55_000,
   maxTransformCostUsd: 0.5,
   perSeedTransformCostUsd: 0.05,
   crawlDelayMsFloor: 500,
