@@ -51,13 +51,18 @@ export function assertHostedFlavor(runtime: AuthRuntimeConfig): void {
   }
 }
 
+/** Fastify `requestTimeout`. Bounds REQUEST-BODY receipt only (a slow client streaming a huge
+ *  body) — NOT handler/tool time. The `/mcp` handler calls `reply.hijack()` for Streamable HTTP,
+ *  which decouples Fastify's request timers; tool execution is bounded by its OWN per-tier
+ *  `timeoutMs` (single-fetch) + the bulk `maxGlobalWallMs` wall, both enforced inside `execute()`
+ *  via `AbortController`. So this is NOT a backstop for tool execution, and the #148 wall fix
+ *  works through the in-`execute()` AbortController — not through this server option. A handler-
+ *  level deadline wrapping the MCP transport itself is a documented future defense-in-depth. */
+const REQUEST_TIMEOUT_MS = 90_000;
+
 export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance> {
   assertHostedFlavor(deps.runtime);
-  // requestTimeout bounds the whole request — defense-in-depth beyond the per-tier timeoutMs cap
-  // (60s) so a hijacked/slow stream can't pin a connection. When bulk is enabled, the bulk wall is
-  // 180s, so the HTTP timeout must cover it (+20s margin for assembly/audit/network) — otherwise a
-  // legitimate 90-180s bulk is cut off before returning its partial receipt.
-  const requestTimeout = deps.bulk ? 200_000 : 90_000;
+  const requestTimeout = REQUEST_TIMEOUT_MS;
   const app = Fastify({ logger: false, bodyLimit: config.http.bodyLimitBytes, requestTimeout });
   app.setErrorHandler((error, _request, reply) => sendHttpError(reply, error));
   app.get("/healthz", async () => ({ status: "ok" }));

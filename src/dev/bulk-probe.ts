@@ -77,7 +77,7 @@ console.log(JSON.stringify({
   clamp: res.clamp,
   byTier: Object.fromEntries(byTier),
   probeWallMs: wall,
-  sizingBudget: "2 vCPU / 4 GiB — maxGlobalWallMs=180000, maxGlobalEgressBytes=104857600",
+  sizingBudget: "2 vCPU / 4 GiB — maxGlobalWallMs=55000, maxGlobalEgressBytes=104857600",
   egressBytesHonest: "sums result.egressBytes ?? result.bytes (deep egress incl. Tier-3 subresources, PR 3); render-on-bulk allowed",
   fails: res.results.filter((r) => r.status === "fail").map((r) => ({ url: r.url, code: r.codeText, tier: r.tier })),
 }, null, 2));

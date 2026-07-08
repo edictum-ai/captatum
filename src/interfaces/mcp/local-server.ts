@@ -13,6 +13,7 @@ import { createCaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import { createCaptatumBulkUseCase } from "../../application/use-cases/captatum-bulk.ts";
 import { createAdapterRegistry } from "../../application/adapters.ts";
 import { config } from "../../config.ts";
+import { BULK_GUARD_CEILINGS } from "../../domain/bulk-policy.ts";
 import type { HtmlExtractor } from "../../application/use-cases/tier1-extract.ts";
 import { createCaptatumMcpServer } from "./server.ts";
 
@@ -82,6 +83,11 @@ export async function createLocalMcpServer(deps: LocalMcpDeps): Promise<Server> 
       maxPerHostInflight: config.bulk.maxPerHostInflight(),
       crawlDelayMs: config.bulk.crawlDelayMs(),
       maxConcurrency: config.bulk.maxConcurrency(),
+      // The local-binary flavor has no client-side tool-call timeout (a patient stdio
+      // client), so it is NOT subject to the #148 hosted orphaning rationale. Keep the
+      // pre-#148 wall at the hard ceiling (180 s) so a local 50-URL / render-heavy bulk is
+      // not narrowed to a premature 55 s `bulk_deadline_exceeded` partial (codex #156 P2).
+      maxGlobalWallMs: BULK_GUARD_CEILINGS.maxGlobalWallMs,
     },
   });
   return createCaptatumMcpServer({
