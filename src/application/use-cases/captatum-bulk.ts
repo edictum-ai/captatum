@@ -29,7 +29,8 @@ import type { Output } from "../../domain/tier.ts";
 import type { Result } from "../../domain/result.ts";
 import { normalizeBulkInput, type NormalizedBulkRequest } from "./bulk-input.ts";
 import { ashbyJidOf, rejectPerEntryBulk, reserveBulkQuota } from "./bulk-dispatch.ts";
-import { BudgetTracker, RENDER_EGRESS_MULTIPLIER, type BudgetCapReason } from "./bulk-budget.ts";
+import { BudgetTracker, type BudgetCapReason } from "./bulk-budget.ts";
+import { renderEgressUnits } from "../../infrastructure/render/route-state.ts";
 import { PerHostGate, Semaphore } from "./bulk-concurrency.ts";
 import { mergeRenderEgressHosts } from "./bulk-render.ts";
 import { executeSeedWithRetry } from "./bulk-retry.ts";
@@ -101,7 +102,7 @@ export class CaptatumBulkUseCase {
     context: CaptatumContext,
   ): Promise<{ results: BulkSeedResult[]; capBreaches: string[]; budget: BudgetTracker }> {
     const results = new Array<BulkSeedResult>(seeds.length);
-    const budget = new BudgetTracker({ clock: this.deps.clock, maxGlobalEgressBytes: guard.maxGlobalEgressBytes, maxGlobalWallMs: guard.maxGlobalWallMs, maxTransformCostUsd: guard.maxTransformCostUsd, perSeedTransformCostUsd: guard.perSeedTransformCostUsd, perSeedMaxBytes: request.maxBytes });
+    const budget = new BudgetTracker({ clock: this.deps.clock, maxGlobalEgressBytes: guard.maxGlobalEgressBytes, maxGlobalWallMs: guard.maxGlobalWallMs, maxTransformCostUsd: guard.maxTransformCostUsd, perSeedTransformCostUsd: guard.perSeedTransformCostUsd, perSeedMaxBytes: request.maxBytes, renderEgressUnits: renderEgressUnits(request.maxBytes) });
     const sem = new Semaphore(guard.maxConcurrency);
     const transformSem = new Semaphore(1); // serialize transforms (cost-cap honesty)
     const gate = new PerHostGate(guard.maxPerHostInflight, guard.crawlDelayMs, this.deps.clock);
@@ -175,13 +176,13 @@ export class CaptatumBulkUseCase {
           // maxConcurrentRenders (the renderer's concurrency cap). reserveRender holds the byte invariant.
           let reservedUnits = 1, renderAllowed = request.allowRender && renderedCount < guard.maxRenderedSeeds;
           if (renderAllowed && !budget.reserveRender()) renderAllowed = false; // byte pool won't fit → refuse render
-          if (renderAllowed) reservedUnits += RENDER_EGRESS_MULTIPLIER;
+          if (renderAllowed) reservedUnits += renderEgressUnits(request.maxBytes);
           const renderDowngraded = request.allowRender && !renderAllowed;
           const execInput = { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: renderAllowed, debug: request.debug };
           const execCtx = { ...(context.fetchedAt !== undefined ? { fetchedAt: context.fetchedAt } : {}), signal };
           let seedResult: Result;
           let retried = false, retryReserved = false;
-          const retryUnits = 1 + (renderAllowed ? RENDER_EGRESS_MULTIPLIER : 0); // retried render re-renders (codex R13 P1)
+          const retryUnits = 1 + (renderAllowed ? renderEgressUnits(request.maxBytes) : 0); // retried render re-renders (codex R13 P1)
           try {
             // Race EVERY seed vs the bulk wall (a raw fetch aborts on the signal; a Tier-3 RENDER settles
             // in Playwright which doesn't observe it — without the race a slow shell holds the bulk past

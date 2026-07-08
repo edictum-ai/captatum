@@ -1,8 +1,8 @@
 // RenderBytePool — the two cumulative byte pools (essential + non-essential) that bound a render's
 // subresource egress, + their exceeded flags. Extracted from RenderRouteState to respect the
-// 250-line limit. Each pool is capped (essential at ESSENTIAL_BUDGET_MULTIPLIER× maxBytes so heavy
-// client apps load vs crash; non-essential at maxBytes). A blown non-essential pool still lets
-// essential scripts/data through. See route-state.ts.
+// 250-line limit. Each pool is capped (essential at a fixed ESSENTIAL_RENDER_BYTES — 48MB, decoupled
+// from maxBytes since #143 so heavy client apps load vs crash; non-essential at maxBytes). A blown
+// non-essential pool still lets essential scripts/data through. See route-state.ts.
 export class RenderBytePool {
   private essential = 0;
   private nonEssential = 0;
@@ -27,6 +27,8 @@ export class RenderBytePool {
   add(essential: boolean, bytes: number): void {
     if (essential) this.essential += bytes; else this.nonEssential += bytes;
   }
-  /** Release essential bytes (a forwarded-POST reservation whose request was rejected). */
+  /** Release essential bytes for a POST body whose resolve() rejected before the body counted as egress
+   *  (e.g. an SSRF guard reject before the request was sent). The body is reserved only post-re-gate, so
+   *  this never reopens a speculative dispatch reservation. */
   releaseEssential(bytes: number): void { this.essential -= bytes; }
 }

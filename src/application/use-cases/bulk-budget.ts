@@ -27,14 +27,6 @@ import type { ClockPort } from "../ports/clock.ts";
 
 export type BudgetCapReason = "egress_bytes" | "transform_cost";
 
-/** The render byte pool worst-case as a multiple of perSeedMaxBytes. The Tier-3 render fulfills
- *  essential subresources (capped at ESSENTIAL_BUDGET_MULTIPLIER× = 3×) + non-essential (capped at
- *  1×), PLUS up to RENDER_FETCH_CONCURRENCY (2) crossing responses per pool that blow the cap but are
- *  still COUNTED (each per-request maxBytes-capped; in-flight fetches are bounded to 2 so the overage
- *  is 2× per pool, codex R11 P1): essential ≤ 3×+2× = 5×, non-essential ≤ 1×+2× = 3× → 8× total, on
- *  top of the Tier-1 fetch beforeSeed reserved (1×). Keep in sync with route-state.ts's pools. */
-export const RENDER_EGRESS_MULTIPLIER = 8;
-
 /** Result of reserving budget before dispatching a seed. */
 export interface BeforeSeed {
   /** false → abort this seed BEFORE it fetches (a hard cap is full); `reason` names which. */
@@ -62,6 +54,11 @@ export interface BudgetTrackerOptions {
   perSeedTransformCostUsd: number;
   /** Per-seed response byte cap (the reservation unit for egress). */
   perSeedMaxBytes: number;
+  /** The render byte-pool worst case in perSeedMaxBytes UNITS, caller-computed via
+   *  `renderEgressUnits(perSeedMaxBytes)` (route-state.ts). The essential pool was decoupled from
+   *  maxBytes (#143: a fixed 48MB, no longer 3× maxBytes), so this is no longer a constant 8× — it
+   *  is per-call. reserveRender/reserveRetry reserve this many units against maxGlobalEgressBytes. */
+  renderEgressUnits: number;
 }
 
 export class BudgetTracker {
@@ -113,22 +110,23 @@ export class BudgetTracker {
   }
 
   /** Reserve the retry's byte budget: 1 raw-fetch unit, PLUS the render pool
-   *  (RENDER_EGRESS_MULTIPLIER×) when the retried seed is render-capable — a render that returns
+   *  (opts.renderEgressUnits) when the retried seed is render-capable — a render that returns
    *  429/503 + Retry-After renders AGAIN on retry, so the retry's render egress must be reserved
    *  too (codex R13 P1). Returns false (skip the retry) when it would not fit under the global cap. */
-  reserveRetry(withRender = false): boolean { return this.reserveUnits(1 + (withRender ? RENDER_EGRESS_MULTIPLIER : 0)); }
+  reserveRetry(withRender = false): boolean { return this.reserveUnits(1 + (withRender ? this.opts.renderEgressUnits : 0)); }
 
   /** Release a retry reservation that did not run (e.g. the 2nd attempt threw) — reverse of
    *  reserveRetry (codex R8 P2). */
   cancelRetry(withRender = false): void {
-    this.bytesReserved -= this.opts.perSeedMaxBytes * (1 + (withRender ? RENDER_EGRESS_MULTIPLIER : 0));
+    this.bytesReserved -= this.opts.perSeedMaxBytes * (1 + (withRender ? this.opts.renderEgressUnits : 0));
   }
 
-  /** Reserve the render byte pool (RENDER_EGRESS_MULTIPLIER × perSeedMaxBytes) before enabling a
-   *  render — a render egresses the nav + essential/non-essential subresource pools (several×
-   *  perSeedMaxBytes), so the single beforeSeed unit under-reserves it. Returns false (refuse the
+  /** Reserve the render byte pool (opts.renderEgressUnits × perSeedMaxBytes) before enabling a
+   *  render — a render egresses the nav + essential/non-essential subresource pools (the decoupled
+   *  48MB essential cap + non-essential maxBytes + crossing), so the single beforeSeed unit
+   *  under-reserves it. Returns false (refuse the
    *  render) when the pool would not fit under the global cap (codex R5 P2). */
-  reserveRender(): boolean { return this.reserveUnits(RENDER_EGRESS_MULTIPLIER); }
+  reserveRender(): boolean { return this.reserveUnits(this.opts.renderEgressUnits); }
 
   /** Reserve `units` × perSeedMaxBytes; false when it would not fit under the global byte cap. */
   private reserveUnits(units: number): boolean {
@@ -141,7 +139,7 @@ export class BudgetTracker {
   /** Release a seed's reservation + record its ACTUAL bytes/cost, then re-check the global
    *  caps. `transformReserved` MUST mirror the `runTransform` returned by this seed's
    *  `beforeSeed` (the caller threads it through the await). `byteUnits` is the number of
-   *  perSeedMaxBytes reservations held for this seed (1 normally, +RENDER_EGRESS_MULTIPLIER for a
+   *  perSeedMaxBytes reservations held for this seed (1 normally, +opts.renderEgressUnits for a
    *  render, +1 for a retry). */
   afterSeed(args: {
     bytes: number;

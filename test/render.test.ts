@@ -3,7 +3,9 @@ import { test } from "node:test";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
 import type { BrowserUrlGuard } from "../src/infrastructure/render/index.ts";
 import { PlaywrightRenderer, createRenderer } from "../src/infrastructure/render/index.ts";
-import { ESSENTIAL_BUDGET_MULTIPLIER } from "../src/infrastructure/render/route-state.ts";
+import { ESSENTIAL_RENDER_BYTES, RENDER_FETCH_CONCURRENCY, renderEgressUnits, RenderRouteState } from "../src/infrastructure/render/route-state.ts";
+import { RenderBytePool } from "../src/infrastructure/render/render-byte-pool.ts";
+import type { PlaywrightRoute } from "../src/infrastructure/render/playwright-types.ts";
 
 test("renderer lazy-loads Playwright only when render is invoked", async () => {
   const harness = new BrowserHarness();
@@ -287,34 +289,143 @@ test("render byte budget aborts non-essential types but never essential scripts/
   assert.equal(harness.routes[4]?.fulfilled, true, "fetch fulfilled over budget (essential)");
 });
 
-test("render byte budget caps the ESSENTIAL pool too (DoS bound): crossing script fulfilled, later scripts aborted", async () => {
-  // Essentials get their own pool so a real app's scripts load, but the pool is still bounded —
-  // the script that crosses the cap is fulfilled (aborting it mid-load crashes the app), and
-  // every essential AFTER that is aborted. The essential cap is ESSENTIAL_BUDGET_MULTIPLIER (3×)
-  // the non-essential cap so heavy client apps (Cursor, Jira) load instead of crashing (#110);
-  // here maxBytes=100 → essential cap 300, so two 200-byte scripts (400) cross it.
-  const fetcher = new FakeFetcher({
-    "https://public.test/s1.js": fetchResult("a".repeat(200), "https://public.test/s1.js"),
-    "https://public.test/s2.js": fetchResult("b".repeat(200), "https://public.test/s2.js"),
-    "https://public.test/s3.js": fetchResult("c".repeat(200), "https://public.test/s3.js"),
-    "https://public.test/s4.js": fetchResult("d".repeat(200), "https://public.test/s4.js"),
-  });
-  const harness = new BrowserHarness({
-    requests: [
-      request("https://public.test/s1.js", "script"), // 200 → pool 200 (< 300) fulfilled
-      request("https://public.test/s2.js", "script"), // 200 → 400 > 300, crossing essential → fulfilled, pool exceeded
-      request("https://public.test/s3.js", "script"), // essential pool exceeded → aborted
-      request("https://public.test/s4.js", "script"), // aborted
-    ],
-  });
-  await new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) })
-    .render(renderInput(fetcher, { maxBytes: 100 }));
-
-  assert.equal(harness.routes[0]?.fulfilled, true, "s1 under the essential pool fulfilled");
-  assert.equal(harness.routes[1]?.fulfilled, true, "s2 crossing the 3× cap fulfilled (essential — aborting crashes the app)");
-  assert.equal(harness.routes[2]?.aborted, true, "s3 after the essential pool is blown aborted (DoS bound)");
-  assert.equal(harness.routes[3]?.aborted, true, "s4 aborted");
+test("RenderBytePool: essentials cross → crosser counted + pool marked exceeded; later essentials see isExceeded (DoS backstop, #143)", () => {
+  // The essential cap is a FIXED 48MB (ESSENTIAL_RENDER_BYTES), decoupled from maxBytes — too large
+  // to cross with test-sized scripts, so the crossing LOGIC is unit-tested on the pool directly.
+  // RenderRouteState.handle consults isExceeded() before + after each fetch and marks the essential
+  // pool exceeded on a crossing response (which is still FULFILLED — aborting mid-load crashes the app).
+  const pool = new RenderBytePool(300, 100); // essentialCap 300, nonEssentialCap 100 (test scale)
+  assert.equal(pool.isExceeded(true), false);
+  pool.add(true, 200); // s1: 200 ≤ 300
+  assert.equal(pool.used(true), 200);
+  assert.equal(pool.isExceeded(true), false);
+  pool.add(true, 200); // s2: 400 > 300 → crossing; handle() marks exceeded but fulfills s2
+  pool.markExceeded(true);
+  assert.equal(pool.isExceeded(true), true, "the crossing essential marks the pool blown");
+  assert.equal(pool.used(true), 400, "the crossing response is COUNTED (egress already happened)");
+  assert.equal(pool.cap(true), 300);
+  // Once exceeded, handle()'s pre-fetch isExceeded check aborts s3/s4 before network (no add).
 });
+
+test("RenderBytePool: the essential exceeded flag is sticky for real egress (a POST body is reserved only post-re-gate, so it never sets a transient dispatch flag — codex P2 root fix on #147)", () => {
+  // The body is reserved AFTER the post-acquire re-gate (the POST is committed to send), not at dispatch,
+  // so an unsent body can no longer transiently mark the pool exceeded. A real crossing (actual egress)
+  // sets the flag via markExceeded and it stays sticky (the DoS backstop); releaseEssential only reverses
+  // a resolve() reject that happened before the body counted as egress.
+  const pool = new RenderBytePool(100, 50);
+  pool.add(true, 95);
+  assert.equal(pool.isExceeded(true), false);
+  pool.add(true, 20);                        // 115 > 100 — real egress crossing
+  pool.markExceeded(true);
+  assert.equal(pool.isExceeded(true), true);
+  pool.releaseEssential(5);                  // a pre-send reject partial release → 110, still > 100
+  assert.equal(pool.isExceeded(true), true, "a real crossing stays exceeded (releaseEssential does not clear the flag)");
+});
+
+
+test("renderEgressUnits: the bulk render reservation is decoupled from maxBytes (#143) — per-call, not a fixed 8×", () => {
+  // Was a constant 8× when the essential cap was 3× maxBytes. Now essential is a fixed 48MB, so the
+  // reservation in perSeedMaxBytes units scales with 1/perSeedMaxBytes (smaller perSeed → more units).
+  // = ceil((ESSENTIAL_RENDER_BYTES + perSeed×(1 + 2×RENDER_FETCH_CONCURRENCY)) / perSeed).
+  assert.equal(renderEgressUnits(5 * 1024 * 1024), 15, "5MB perSeed → ceil((48+25)/5) = 15 units");
+  assert.equal(renderEgressUnits(1024 * 1024), 53, "1MB perSeed → ceil((48+5)/1) = 53 units");
+  assert.ok(renderEgressUnits(5 * 1024 * 1024) * (5 * 1024 * 1024) > ESSENTIAL_RENDER_BYTES, "reservation always exceeds the essential cap");
+});
+
+test("render byte budget bounds a CONCURRENT essential burst to ~cap + N×maxBytes, not M×maxBytes (#143 review)", async () => {
+  // The post-acquire isExceeded re-gate bounds a page that bursts M essential requests at once. Without
+  // it, all M pass the pre-fetch gate before the first resolves + marks exceeded, queue on the semaphore,
+  // and each fetches a full maxBytes body → M×maxBytes (the verifier reproduced 105MB for 20×5MB vs a 48MB
+  // cap — a bandwidth-amplification DoS). The sequential BrowserHarness.goto() await-loop MASKS this
+  // (handle() calls never overlap), so this test drives RenderRouteState.handle() DIRECTLY with Promise.all.
+  const body = 5 * 1024 * 1024;
+  const M = 20;
+  const big = "x".repeat(body);
+  const results: Record<string, FetcherResult> = {};
+  for (let i = 0; i < M; i++) results[`https://public.test/f${i}`] = fetchResult(big, `https://public.test/f${i}`);
+  const state = new RenderRouteState(renderInput(new FakeFetcher(results), { maxBytes: body }), [], new FakeGuard({}));
+  const routes: PlaywrightRoute[] = [];
+  for (let i = 0; i < M; i++) {
+    const url = `https://public.test/f${i}`;
+    routes.push({
+      request: () => ({ url: () => url, method: () => "GET", resourceType: () => "fetch", isNavigationRequest: () => false, frame: () => null }),
+      fulfill: async () => {}, abort: async () => {}, continue: async () => {},
+    } as unknown as PlaywrightRoute);
+  }
+  await Promise.all(routes.map((r) => state.handle(r)));
+  const egress = state.egressBytes();
+  // The fix: NOT all M fetched (was the bug — M×maxBytes = 100MB). The re-gate aborted the overflow once
+  // the essential pool blew, bounding past-the-gate fetches into resolve() to N=2.
+  assert.ok(egress < M * body, `concurrent burst did NOT egress M×maxBytes (${M * body} = the bug); got ${egress}`);
+  // Bounded to ~cap + N×maxBytes crossing (the essential pool's in-flight overage when it blows).
+  assert.ok(egress <= ESSENTIAL_RENDER_BYTES + 2 * RENDER_FETCH_CONCURRENCY * body, `bounded to ~cap + 2×N×maxBytes; got ${egress}`);
+  // And the page DID load essentials up to the cap (the re-gate doesn't starve a legitimate burst).
+  assert.ok(egress >= ESSENTIAL_RENDER_BYTES, `essentials loaded up to the cap; got ${egress}`);
+});
+
+test("render byte budget bounds a CONCURRENT GET+POST burst — the POST path's post-acquire re-gate (codex P1)", async () => {
+  // The POST path (handleNonGet) shares fetchSem with GET, so its post-acquire re-gate (postAcquireGate)
+  // bounds POST-response crossing to N too. Without it, up to postSemaphore (6) POSTs past the pre-fetch
+  // gate each fetch a full maxBytes response after the pool blows — codex P1. POSTs alone can't cross the
+  // 48MB cap (postSemaphore×6MB=36MB), so this mixes 8 GETs (40MB, under cap) with 6 first-party POSTs
+  // (1MB body + 5MB response) so the cap blows on POST responses. Dispatched CONCURRENTLY (Promise.all).
+  const fiveMb = 5 * 1024 * 1024;
+  const oneMb = 1024 * 1024;
+  const gets = Array.from({ length: 8 }, (_, i) => `https://public.test/g${i}`);
+  const posts = Array.from({ length: 6 }, (_, i) => `https://public.test/api/p${i}`);
+  const results: Record<string, FetcherResult> = {};
+  for (const u of [...gets, ...posts]) results[u] = fetchResult("x".repeat(fiveMb), u);
+  const state = new RenderRouteState(renderInput(new FakeFetcher(results), { maxBytes: fiveMb }), [], new FakeGuard({}));
+  const postBody = new TextEncoder().encode("z".repeat(oneMb));
+  const mk = (u: string, method: "GET" | "POST"): PlaywrightRoute => ({
+    request: () => ({
+      url: () => u, method: () => method, resourceType: () => "fetch", isNavigationRequest: () => false, frame: () => null,
+      ...(method === "POST" ? { headers: () => ({ "content-type": "application/json", "content-length": String(oneMb) }), postDataBuffer: () => postBody } : {}),
+    }),
+    fulfill: async () => {}, abort: async () => {}, continue: async () => {},
+  } as unknown as PlaywrightRoute);
+  await Promise.all([...gets.map((u) => mk(u, "GET")), ...posts.map((u) => mk(u, "POST"))].map((r) => state.handle(r)));
+  const egress = state.egressBytes();
+  // Without the POST re-gate this approaches 8×5MB (GETs) + 6×1MB (POST bodies) + 6×5MB (POST responses)
+  // = 76MB (all 6 POST responses fetch past the blown pool). The re-gate bounds POST responses to N crossing.
+  assert.ok(egress < 70 * 1024 * 1024, `POST re-gate bounded the mixed burst (codex P1 gap was ~76MB); got ${egress}`);
+  assert.ok(egress >= ESSENTIAL_RENDER_BYTES, `the burst crossed the cap (GETs+POSTs did load); got ${egress}`);
+});
+
+test("POST body is reserved POST re-gate, not at dispatch — a POST queued at fetchSem does NOT reserve its body (codex P2 root fix on #147)", async () => {
+  // Root fix for codex P2 r3: the body is reserved AFTER the post-acquire re-gate (POST committed to send),
+  // not at dispatch. So a POST queued behind occupied fetchSem permits can't transiently mark the pool
+  // exceeded + block other essentials during the wait. Verified by holding both permits with never-resolving
+  // GETs, dispatching a POST (it queues), and asserting its body was NOT counted. The sync FakeFetcher can't
+  // reproduce this (it never holds fetchSem), so this uses a delaying fetcher.
+  let releaseGets: () => void = () => {};
+  const getBlocked = new Promise<void>((r) => { releaseGets = r; });
+  const fetcher: FetcherPort = {
+    async fetchGuarded(url: string): Promise<FetcherResult | RejectResult> {
+      if (url.includes("/get")) await getBlocked;
+      const b = new TextEncoder().encode("x");
+      return { status: 200, finalUrl: url, redirects: [], bodyStream: new ReadableStream({ start(c) { c.enqueue(b); c.close(); } }), contentType: "application/json", bytes: 1 };
+    },
+  };
+  const state = new RenderRouteState(renderInput(fetcher, { maxBytes: 1024 * 1024 }), [], new FakeGuard({}));
+  const mk = (u: string, method: "GET" | "POST"): PlaywrightRoute => ({
+    request: () => ({
+      url: () => u, method: () => method, resourceType: () => "fetch", isNavigationRequest: () => false, frame: () => null,
+      ...(method === "POST" ? { headers: () => ({ "content-type": "application/json", "content-length": "1024" }), postDataBuffer: () => new Uint8Array(1024) } : {}),
+    }),
+    fulfill: async () => {}, abort: async () => {}, continue: async () => {},
+  } as unknown as PlaywrightRoute);
+  const g1 = state.handle(mk("https://public.test/get1", "GET")); // occupy permit 1 (blocks forever)
+  const g2 = state.handle(mk("https://public.test/get2", "GET")); // occupy permit 2 (blocks forever)
+  await new Promise((r) => setTimeout(r, 20));                     // let both GETs reach + hold fetchSem
+  const before = state.egressBytes();
+  const post = state.handle(mk("https://public.test/api/p", "POST")); // queues at fetchSem (both permits held)
+  await new Promise((r) => setTimeout(r, 20));                     // let the POST reach fetchSem.acquire (queued)
+  assert.equal(state.egressBytes(), before, `the queued POST did NOT reserve its body (reserved post-re-gate, not at dispatch — codex P2 root fix); gained ${state.egressBytes() - before}`);
+  releaseGets();
+  await Promise.allSettled([g1, g2, post]);
+});
+
 
 test("renderer concatenates captured iframe content into the rendered HTML", async () => {
   const harness = new BrowserHarness({
@@ -663,11 +774,13 @@ test("createRenderer degrades to render-unavailable for hosted flavor with no si
   }
 });
 
-test("essential render pool is capped at 3× maxBytes so heavy client apps load (#110)", () => {
-  // Cursor/Jira ship >5MB of JS/data; at a 1× cap those scripts abort mid-load and the client
-  // app crashes into an error boundary. The essential pool (script/fetch/xhr/document) gets
-  // ESSENTIAL_BUDGET_MULTIPLIER× the non-essential cap; non-essential (stylesheets etc.) stays 1×.
-  assert.equal(ESSENTIAL_BUDGET_MULTIPLIER, 3);
+test("essential render pool is a fixed 48MB budget, DECOUPLED from per-response maxBytes (#143)", () => {
+  // Heavy SPAs (Notion ~19MB: UISpacePermissionGroupToken 3.7MB + 1.1MB getAppConfig + RecordMap/mainApp/…)
+  // ship far more essential JS than one response. Coupling the pool to maxBytes (3×=15MB) aborted those
+  // bundles mid-load → render_empty — recurring (cerebralvalley→Cursor/Jira→Notion) each time a heavier
+  // SPA crossed the coupled cap. 48MB ≈ 2.5× today's heaviest measured SPA; per-response maxBytes,
+  // always-blocked media, + render timeoutMs remain the DoS bounds. Non-essential (CSS etc.) = maxBytes.
+  assert.equal(ESSENTIAL_RENDER_BYTES, 48 * 1024 * 1024);
 });
 
 test("default post-load settle is 5000ms (raised from 3000 for slow-hydrating docs SPAs) (#110)", () => {

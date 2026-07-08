@@ -490,8 +490,8 @@ test("bulk egressBytes (BULK-5): a render seed's deep egressBytes (incl. subreso
 test("bulk render-egress-host union (BULK-3): render subresource hosts feed the per-host count gate (quarantine)", async () => {
   // 4 distinct-domain seeds that RENDER, each loading a subresource from victim.test. The seed union
   // does NOT contain victim.test — only renderEgressHosts does. With maxPerHostInBulk=2, victim
-  // crosses the cap → quarantine. maxBytes is small so the render byte reservation (8×/render) fits
-  // the global cap for all 4 (4×9MB ≤ 100MB).
+  // crosses the cap → quarantine. (Renders here are tiny + the FakeExecutor resolves synchronously, so
+  // each render's renderEgressUnits(maxBytes) reservation serializes under the 100MB cap as seeds settle.)
   const exec = new FakeExecutor();
   const urls = Array.from({ length: 4 }, (_, i) => `https://src${i}.test/p`);
   for (const u of urls) exec.results.set(u, renderResult(u, { renderEgressHosts: ["victim.test"], finalUrl: u }));
