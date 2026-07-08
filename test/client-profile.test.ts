@@ -45,6 +45,30 @@ function summaryResult(over: Partial<Result> = {}): Result {
   } as Result;
 }
 
+test("resultToMcpText provenance carries truncated= for a mid-read transport truncation, every output mode (#149)", () => {
+  // The provenance comment is the most reliable model-visible channel — present for EVERY output
+  // mode incl. raw (where there is no envelope header). A text-forward client that renders only
+  // content[0].text must see the content is incomplete. Teeth-check: without the format fix the
+  // comment has no truncated field, so partial transport-unreliable bytes arrive with no signal.
+  const transportErr = [{ code: "body_read_error", message: "Response body truncated mid-read (transport error) — partial content returned, may be incomplete" }];
+  assert.match(resultToMcpText(summaryResult({ errors: transportErr }), false), /truncated=body_read_error/);
+  // A cap truncation is labelled distinctly (clean prefix, not transport).
+  assert.match(resultToMcpText(summaryResult({ errors: [{ code: "max_bytes", message: "Content truncated at the byte cap" }] }), false), /truncated=max_bytes/);
+  // No truncation → no truncated field (byte-identical provenance; the raw contract fixtures stay stable).
+  assert.doesNotMatch(resultToMcpText(summaryResult(), false), /truncated=/);
+  // Raw output ALSO carries it — the raw path has no envelope header, so this is the ONLY signal.
+  assert.match(resultToMcpText(summaryResult({ output: "raw", result: "<html>partial</html>", errors: transportErr }), false), /truncated=body_read_error/);
+  // #149 codex P1: a raw JSON body normally omits the comment (stays parseable JSON), but a TRUNCATED
+  // raw JSON body is partial/unparseable anyway, so the comment (with truncated=) is prepended — the
+  // text-forward client still sees the signal. A clean raw JSON body stays comment-free (parseable).
+  assert.equal(resultToMcpText(summaryResult({ output: "raw", contentType: "application/json", result: '{"jobs":[]}', errors: [] }), false), '{"jobs":[]}', "clean raw JSON stays parseable (no comment)");
+  assert.match(resultToMcpText(summaryResult({ output: "raw", contentType: "application/json", result: '{"jobs":[1,2', errors: transportErr }), false), /^<!-- captatum .*truncated=body_read_error/, "truncated raw JSON prepends the provenance comment");
+  // #149 codex P2: a ZERO-BYTE total body_read_error reject (tier:error, no partial bytes) is a
+  // failed fetch, NOT truncated content — it must NOT carry truncated= (would falsely signal
+  // partial bytes to a text-forward client). Teeth-check: without the tier!=="error" gate this emits truncated=body_read_error.
+  assert.doesNotMatch(resultToMcpText(summaryResult({ tier: "error", code: 0, bytes: 0, result: "", errors: transportErr }), false), /truncated=/);
+});
+
 test("resultToMcpText with textDebug appends a diagnostics block for non-raw output", () => {
   const text = resultToMcpText(summaryResult(), true);
   assert.match(text, /--- debug ---/);

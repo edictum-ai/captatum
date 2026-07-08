@@ -689,12 +689,31 @@ Tool input validation failures use the same HTTP error wrapper and include
 Guarded fetch reject codes include `unsupported_scheme`, `invalid_url`,
 `crlf_url`, `userinfo_url`, `private_address`, `dns_error`, `dns_empty`,
 `redirect_limit`, `max_bytes`, `timeout`, `unsupported_encoding`,
-`body_read_error`, `network_error`, and `invalid_options`. Note `max_bytes`
-and `extract_schema_invalid` each have two roles: a **hard** guarded-fetch
-reject (Tier-1 pre-download) and a **non-fatal advisory** entry inside a
-*successful* `Result.errors` (Tier-3 rendered HTML truncated at the cap;
-`output: extract` parsed JSON that violated a supported-keyword schema). The
-`tier`/`code` distinguish the two — advisory entries never set `tier: "error"`.
+`body_read_error`, `network_error`, and `invalid_options`. Note `body_read_error`
+has two roles (#149): a **hard** guarded-fetch reject (a **zero-bytes** total
+transport failure — the stream broke before any content arrived) AND a **non-fatal
+advisory** entry inside a *successful* `Result.errors` (a mid-read truncation with
+partial bytes). (`max_bytes` — Tier-1/Tier-3 cap — and `extract_schema_invalid` —
+transform/extract — are non-fatal advisories only; they never hard-reject a fetch.)
+For `body_read_error` specifically: when the response body stream breaks **mid-read
+after partial bytes arrived** (premature close / Content-Length mismatch /
+decompression truncation), `readCappedBody` returns those partial bytes with
+`truncated:true` + `truncatedReason:"body_read_error"` rather than discarding them
+— partial content > none — and the result surfaces a non-fatal `body_read_error`
+warning (tier 1, status `partial`). The partial is flagged like a cap truncation so
+an agent never treats transport-unreliable bytes as complete/public:
+`access.gated:true`, `gateReason:"byte_cap"` (classifyAccess), and the provenance
+comment carries `truncated=body_read_error` (model-visible for every output mode,
+incl. raw). A single-fetch call also retries the Tier-1 fetch **once** on the
+zero-bytes total `body_read_error` reject — bounded by `< 2 × timeoutMs` (each
+attempt is bounded by `timeoutMs`; default 15 s → < 30 s, inside the MCP client
+window; a caller that raises `timeoutMs` toward its 60 s cap should note the retry
+can approach ~120 s). `captatum_bulk` does NOT add this retry — its orchestrator
+cannot reserve a transparent in-`execute` retry's egress against the byte cap, so
+the bulk egress bound stays airtight (a bulk seed still returns its mid-read
+partial via `readCappedBody`, or fails cleanly on a zero-bytes total failure). The
+`tier`/`code` distinguish the two roles — advisory entries never set `tier:
+"error"`.
 `captatum_bulk` per-seed failure codes (one `fail` entry in `BulkResult.failures`,
 not a tool-level error — partial failure is normal): `bulk_per_host_cap`,
 `tier2_board_not_supported_in_bulk`, `ashby_embed_not_supported_in_bulk`,

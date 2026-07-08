@@ -97,7 +97,12 @@ export async function extractTier1FromFetchResult(input: Tier1ExtractInput): Pro
         ? [{ code: "http_error", message: `HTTP ${httpErrorStatus} ${STATUS_CODES[httpErrorStatus] ?? ""}`.trim() } as ProvenanceError]
         : []),
       ...(input.fetchResult.truncated
-        ? [{ code: "max_bytes", message: "Content truncated at the byte cap" }]
+        ? [{
+            code: input.fetchResult.truncatedReason === "body_read_error" ? "body_read_error" : "max_bytes",
+            message: input.fetchResult.truncatedReason === "body_read_error"
+              ? "Response body truncated mid-read (transport error) — partial content returned, may be incomplete"
+              : "Content truncated at the byte cap",
+          } as ProvenanceError]
         : []),
       ...(truncated
         ? [{ code: "extract_truncated", message: `Extraction input capped at ${EXTRACT_CHAR_BUDGET} chars (REDOS-4)` } as ProvenanceError]

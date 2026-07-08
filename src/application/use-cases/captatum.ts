@@ -8,7 +8,7 @@ import type { CaptatumContext } from "../ports/captatum-context.ts";
 import type { PlatformAdapterRegistry } from "../ports/platform-adapter.ts";
 import { createAdapterRegistry } from "../adapters.ts";
 import { tryTier2ShortCircuit } from "./tier2.ts";
-import { elapsed, stampTotals, unexpectedReject } from "./captatum-util.ts";
+import { elapsed, fetchTier1WithBodyReadRetry, stampTotals } from "./captatum-util.ts";
 import {
   extractTier1FromFetchResult,
   type HtmlExtractor,
@@ -80,12 +80,10 @@ export class CaptatumUseCase {
     };
     const ashbyResolved = await resolveAshbyEmbedUrl(request.url, this.fetcher, fetchOpts);
     const fetchUrl = ashbyResolved ?? request.url;
-    let fetched: FetcherResult | RejectResult;
-    try {
-      fetched = await this.fetcher.fetchGuarded(fetchUrl, fetchOpts);
-    } catch (error) {
-      fetched = unexpectedReject(error);
-    }
+    // #149: a zero-bytes body_read_error reject (transient transport failure) is retried
+    // once, single-fetch only (see fetchTier1WithBodyReadRetry). A mid-read truncation is
+    // returned as a successful truncated FetcherResult by readCappedBody, not a reject.
+    const fetched = await fetchTier1WithBodyReadRetry(this.fetcher, fetchUrl, fetchOpts, context.signal);
     const fetchedNow = this.clock.nowMs();
     const fetchMs = elapsed(fetchStartMs, fetchedNow);
 

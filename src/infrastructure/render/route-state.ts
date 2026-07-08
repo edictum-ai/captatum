@@ -1,4 +1,4 @@
-import type { FetcherResult, RejectResult } from "../../application/ports/fetcher.ts";
+import type { FetcherResult, Redirect, RejectResult } from "../../application/ports/fetcher.ts";
 import type { RenderAction, RenderInput } from "../../application/ports/renderer.ts";
 import { registrableDomain } from "../../domain/registrable-domain.ts";
 import { config } from "../../config.ts";
@@ -101,6 +101,8 @@ export class RenderRouteState {
   /** Registrable domains the render loaded subresources from → bulk per-host union (BULK-3). */
   egressHosts(): string[] { return this.egressHostsList.get(); }
 
+  private countEgress(essential: boolean, bytes: number, url: string, redirects: Redirect[], finalUrl: string): void { this.pool.add(essential, bytes); this.egressHostsList.noteFulfilled(url, redirects, finalUrl); }
+
   /**
    * request.frame() throws for a navigation request Playwright hasn't created the
    * frame for yet (see Playwright's Request.frame docs). Treat that — and a
@@ -145,12 +147,13 @@ export class RenderRouteState {
     let outcome;
     try { outcome = await this.fulfiller.resolve(url, resourceType); } finally { this.fetchSem.release(); }
     if (outcome.kind === "reject") {
+      // A truncated subresource's bytes were downloaded before the abort — count them (countFetched below runs only on fulfill) so the byte pool/egressBytes stay honest (#149 codex P2).
+      if (outcome.countedBytes !== undefined) this.countEgress(isEssentialRenderType(resourceType), outcome.countedBytes, url, outcome.countedRedirects ?? [], outcome.countedFinalUrl ?? url);
       if (mainFrameNav) this.fatal = outcome.reject;
       return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
     }
     if (mainFrameNav) {
-      // The main-frame nav owns provenance (updated on EVERY main-frame nav, incl. client-side same-tab
-      // nav). frame === page.mainFrame() tells subframe documents apart so an iframe never clobbers it.
+      // The main-frame nav owns provenance (updated on EVERY nav; frame === page.mainFrame() separates subframes so an iframe can't clobber it).
       this.status = outcome.status;
       this.finalUrl = outcome.finalUrl;
       this.redirects = outcome.redirects;
@@ -158,10 +161,7 @@ export class RenderRouteState {
     }
     const essential = isEssentialRenderType(resourceType);
     // Count EVERY resolved body + hosts — including cap-aborted ones (egress already happened; codex R2 P2).
-    const countFetched = (): void => {
-      this.pool.add(essential, outcome.body.byteLength);
-      this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
-    };
+    const countFetched = (): void => this.countEgress(essential, outcome.body.byteLength, url, outcome.redirects, outcome.finalUrl);
     if (this.pool.isExceeded(essential)) { // re-check after resolve (concurrent blow)
       countFetched();
       return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
@@ -213,7 +213,7 @@ export class RenderRouteState {
       try { outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit); }
       finally { this.fetchSem.release(); }
       if (outcome.kind === "reject") {
-        this.pool.releaseEssential(plan.body.byteLength); // resolve rejected before the body counted as egress → release
+        if (outcome.countedBytes !== undefined) this.countEgress(true, outcome.countedBytes, url, outcome.countedRedirects ?? [], outcome.countedFinalUrl ?? url); else this.pool.releaseEssential(plan.body.byteLength); // truncated POST response → count (keep body reservation); pre-send reject → release
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
       }
       if (this.pool.isExceeded(true)) { // a concurrent POST blew the pool in flight; the POST fully egressed (body+response) — count both + host, then abort (codex R4 P2).

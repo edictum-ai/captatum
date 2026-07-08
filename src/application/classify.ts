@@ -30,6 +30,17 @@ export function hasContent(result: Result): boolean {
   return realTier && result.result.trim().length > 0;
 }
 
+/** The truncation advisory code (`max_bytes` = a clean cap prefix, or `body_read_error` = a
+ *  mid-read transport truncation) when the result is a SUCCESSFUL PARTIAL — real content that
+ *  was cut. Absent for a zero-byte TOTAL failure, which carries the same `body_read_error` code
+ *  but is a hard `tier:"error"` reject with no partial bytes — that is a failed fetch, NOT a
+ *  truncated success, so it must not be tagged truncated/gated (#149 codex P2). */
+export function truncatedReason(result: Result): "max_bytes" | "body_read_error" | undefined {
+  if (result.tier === "error") return undefined;
+  const code = result.errors.find((e) => e.code === "max_bytes" || e.code === "body_read_error")?.code;
+  return code === "max_bytes" || code === "body_read_error" ? code : undefined;
+}
+
 /** application-local mirror of infrastructure/http/body.ts isJsonContentType (kept here to avoid
  *  an application → concrete-infra import; tiny + stable). True for application/json and +json. */
 function isJsonContentType(contentType: string | undefined): boolean {
@@ -112,7 +123,12 @@ export function classifyAccess(result: Result): AccessInfo {
   if (isPaywalled(result.structured?.jsonLd)) {
     return { mainContentAccessible, gated: true, gateReason: "paywall" };
   }
-  if (result.errors.some((error) => error.code === "max_bytes")) {
+  const truncation = truncatedReason(result);
+  if (truncation) {
+    // Content was truncated — either at the byte cap (max_bytes, a clean prefix) or mid-read by a
+    // transport error (body_read_error, possibly garbled from a broken gzip stream). Either way the
+    // agent must NOT treat the partial bytes as complete/public — flag it gated (#149). `truncatedReason`
+    // excludes a zero-byte total failure (tier:error), which is a failed fetch, not a truncated success.
     return { mainContentAccessible, gated: true, gateReason: "byte_cap" };
   }
   // Empty content on a page that needed JS we could not run: likely gated

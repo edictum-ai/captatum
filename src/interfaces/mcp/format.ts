@@ -1,5 +1,5 @@
 import type { AttemptTrace, Result } from "../../domain/result.ts";
-import { classifyAccess, classifyContentType } from "../../application/classify.ts";
+import { classifyAccess, classifyContentType, truncatedReason } from "../../application/classify.ts";
 import { isJsonContentType } from "../../infrastructure/http/body.ts";
 import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
 
@@ -19,11 +19,15 @@ function formatAttempt(a: AttemptTrace): string {
 export function resultToMcpText(result: Result, includeTextDebug = false): string {
   const provenance = provenanceLine(result);
   if (result.output === "raw") {
-    // A raw Tier-2 roster (any application/json body) must stay parseable JSON for clients that read
-    // content[0].text as JSON, so omit the comment for JSON bodies (it remains in structuredContent).
-    // HTML/text raw bodies still get the prepended provenance line. (Debug-in-text never applies to
-    // raw — the caller asked for clean content.)
-    if (isJsonBody(result)) return result.result;
+    // A raw JSON body (application/json or +json) stays parseable JSON for clients that read
+    // content[0].text as JSON, so omit the comment — UNLESS the body was truncated. A truncated
+    // JSON body is partial/unparseable anyway (the "stay parseable" rationale no longer holds),
+    // so prepend the provenance comment (carrying truncated=) so a text-forward/CLI client still
+    // sees the transport-unreliable signal (#149 codex P1). HTML/text raw always gets the comment.
+    if (isJsonBody(result)) {
+      const truncated = truncatedReason(result) !== undefined;
+      return truncated ? `${provenance}\n${result.result}` : result.result;
+    }
     return `${provenance}\n${result.result}`;
   }
   const header = envelopeHeader(result);
@@ -94,11 +98,19 @@ function envelopeHeader(result: Result): string {
 }
 
 function provenanceLine(result: Result): string {
-  const fields = [
+  // Surface a truncation indicator in the provenance comment — the most reliable model-visible
+  // channel (present for every output mode, incl. raw where there is no envelope header). A
+  // text-forward client that renders only content[0].text thus still sees that the bytes are
+  // incomplete: `truncated=max_bytes` (clean cap prefix) or `truncated=body_read_error`
+  // (transport-truncated, may be garbled). `truncatedReason` excludes a zero-byte total failure
+  // (tier:error) — that is a failed fetch, not partial content (#149 codex P2).
+  const truncationCode = truncatedReason(result);
+  const fields: Array<[string, string]> = [
     ["tier", String(result.tier)],
     ["output", result.output],
     ["status", String(result.code)],
     ["bytes", String(result.bytes)],
+    ...(truncationCode ? [["truncated", truncationCode] as [string, string]] : []),
     ["finalUrl", redactSignedQueryParams(result.finalUrl)],
     ["platform", result.platform.adapterId],
     ["jsRequired", String(result.jsRequired)],

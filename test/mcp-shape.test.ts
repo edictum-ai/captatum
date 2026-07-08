@@ -320,6 +320,22 @@ test("access gating: paywall / byte_cap / login", () => {
   const truncated = buildStructuredContent(base({ errors: [{ code: "max_bytes", message: "Content truncated at the byte cap" }] }), false);
   assert.deepEqual(truncated.access, { mainContentAccessible: true, gated: true, gateReason: "byte_cap" });
 
+  // #149: a mid-read transport truncation (body_read_error) is gated LIKE a cap truncation —
+  // partial, transport-unreliable bytes (possibly garbled from a broken gzip stream) must NOT
+  // present as complete/public. Teeth-check: without the classifyAccess fix this falls through
+  // to gateReason "none" (public) — the opposite of the lower-risk max_bytes case.
+  const bodyRead = buildStructuredContent(base({ errors: [{ code: "body_read_error", message: "Response body truncated mid-read (transport error)" }] }), false);
+  assert.deepEqual(bodyRead.access, { mainContentAccessible: true, gated: true, gateReason: "byte_cap" });
+
+  // #149 codex P2: a ZERO-BYTE total body_read_error reject (tier:error, bytes:0 — the stream
+  // broke before any content, after the retry also failed) carries the SAME body_read_error code,
+  // but it is a FAILED FETCH, not partial content. It must NOT be gated byte_cap (would misreport a
+  // dead fetch as an inaccessible/truncated page). Teeth-check: without the tier!=="error" gate this
+  // returns gateReason "byte_cap".
+  const zeroByteFail = buildStructuredContent(base({ tier: "error", code: 0, bytes: 0, result: "", resolvedVia: "guarded-fetch", errors: [{ code: "body_read_error", message: "Response body could not be read safely" }] }), false);
+  assert.notEqual(zeroByteFail.access.gateReason, "byte_cap", "a zero-byte total failure is not a truncation");
+  assert.equal(zeroByteFail.status, "fail");
+
   const jsRequired = buildStructuredContent(base({ jsRequired: true, tier: "render-blocked", resolvedVia: "render-blocked", result: "" }), false);
   assert.deepEqual(jsRequired.access, { mainContentAccessible: false, gated: true, gateReason: "js-required" });
   assert.equal(jsRequired.status, "fail");
