@@ -109,6 +109,16 @@ test("shell-gate: a short legitimate <article> (no inner tags) resolves, not fal
   assert.equal(gate.jsRequired, false, "a short selected <article> must not be falsely escalated");
 });
 
+test("shell-gate: a literal <nav> in a <title> doesn't delete the real body (#160 codex r5)", () => {
+  // A malformed-but-tolerated <title>HTML <nav> element guide</title> (RCDATA) — stripChromeFromRaw
+  // strips <head> before chrome so the title's <nav> can't mis-pair with a later </nav>.
+  const html = '<html><head><title>HTML <nav> element guide</title></head><body>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html, url: "https://x.test/t" }).shellGate.jsRequired, false, "a title's <nav> must not delete the body");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no

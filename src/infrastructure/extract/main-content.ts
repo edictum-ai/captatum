@@ -39,14 +39,16 @@ function stripChrome(html: string): string {
 }
 
 /** Equivalent to the landmark-selection pre-clean: collect `display:none` classes from the FULL
- *  html, then strip non-visible blocks (script/style/noscript/template + hidden subtrees +
- *  comments) BEFORE site chrome — so a fake chrome opener inside a `<script>`/comment/`<style>`
- *  can't mis-pair with a later close tag and delete the intervening real body (#160 codex).
- *  Hidden classes are collected BEFORE `<style>` is stripped (stripHiddenSubtrees removes the
- *  display:none content here; extractVisibleText re-reads classes but the subtrees are gone). */
+ *  html, strip `<head>` (so `<title>` RCDATA like "HTML <nav> element guide" can't mis-pair), then
+ *  strip non-visible blocks (script/style/noscript/template + hidden subtrees + comments) BEFORE
+ *  site chrome — so a fake chrome opener inside a `<script>`/comment/`<style>`/title can't pair
+ *  with a later close tag and delete the intervening real body (#160 codex). Hidden classes are
+ *  collected BEFORE `<head>`/`<style>` are stripped (stripHiddenSubtrees removes the display:none
+ *  content here; extractVisibleText re-reads classes but the subtrees are gone). */
 export function stripChromeFromRaw(html: string, revealedIds: Set<string>): string {
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
-  const withoutCode = ["script", "style", "noscript", "template"].reduce((v, tag) => stripElement(v, tag), html);
+  const body = stripElement(html, "head");
+  const withoutCode = ["script", "style", "noscript", "template"].reduce((v, tag) => stripElement(v, tag), body);
   return stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses, revealedIds)));
 }
 
