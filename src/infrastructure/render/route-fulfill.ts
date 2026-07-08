@@ -17,7 +17,17 @@ export type FulfillOutcome =
       finalUrl: string;
       redirects: Redirect[];
     }
-  | { kind: "reject"; reject: RejectResult };
+  | {
+      kind: "reject";
+      reject: RejectResult;
+      /** Bytes already downloaded before the reject (a mid-read-truncated subresource body that is
+       *  aborted rather than fulfilled) — counted against the render byte pool + egress hosts so the
+       *  budget stays honest even when the partial bytes never reach the browser (#149 codex P2).
+       *  Absent when no bytes were downloaded (a pre-egress block / zero-byte reject). */
+      countedBytes?: number;
+      countedFinalUrl?: string;
+      countedRedirects?: Redirect[];
+    };
 
 /**
  * MIME to assume when the response carries no Content-Type, keyed by the
@@ -65,7 +75,16 @@ export class FetcherRouteFulfiller implements RouteFulfiller {
     // the route rather than fulfilling partial bytes (#149). The main-page captatum path keeps
     // the partial as degraded content; this is subresource-specific.
     if (result.truncatedReason === "body_read_error") {
-      return { kind: "reject", reject: { rejected: true, code: "body_read_error", message: "Tier-3 subresource body truncated mid-read" } };
+      // The partial bytes were already downloaded by readCappedBody — carry them on the reject so
+      // RenderRouteState counts them against the render byte pool + egress hosts (the budget must
+      // stay honest even when the partial body is aborted rather than fulfilled, #149 codex P2).
+      return {
+        kind: "reject",
+        reject: { rejected: true, code: "body_read_error", message: "Tier-3 subresource body truncated mid-read" },
+        countedBytes: result.bytes,
+        countedFinalUrl: result.finalUrl,
+        countedRedirects: result.redirects,
+      };
     }
     let body: Uint8Array;
     try {

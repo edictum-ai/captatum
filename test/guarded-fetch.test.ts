@@ -228,7 +228,14 @@ test("FetcherRouteFulfiller: a mid-read-truncated subresource is rejected, not f
   );
   const out = await fulfiller.resolve("https://sub.test/x.js", "script");
   assert.equal(out.kind, "reject");
-  if (out.kind === "reject") assert.equal(out.reject.code, "body_read_error");
+  if (out.kind === "reject") {
+    assert.equal(out.reject.code, "body_read_error");
+    // The partial bytes were already downloaded — carried on the reject so the render byte pool
+    // counts them (route-state's countFetched only runs on the fulfill path). Teeth-check: without
+    // countedBytes the budget underreports a truncated subresource's egress (#149 codex P2).
+    assert.equal(out.countedBytes, 13);
+    assert.equal(out.countedFinalUrl, "https://sub.test/x.js");
+  }
 
   // A cap-truncated subresource (a clean prefix) is still fulfilled — the distinction is load-bearing.
   const capFulfiller = new FetcherRouteFulfiller(
