@@ -85,3 +85,32 @@ test("stampContentQuality: a failed fetch (tier:error) is not content-quality-cl
   stampContentQuality(r);
   assert.equal(r.contentQuality, undefined);
 });
+
+// ---------- tightened precision (codex/self-review FP findings) ----------
+
+test("classifyContentQuality: a Tier-1 help doc QUOTING the phrase is NOT app_error (tier gate)", () => {
+  // Error-boundary screens are a RENDERED (tier 3) phenomenon — a static help/status page is not.
+  assert.equal(classifyContentQuality(result({ tier: 1, result: "If you see 'Something went wrong', click retry to reload the app." })), undefined);
+});
+
+test("classifyContentQuality: a JSON API error body is NOT app_error (tier gate excludes JSON)", () => {
+  assert.equal(classifyContentQuality(result({ tier: 1, contentType: "application/json", result: '{"error":"something went wrong","request_id":"abc"}' })), undefined);
+});
+
+test("classifyContentQuality: a tier-3 page that includes but does NOT LEAD WITH the signature is NOT app_error (startsWith)", () => {
+  // A crash screen's text IS the error message (leads with it); a page that merely mentions it doesn't.
+  assert.equal(classifyContentQuality(result({ tier: 3, result: "Welcome to Acme. If something went wrong during signup, contact support." })), undefined);
+});
+
+test("classifyContentQuality: an Event/Recipe page is NOT low_value (content-bearing JSON-LD, not just job/product/article)", () => {
+  // #150 codex: the extractor treats Event/Recipe/Course/Review/etc. as content-bearing too.
+  assert.equal(classifyContentQuality(result({
+    result: "Events", bytes: 250_000, title: "Home",
+    structured: { jsonLd: { "@type": "Event", name: "Annual Conference", description: "A real event with details." } },
+  })), undefined);
+});
+
+test("classifyContentQuality: an anti-bot challenge is NOT content-quality-classified", () => {
+  // A challenge is already gated (challengeProvider set), not "low-quality content".
+  assert.equal(classifyContentQuality(result({ challengeProvider: "cloudflare", result: "Just a moment...", title: "Just a moment..." })), undefined);
+});
