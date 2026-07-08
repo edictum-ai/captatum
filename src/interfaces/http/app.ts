@@ -6,7 +6,6 @@ import type { AuthRuntimeConfig } from "../../application/use-cases/oauth-config
 import { createRequestAuthorizer } from "../../application/use-cases/request-auth.ts";
 import type { CaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import { config } from "../../config.ts";
-import { BULK_GUARD_DEFAULTS } from "../../domain/bulk-policy.ts";
 import { createCloudflareAccessJwtVerifier } from "../../infrastructure/auth/cloudflare-access-jwt.ts";
 import { registerOAuthRoutes } from "./oauth-routes.ts";
 import { registerMcpRoute } from "./mcp-route.ts";
@@ -52,32 +51,18 @@ export function assertHostedFlavor(runtime: AuthRuntimeConfig): void {
   }
 }
 
-/** HTTP request-timeout margin over the bulk wall (assembly + audit + network), so the
- *  HTTP backstop can never sever the structured partial the wall assembles. */
-export const BULK_REQUEST_TIMEOUT_MARGIN_MS = 5_000;
-/** Non-bulk (single-fetch) whole-request wall — defense-in-depth beyond the per-tier `timeoutMs`. */
-export const NON_BULK_REQUEST_TIMEOUT_MS = 90_000;
-
-/**
- * Resolve the Fastify `requestTimeout` from whether bulk is enabled. For bulk it tracks the
- * bulk wall + margin (so the two can NEVER drift and the HTTP backstop never cuts off a
- * wall-generated partial before it is returned); for single-fetch it is a fixed
- * defense-in-depth wall beyond the per-tier `timeoutMs` cap. Pure + exported so the
- * coupling + margin invariant can be teeth-checked (#148).
- */
-export function resolveRequestTimeout(bulkEnabled: boolean): number {
-  return bulkEnabled
-    ? BULK_GUARD_DEFAULTS.maxGlobalWallMs + BULK_REQUEST_TIMEOUT_MARGIN_MS
-    : NON_BULK_REQUEST_TIMEOUT_MS;
-}
+/** Fastify `requestTimeout`. Bounds REQUEST-BODY receipt only (a slow client streaming a huge
+ *  body) — NOT handler/tool time. The `/mcp` handler calls `reply.hijack()` for Streamable HTTP,
+ *  which decouples Fastify's request timers; tool execution is bounded by its OWN per-tier
+ *  `timeoutMs` (single-fetch) + the bulk `maxGlobalWallMs` wall, both enforced inside `execute()`
+ *  via `AbortController`. So this is NOT a backstop for tool execution, and the #148 wall fix
+ *  works through the in-`execute()` AbortController — not through this server option. A handler-
+ *  level deadline wrapping the MCP transport itself is a documented future defense-in-depth. */
+const REQUEST_TIMEOUT_MS = 90_000;
 
 export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance> {
   assertHostedFlavor(deps.runtime);
-  // requestTimeout bounds the whole request — defense-in-depth beyond the per-tier timeoutMs cap
-  // (60s) so a hijacked/slow stream can't pin a connection. For bulk it tracks the bulk wall + a
-  // 5s margin (resolveRequestTimeout) so the wall's structured partial is never cut off by the HTTP
-  // backstop; the two are coupled so they cannot drift (#148).
-  const requestTimeout = resolveRequestTimeout(deps.bulk !== undefined);
+  const requestTimeout = REQUEST_TIMEOUT_MS;
   const app = Fastify({ logger: false, bodyLimit: config.http.bodyLimitBytes, requestTimeout });
   app.setErrorHandler((error, _request, reply) => sendHttpError(reply, error));
   app.get("/healthz", async () => ({ status: "ok" }));

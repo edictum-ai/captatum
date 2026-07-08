@@ -12,30 +12,12 @@ import { signAccessToken } from "../src/application/use-cases/oauth-crypto.ts";
 import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts";
 import { config } from "../src/config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
-import { assertHostedFlavor, createHttpApp, HostedFlavorError, resolveRequestTimeout } from "../src/interfaces/http/app.ts";
-import { BULK_GUARD_DEFAULTS } from "../src/domain/bulk-policy.ts";
+import { assertHostedFlavor, createHttpApp, HostedFlavorError } from "../src/interfaces/http/app.ts";
 import { CAPTATUM_SERVER_INSTRUCTIONS } from "../src/interfaces/mcp/schema.ts";
 
 const NOW_MS = Date.parse("2026-06-16T12:00:00.000Z");
 const HOST = "captatum.test";
 const ORIGIN = "https://client.test";
-
-test("resolveRequestTimeout: bulk timeout tracks the wall + margin, never cuts off a partial (#148)", () => {
-  // The HTTP backstop MUST exceed the bulk wall so the structured partial the wall
-  // assembles is returned before Fastify severs the connection. They are coupled
-  // (derived from the same constant) so they cannot drift — this test pins the
-  // margin invariant. If someone reverts the coupling to a hardcoded 200_000, the
-  // "> wall" assertion still holds but the drift guard (equal to wall+margin) fails.
-  const bulk = resolveRequestTimeout(true);
-  assert.equal(bulk, BULK_GUARD_DEFAULTS.maxGlobalWallMs + 5_000);
-  assert.ok(bulk > BULK_GUARD_DEFAULTS.maxGlobalWallMs, "HTTP backstop must exceed the bulk wall");
-  // And the bulk timeout itself must land inside the documented MCP client tool-call
-  // window (~60 s — chatgpt.com's connector / the Claude Code SDK), or the client gives
-  // up before even the HTTP layer returns.
-  assert.ok(bulk <= 60_000, "bulk request timeout must beat the ~60 s client floor");
-  // Single-fetch keeps its fixed defense-in-depth wall.
-  assert.equal(resolveRequestTimeout(false), 90_000);
-});
 
 test("HTTP MCP listener refuses local-binary instead of exposing an unauthenticated /mcp", async () => {
   assert.throws(

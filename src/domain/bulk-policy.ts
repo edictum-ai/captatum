@@ -36,10 +36,11 @@ export const BULK_GUARD_DEFAULTS: BulkGuard = {
   // claude.ai's hosted connector is undocumented but observed shorter than Claude Desktop's
   // 300 s (Desktop is a separate surface). A taller wall assembles a partial the client
   // never receives — the prod audit showed 74–137 s bulks finishing orphaned (124 `context
-  // canceled` drops). 55 s lands the structured partial inside the ~60 s window; the HTTP
-  // requestTimeout tracks this + a 5 s margin (resolveRequestTimeout) so the backstop never
-  // cuts the partial off. Lowering the hosted default from 180 s lost no real capability —
-  // a partial above the client window is orphaned by definition.
+  // canceled` drops). 55 s lands the structured partial inside the ~60 s window. The wall fires
+  // inside execute() via AbortController, independent of the HTTP layer (the Fastify requestTimeout
+  // is NOT a backstop for this — the /mcp handler calls reply.hijack(), decoupling it). Lowering
+  // the hosted default from 180 s lost no real capability — a partial above the client window is
+  // orphaned by definition.
   maxGlobalWallMs: 55_000,
   maxConcurrency: 4,
   maxRenderedSeeds: 10,
