@@ -8,6 +8,7 @@
 // false-positive'd. Better to miss a thin page than to mislabel real content.
 import type { Result } from "../domain/result.ts";
 import { primaryTypes } from "./classify.ts";
+import { CONTENT_TITLE_TYPES } from "./use-cases/tier1-payload.ts";
 
 export type ContentQuality = "app_error" | "low_value";
 
@@ -21,13 +22,6 @@ const APP_ERROR_SIGNATURES = [
 ];
 /** A crash screen's extracted text is short (it IS the error message). */
 const APP_ERROR_MAX_CHARS = 300;
-/** schema.org @types whose presence means real structured content (not low-value). Mirrors the
- *  extractor/shell-gate content-bearing set (incl. Event/Recipe/Course/Review/…), not just the
- *  presentation job/product/article (#150 codex). */
-const CONTENT_BEARING_TYPES = new Set([
-  "jobposting", "product", "article", "newsarticle", "blogposting", "techarticle", "scholarlyarticle", "report",
-  "event", "recipe", "course", "review", "webapplication", "videoobject", "book",
-]);
 /** Titles that signal "this is a shell/landing, not the page's real subject". */
 const GENERIC_TITLES = new Set(["careers", "career", "home", "loading", "untitled"]);
 /** Low-value requires the page to be large but text-poor (bytes ≫ extracted text). */
@@ -45,13 +39,16 @@ function detectAppError(result: Result): boolean {
 }
 
 /** A page that returned HTTP success but near-empty useful content (#150) — e.g. a rendered SPA
- *  whose visible text is just "Careers". Requires MULTIPLE signals: large bytes ≫ tiny text, a
- *  generic title, AND no content-bearing JSON-LD (any content @type means real structured content). */
+ *  whose visible text is just "Careers". Requires MULTIPLE signals: large network size ≫ tiny text,
+ *  a generic title, AND no content-bearing JSON-LD (any CONTENT_TITLE_TYPE = real structured content). */
 function detectLowValue(result: Result): boolean {
   if (result.result.trim().length >= LOW_VALUE_MAX_TEXT) return false;
-  if (result.bytes < LOW_VALUE_MIN_BYTES) return false;
+  // For a promoted Tier-3 result `bytes` is the rendered DOM size; `egressBytes` is the network size
+  // (the SPA's JS/CSS) — the real "large page" signal. A large SPA with a tiny DOM ("Careers") has
+  // small `bytes` but large `egressBytes`, so the threshold must use the network size (#159 codex).
+  if ((result.egressBytes ?? result.bytes) < LOW_VALUE_MIN_BYTES) return false;
   if (!GENERIC_TITLES.has((result.title ?? "").trim().toLowerCase())) return false;
-  return !primaryTypes(result.structured?.jsonLd).some((t) => CONTENT_BEARING_TYPES.has(t));
+  return !primaryTypes(result.structured?.jsonLd).some((t) => CONTENT_TITLE_TYPES.has(t));
 }
 
 /** Classify content quality: "app_error" (demote) or "low_value" (warn). undefined = normal. App-error

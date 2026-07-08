@@ -110,6 +110,21 @@ test("classifyContentQuality: an Event/Recipe page is NOT low_value (content-bea
   })), undefined);
 });
 
+test("classifyContentQuality: a SoftwareApplication page is NOT low_value (shared CONTENT_TITLE_TYPES, no drift)", () => {
+  // #159 codex: the local allowlist must stay in sync with the extractor's set (softwareapplication,
+  // musicrecording, …) — now imported from tier1-payload.ts as the single source of truth.
+  assert.equal(classifyContentQuality(result({
+    result: "App", bytes: 250_000, title: "Home",
+    structured: { jsonLd: { "@type": "SoftwareApplication", name: "Acme App" } },
+  })), undefined);
+});
+
+test("classifyContentQuality: a large-SPA-tiny-DOM page (egressBytes ≫ bytes) → low_value (#159 codex)", () => {
+  // A rendered SPA loads >100k of JS/CSS (egressBytes) but leaves a tiny DOM (bytes). The threshold
+  // must use the network size (egressBytes ?? bytes) — else the exact shell this catches slips through.
+  assert.equal(classifyContentQuality(result({ result: "Careers", bytes: 5_000, egressBytes: 250_000, title: "Careers" })), "low_value");
+});
+
 test("classifyContentQuality: an anti-bot challenge is NOT content-quality-classified", () => {
   // A challenge is already gated (challengeProvider set), not "low-quality content".
   assert.equal(classifyContentQuality(result({ challengeProvider: "cloudflare", result: "Just a moment...", title: "Just a moment..." })), undefined);
