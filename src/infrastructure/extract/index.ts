@@ -7,7 +7,7 @@ import type {
 import { isHtmlContentType } from "../http/body.ts";
 import { extractVisibleText } from "./html.ts";
 import { revealedReactBoundaryIds } from "./hidden.ts";
-import { selectMainContentHtml } from "./main-content.ts";
+import { selectMainContentHtml, stripChrome } from "./main-content.ts";
 import { extractPageMetadata } from "./metadata.ts";
 import { evaluateShellGate } from "./shell-gate.ts";
 
@@ -34,7 +34,11 @@ export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
   // outside scope), so recomputing it from the fragment would empty the set + strip a React
   // boundary (#118 codex P1). Both selectMainContentHtml and extractVisibleText take it explicitly.
   const revealedIds = revealedReactBoundaryIds(input.html);
-  const text = html ? extractVisibleText(selectMainContentHtml(input.html, revealedIds) ?? input.html, revealedIds) : input.html;
+  // No main-content landmark → fall back to the FULL page MINUS site chrome (aside/nav/footer).
+  // Otherwise an SPA shell whose static HTML carries only nav/TOC chrome (<p>/<h2> in <nav>/<aside>)
+  // satisfies the shell-gate's hasContent threshold and ships the nav menu as "content" instead of
+  // escalating to render (#144 — Jira REST v3: 13,630 chars of chrome, article JS-only).
+  const text = html ? extractVisibleText(selectMainContentHtml(input.html, revealedIds) ?? stripChrome(input.html), revealedIds) : input.html;
   const shellGate = evaluateShellGate({
     html: input.html,
     text,

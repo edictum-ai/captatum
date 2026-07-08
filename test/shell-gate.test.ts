@@ -36,6 +36,31 @@ test("shell-gate: real body text + empty JSON-LD resolves via content-present, n
   assert.equal(gate.reason, "content-present");
 });
 
+// #144: a no-landmark SPA whose static HTML carries ONLY nav/aside chrome (no <main>/<article>,
+// no real body) must escalate to render, not ship the nav menu as "content". The Jira REST v3
+// repro: 13,630 chars of chrome crossed hasContent's threshold → "content-present" → no render.
+test("shell-gate: a no-landmark SPA whose static HTML is only nav/aside chrome escalates to render (#144)", () => {
+  const html = '<html><head><title>Developer Documentation</title></head><body>'
+    + '<nav><a>Documentation</a><a>Resources</a><a>News and Updates</a><a>Get Support</a><a>Sign in</a></nav>'
+    + '<aside><h2>REST API v3</h2><a>About</a><a>Version</a><a>Authentication</a><a>Endpoints</a></aside>'
+    + '<div id="root"></div></body></html>';
+  const gate = extractHtml({ html, url: "https://jira.test/rest/v3/intro" }).shellGate;
+  assert.equal(gate.jsRequired, true, "chrome-only no-landmark SPA must escalate to render");
+  assert.equal(gate.reason, "empty-spa-shell");
+});
+
+test("shell-gate: a no-landmark page with REAL body content (outside chrome) still resolves, no render (#144)", () => {
+  // stripChrome removes aside/nav/footer but keeps the real body text — a legit no-landmark page
+  // with substantial content must NOT be falsely escalated (regression guard for the #144 fix).
+  const html = '<html><body>'
+    + '<nav><a>Home</a><a>About</a></nav>'
+    + '<div><p>' + "This is the real article body content, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<footer><a>Privacy</a></footer>'
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://x.test/post" }).shellGate;
+  assert.equal(gate.jsRequired, false, "real no-landmark body content must not be escalated");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no

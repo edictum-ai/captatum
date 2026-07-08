@@ -34,7 +34,7 @@ export const SKELETON_ARTICLE_MAX_CHARS = 1000;
  * article pick by out-lengthing the real article. Verified no existing fixture places these tags
  * inside <main>, so the strip is fixture-safe. (#108)
  */
-function stripChrome(html: string): string {
+export function stripChrome(html: string): string {
   return stripElement(stripElement(stripElement(html, "aside"), "nav"), "footer");
 }
 
