@@ -73,6 +73,22 @@ test("shell-gate: a literal <nav> inside a <script> does not delete the real bod
   assert.equal(gate.jsRequired, false, "a script's <nav> string must not delete the real body");
 });
 
+test("shell-gate: a fake <nav> in a comment or <style> does not delete the real body (#160 codex)", () => {
+  // The raw-chrome fallback pre-cleans comments + style BEFORE stripping chrome, so a fake opener
+  // inside <!-- <nav> --> or <style>...</style> can't pair with a later real </nav> (#160 codex r2).
+  const commented = '<html><body>'
+    + '<!-- <nav>commented out</nav> -->'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html: commented, url: "https://x.test/c" }).shellGate.jsRequired, false, "a comment's <nav> must not delete the body");
+  const styled = '<html><head><style>.x::after { content: "<nav>fake</nav>" }</style></head><body>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html: styled, url: "https://x.test/s" }).shellGate.jsRequired, false, "a <style>'s <nav> must not delete the body");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no

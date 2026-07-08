@@ -38,13 +38,16 @@ function stripChrome(html: string): string {
   return stripElement(stripElement(stripElement(html, "aside"), "nav"), "footer");
 }
 
-/** Strip site chrome (aside/nav/footer) AFTER removing `<script>` blocks, so a literal `<nav>`
- *  inside an inline script isn't treated as a real chrome tag and paired with a later `</nav>`
- *  (which would delete the intervening real body → a false shell-gate escalation) (#160 codex).
- *  Only `<script>` is stripped here (NOT `<style>`/`<noscript>`/`<template>`) — `extractVisibleText`
- *  needs the `<style>` to detect `display:none` classes for hidden-subtree stripping. */
-export function stripChromeFromRaw(html: string): string {
-  return stripChrome(stripElement(html, "script"));
+/** Equivalent to the landmark-selection pre-clean: collect `display:none` classes from the FULL
+ *  html, then strip non-visible blocks (script/style/noscript/template + hidden subtrees +
+ *  comments) BEFORE site chrome — so a fake chrome opener inside a `<script>`/comment/`<style>`
+ *  can't mis-pair with a later close tag and delete the intervening real body (#160 codex).
+ *  Hidden classes are collected BEFORE `<style>` is stripped (stripHiddenSubtrees removes the
+ *  display:none content here; extractVisibleText re-reads classes but the subtrees are gone). */
+export function stripChromeFromRaw(html: string, revealedIds: Set<string>): string {
+  const hiddenClasses = collectHiddenDisplayNoneClasses(html);
+  const withoutCode = ["script", "style", "noscript", "template"].reduce((v, tag) => stripElement(v, tag), html);
+  return stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses, revealedIds)));
 }
 
 /**
