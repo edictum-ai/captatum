@@ -201,7 +201,7 @@ function parseAttributes(rawTag: string): AttributeMap {
   return attrs;
 }
 
-function extractBodyHtml(html: string): string | null {
+export function extractBodyHtml(html: string): string | null {
   const body = findElements(html, "body")[0];
   return body ? body.content : null;
 }

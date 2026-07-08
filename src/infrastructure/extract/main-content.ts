@@ -1,6 +1,6 @@
 import { collectHiddenDisplayNoneClasses } from "./hidden-classes.ts";
 import { revealedReactBoundaryIds, stripHiddenSubtrees } from "./hidden.ts";
-import { extractVisibleText, findElements, stripElement, stripHtmlComments } from "./html.ts";
+import { extractBodyHtml, extractVisibleText, findElements, stripElement, stripHtmlComments } from "./html.ts";
 
 /**
  * <main> overrides the best <article> only when it is substantially richer. Calibrated against
@@ -47,7 +47,10 @@ function stripChrome(html: string): string {
  *  content here; extractVisibleText re-reads classes but the subtrees are gone). */
 export function stripChromeFromRaw(html: string, revealedIds: Set<string>): string {
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
-  const body = stripElement(html, "head");
+  // Extract the <body> (handles an omitted </head> — findElements pairs on <body>…</body>, not
+  // </head>) so a <title>'s RCDATA like "HTML <nav> element guide" is excluded before chrome
+  // stripping. Falls back to stripping <head> when there's no <body> tag (#160 codex r5/r6).
+  const body = extractBodyHtml(html) ?? stripElement(html, "head");
   const withoutCode = ["script", "style", "noscript", "template"].reduce((v, tag) => stripElement(v, tag), body);
   return stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses, revealedIds)));
 }
