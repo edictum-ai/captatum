@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
-import type { FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
+import type { FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
 import { isPrivate } from "../src/domain/policy.ts";
 import type { DnsResolver, ResolvedAddress } from "../src/infrastructure/http/dns.ts";
 import { GuardedFetchError } from "../src/infrastructure/http/errors.ts";
 import { GuardedHttpFetcher } from "../src/infrastructure/http/guarded-fetcher.ts";
+import { FetcherRouteFulfiller } from "../src/infrastructure/render/route-fulfill.ts";
+import { fetchTier1WithBodyReadRetry } from "../src/application/use-cases/captatum-util.ts";
 import type {
   HttpRequester,
   HttpRequestInput,
@@ -122,6 +124,119 @@ test("decompressed byte cap truncates oversized response bodies (advisory, not f
   if ("rejected" in result) throw new Error(`expected truncation, got reject: ${result.code}`);
   assert.equal(result.truncated, true);
   assert.equal(result.bytes, 5);
+});
+
+// A body stream that delivers `parts` then breaks mid-read (a premature close /
+// Content-Length mismatch / decompression truncation) — simulating the undici
+// ClientPayloadError / ContentLengthError from #149. `immediate` breaks before any byte.
+function breakingBody(parts: Buffer[], immediate = false): Readable {
+  return new Readable({
+    read() {
+      if (immediate) { this.destroy(new Error("Response payload is not completed")); return; }
+      const p = parts.shift();
+      if (p) this.push(p);
+      else this.destroy(new Error("Response payload is not completed"));
+    },
+  });
+}
+
+test("readCappedBody: mid-read truncation returns partial bytes + body_read_error, not a hard fail (#149)", async () => {
+  // Teeth-check: before #149 this threw body_read_error and discarded the partial bytes
+  // (the betterstack.com/careers repro — a summary came back tier:error instead of content).
+  const fetcher = new GuardedHttpFetcher({
+    resolver: resolverFor({ "break.test": [{ address: SAFE_IP, family: 4 }] }),
+    requester: new ScriptedRequester(() => ({
+      status: 200,
+      headers: { "content-length": "100" }, // advertises more than the stream delivers
+      body: breakingBody([Buffer.from("partial-content")]),
+    })),
+  });
+  const result = await fetcher.fetchGuarded("http://break.test/", DEFAULT_OPTS);
+  if ("rejected" in result) throw new Error(`expected partial content, got reject: ${result.code}`);
+  // Partial content > none: the bytes that arrived before the break are returned.
+  assert.equal(result.truncated, true);
+  assert.equal(result.truncatedReason, "body_read_error");
+  assert.equal(result.bytes, "partial-content".length);
+  assert.equal(await new Response(result.bodyStream).text(), "partial-content");
+});
+
+test("readCappedBody: a zero-bytes body_read_error (broke before any content) still rejects (#149)", async () => {
+  // Only a mid-read truncation WITH partial bytes degrades to partial content. A stream that
+  // breaks before delivering anything is a total failure → hard reject (no content to return).
+  const fetcher = new GuardedHttpFetcher({
+    resolver: resolverFor({ "empty.test": [{ address: SAFE_IP, family: 4 }] }),
+    requester: new ScriptedRequester(() => ({ status: 200, headers: {}, body: breakingBody([], true) })),
+  });
+  const result = await fetcher.fetchGuarded("http://empty.test/", DEFAULT_OPTS);
+  assertReject(result, "body_read_error");
+});
+
+test("readCappedBody: cap truncation is labelled truncatedReason 'cap' (clean prefix, not transport) (#149)", async () => {
+  const body = gzipSync("abcdef");
+  const fetcher = new GuardedHttpFetcher({
+    resolver: resolverFor({ "bytes.test": [{ address: SAFE_IP, family: 4 }] }),
+    requester: new ScriptedRequester(() => response(200, { "content-encoding": "gzip" }, body)),
+  });
+  const result = await fetcher.fetchGuarded("http://bytes.test/", { ...DEFAULT_OPTS, maxBytes: 5 });
+  if ("rejected" in result) throw new Error(`expected truncation, got reject: ${result.code}`);
+  assert.equal(result.truncated, true);
+  assert.equal(result.truncatedReason, "cap", "cap-truncation is distinct from a transport body_read_error");
+});
+
+test("fetchTier1WithBodyReadRetry: retries once on a zero-bytes body_read_error, single-fetch only (#149)", async () => {
+  // Single-fetch (no signal): the 1st body_read_error reject → ONE retry; the retry's success wins.
+  let calls = 0;
+  const ok: FetcherResult = {
+    status: 200, finalUrl: "http://x.test/", redirects: [],
+    bodyStream: new ReadableStream<Uint8Array>({ start(c) { c.close(); } }),
+    contentType: "text/html", bytes: 0,
+  };
+  const fetcher: FetcherPort = {
+    async fetchGuarded() {
+      calls += 1;
+      return calls === 1 ? { rejected: true, code: "body_read_error", message: "broken" } as RejectResult : ok;
+    },
+  };
+  const out = await fetchTier1WithBodyReadRetry(fetcher, "http://x.test/", DEFAULT_OPTS, undefined);
+  assert.equal(calls, 2, "single-fetch (no signal) retries once on a body_read_error reject");
+  if ("rejected" in out) throw new Error("expected the retry's success");
+  assert.equal(out.status, 200);
+
+  // Bulk (signal present): the retry is SKIPPED — the orchestrator can't reserve a transparent
+  // in-execute retry's egress against the byte cap, so the bulk egress bound stays airtight.
+  let bulkCalls = 0;
+  const bulkFetcher: FetcherPort = {
+    async fetchGuarded() { bulkCalls += 1; return { rejected: true, code: "body_read_error", message: "broken" } as RejectResult; },
+  };
+  const out2 = await fetchTier1WithBodyReadRetry(bulkFetcher, "http://x.test/", DEFAULT_OPTS, new AbortController().signal);
+  assert.equal(bulkCalls, 1, "bulk (signal present) does NOT retry — egress bound stays airtight");
+  assertReject(out2, "body_read_error");
+});
+
+test("FetcherRouteFulfiller: a mid-read-truncated subresource is rejected, not fulfilled with partial bytes (#149)", async () => {
+  // Teeth-check for the Tier-3 sibling: a half-loaded JS/CSS bundle can corrupt a render worse
+  // than an aborted request, so a transport-truncated subresource is rejected. Without the
+  // route-fulfill guard resolve() would fulfill the partial bodyStream.
+  const truncatedResult: FetcherResult = {
+    status: 200, finalUrl: "https://sub.test/x.js", redirects: [],
+    bodyStream: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode("half-a-script")); c.close(); } }),
+    contentType: "text/javascript", bytes: 13, truncated: true, truncatedReason: "body_read_error",
+  };
+  const fulfiller = new FetcherRouteFulfiller(
+    { async fetchGuarded() { return truncatedResult; } },
+    DEFAULT_OPTS,
+  );
+  const out = await fulfiller.resolve("https://sub.test/x.js", "script");
+  assert.equal(out.kind, "reject");
+  if (out.kind === "reject") assert.equal(out.reject.code, "body_read_error");
+
+  // A cap-truncated subresource (a clean prefix) is still fulfilled — the distinction is load-bearing.
+  const capFulfiller = new FetcherRouteFulfiller(
+    { async fetchGuarded() { return { ...truncatedResult, truncatedReason: "cap" }; } },
+    DEFAULT_OPTS,
+  );
+  const capOut = await capFulfiller.resolve("https://sub.test/x.js", "script");
+  assert.equal(capOut.kind, "fulfill");
 });
 
 test("timeout aborts a stalled guarded fetch", async () => {

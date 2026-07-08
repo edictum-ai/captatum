@@ -112,7 +112,11 @@ export function classifyAccess(result: Result): AccessInfo {
   if (isPaywalled(result.structured?.jsonLd)) {
     return { mainContentAccessible, gated: true, gateReason: "paywall" };
   }
-  if (result.errors.some((error) => error.code === "max_bytes")) {
+  if (result.errors.some((error) => error.code === "max_bytes" || error.code === "body_read_error")) {
+    // Content was truncated — either at the byte cap (max_bytes, a clean prefix) or mid-read
+    // by a transport error (body_read_error, possibly garbled from a broken gzip stream). Either
+    // way the agent must NOT treat the partial bytes as complete/public — flag it gated (#149).
+    // The precise cause rides on the warning code + the provenance `truncated=` field.
     return { mainContentAccessible, gated: true, gateReason: "byte_cap" };
   }
   // Empty content on a page that needed JS we could not run: likely gated

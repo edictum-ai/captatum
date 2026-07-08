@@ -60,6 +60,13 @@ export class FetcherRouteFulfiller implements RouteFulfiller {
     // POST-then-GET sequence can never leak method/body into the next GET subresource (#111 D1).
     const result = await this.fetcher.fetchGuarded(url, this.opts, postInit);
     if ("rejected" in result) return { kind: "reject", reject: result };
+    // A mid-read-truncated subresource body (transport `body_read_error`) is unreliable — a
+    // half-loaded JS/CSS bundle can corrupt the render worse than an aborted request — so abort
+    // the route rather than fulfilling partial bytes (#149). The main-page captatum path keeps
+    // the partial as degraded content; this is subresource-specific.
+    if (result.truncatedReason === "body_read_error") {
+      return { kind: "reject", reject: { rejected: true, code: "body_read_error", message: "Tier-3 subresource body truncated mid-read" } };
+    }
     let body: Uint8Array;
     try {
       // Each subresource body is buffered in the gateway up to opts.maxBytes

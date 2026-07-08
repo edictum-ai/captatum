@@ -66,6 +66,11 @@ export interface FetcherResult {
   contentType: string;
   bytes: number;
   truncated?: boolean;
+  /** Why the body was truncated: `"cap"` = it exceeded `maxBytes` (a clean prefix of a
+   *  larger body); `"body_read_error"` = the stream broke mid-read AFTER partial bytes
+   *  arrived (premature close / Content-Length mismatch / decompression truncation) —
+   *  transport-unreliable, but partial content > none (#149). Absent when not truncated. */
+  truncatedReason?: "cap" | "body_read_error";
   /** Vendor-attributed anti-bot evidence (#41). Absent on rejects/non-HTTP paths. */
   antibot?: AntiBotEvidence;
   /** Curated `Retry-After` (ms) parsed from the response header on a 429/503

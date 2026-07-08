@@ -94,11 +94,18 @@ function envelopeHeader(result: Result): string {
 }
 
 function provenanceLine(result: Result): string {
-  const fields = [
+  // Surface a truncation indicator in the provenance comment — the most reliable model-visible
+  // channel (present for every output mode, incl. raw where there is no envelope header). A
+  // text-forward client that renders only content[0].text thus still sees that the bytes are
+  // incomplete: `truncated=max_bytes` (clean cap prefix) or `truncated=body_read_error`
+  // (transport-truncated, may be garbled). Absent when the body is complete (#149).
+  const truncationCode = result.errors.find((e) => e.code === "max_bytes" || e.code === "body_read_error")?.code;
+  const fields: Array<[string, string]> = [
     ["tier", String(result.tier)],
     ["output", result.output],
     ["status", String(result.code)],
     ["bytes", String(result.bytes)],
+    ...(truncationCode ? [["truncated", truncationCode] as [string, string]] : []),
     ["finalUrl", redactSignedQueryParams(result.finalUrl)],
     ["platform", result.platform.adapterId],
     ["jsRequired", String(result.jsRequired)],

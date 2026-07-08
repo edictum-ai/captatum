@@ -45,6 +45,21 @@ function summaryResult(over: Partial<Result> = {}): Result {
   } as Result;
 }
 
+test("resultToMcpText provenance carries truncated= for a mid-read transport truncation, every output mode (#149)", () => {
+  // The provenance comment is the most reliable model-visible channel — present for EVERY output
+  // mode incl. raw (where there is no envelope header). A text-forward client that renders only
+  // content[0].text must see the content is incomplete. Teeth-check: without the format fix the
+  // comment has no truncated field, so partial transport-unreliable bytes arrive with no signal.
+  const transportErr = [{ code: "body_read_error", message: "Response body truncated mid-read (transport error) — partial content returned, may be incomplete" }];
+  assert.match(resultToMcpText(summaryResult({ errors: transportErr }), false), /truncated=body_read_error/);
+  // A cap truncation is labelled distinctly (clean prefix, not transport).
+  assert.match(resultToMcpText(summaryResult({ errors: [{ code: "max_bytes", message: "Content truncated at the byte cap" }] }), false), /truncated=max_bytes/);
+  // No truncation → no truncated field (byte-identical provenance; the raw contract fixtures stay stable).
+  assert.doesNotMatch(resultToMcpText(summaryResult(), false), /truncated=/);
+  // Raw output ALSO carries it — the raw path has no envelope header, so this is the ONLY signal.
+  assert.match(resultToMcpText(summaryResult({ output: "raw", result: "<html>partial</html>", errors: transportErr }), false), /truncated=body_read_error/);
+});
+
 test("resultToMcpText with textDebug appends a diagnostics block for non-raw output", () => {
   const text = resultToMcpText(summaryResult(), true);
   assert.match(text, /--- debug ---/);
