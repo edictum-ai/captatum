@@ -34,8 +34,17 @@ export const SKELETON_ARTICLE_MAX_CHARS = 1000;
  * article pick by out-lengthing the real article. Verified no existing fixture places these tags
  * inside <main>, so the strip is fixture-safe. (#108)
  */
-export function stripChrome(html: string): string {
+function stripChrome(html: string): string {
   return stripElement(stripElement(stripElement(html, "aside"), "nav"), "footer");
+}
+
+/** Strip site chrome (aside/nav/footer) AFTER removing `<script>` blocks, so a literal `<nav>`
+ *  inside an inline script isn't treated as a real chrome tag and paired with a later `</nav>`
+ *  (which would delete the intervening real body → a false shell-gate escalation) (#160 codex).
+ *  Only `<script>` is stripped here (NOT `<style>`/`<noscript>`/`<template>`) — `extractVisibleText`
+ *  needs the `<style>` to detect `display:none` classes for hidden-subtree stripping. */
+export function stripChromeFromRaw(html: string): string {
+  return stripChrome(stripElement(html, "script"));
 }
 
 /**

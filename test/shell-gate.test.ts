@@ -61,6 +61,18 @@ test("shell-gate: a no-landmark page with REAL body content (outside chrome) sti
   assert.equal(gate.jsRequired, false, "real no-landmark body content must not be escalated");
 });
 
+test("shell-gate: a literal <nav> inside a <script> does not delete the real body (#160 codex)", () => {
+  // stripChrome must run AFTER scripts are stripped — else the script's "<nav>" string pairs with a
+  // later </nav> and deletes the intervening real body → a false shell-gate escalation.
+  const html = '<html><body>'
+    + '<script>const tpl = "<nav>menu</nav>";</script>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://x.test/p" }).shellGate;
+  assert.equal(gate.jsRequired, false, "a script's <nav> string must not delete the real body");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no
