@@ -213,7 +213,7 @@ export class RenderRouteState {
       try { outcome = await this.fulfiller.resolve(url, resourceType, plan.postInit); }
       finally { this.fetchSem.release(); }
       if (outcome.kind === "reject") {
-        this.pool.releaseEssential(plan.body.byteLength); // resolve rejected before the body counted as egress → release
+        if (outcome.countedBytes !== undefined) this.countEgress(true, outcome.countedBytes, url, outcome.countedRedirects ?? [], outcome.countedFinalUrl ?? url); else this.pool.releaseEssential(plan.body.byteLength); // truncated POST response → count (keep body reservation); pre-send reject → release
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
       }
       if (this.pool.isExceeded(true)) { // a concurrent POST blew the pool in flight; the POST fully egressed (body+response) — count both + host, then abort (codex R4 P2).
