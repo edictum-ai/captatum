@@ -162,31 +162,33 @@ test("resolveBulkGuard: per-seed cost sized for concurrency (maxConcurrency × p
   assert.equal(out3.guard.maxTransformCostUsd, 0.03);
 });
 
-test("maxGlobalWallMs default is 55s — tuned to the MCP client timeout window (#148)", () => {
-  // Teeth-check: the wall MUST sit inside the documented MCP client tool-call window —
+test("maxGlobalWallMs: hosted default 55s, ceiling 180s (local keeps the pre-#148 wall) (#148)", () => {
+  // Teeth-check: the hosted DEFAULT MUST sit inside the documented MCP client tool-call window —
   // ~60 s for chatgpt.com's hosted connector (HTTP 424) and the Claude Code SDK
-  // (DEFAULT_REQUEST_TIMEOUT_MSEC). A 180 s wall (the old value) assembles a partial the
-  // client never receives. If this drifts back up without the client window widening, this fails.
+  // (DEFAULT_REQUEST_TIMEOUT_MSEC). A 180 s default (the old value) assembles a partial the client
+  // never receives. If the default drifts back up without the client window widening, this fails.
   assert.equal(BULK_GUARD_DEFAULTS.maxGlobalWallMs, 55_000);
-  // The ceiling (the hard, not-caller-raisable bound) must match the default — the
-  // wall is "hard, NOT caller-raisable" and no operator env currently overrides it,
-  // so the default IS the effective prod wall.
-  assert.equal(BULK_GUARD_CEILINGS.maxGlobalWallMs, BULK_GUARD_DEFAULTS.maxGlobalWallMs);
-  // Sanity: 55 s lands inside the documented client window with margin to spare.
-  assert.ok(BULK_GUARD_DEFAULTS.maxGlobalWallMs < 60_000, "wall must beat a ~60 s client floor");
+  assert.ok(BULK_GUARD_DEFAULTS.maxGlobalWallMs < 60_000, "hosted default must beat the ~60 s client floor");
+  // The CEILING stays 180 s — the local-binary flavor (no client-side timeout, a patient stdio
+  // client) keeps the pre-#148 wall via an operator override, so lowering the hosted default did
+  // NOT narrow local (codex #156 P2). An operator may raise toward 180 s; never past it.
+  assert.equal(BULK_GUARD_CEILINGS.maxGlobalWallMs, 180_000);
+  assert.ok(BULK_GUARD_CEILINGS.maxGlobalWallMs > BULK_GUARD_DEFAULTS.maxGlobalWallMs, "ceiling > hosted default (local/patient deployments may raise)");
 });
 
-test("resolveBulkGuard: operator may TIGHTEN the wall (lowering only), never raise it (#148)", () => {
-  // An operator value ABOVE the default is clamped DOWN (the wall is not raisable past
-  // the server cap). 100 s → 55 s (the default), NOT honored.
-  const raised = resolveBulkGuard({ operator: { maxGlobalWallMs: 100_000 }, output: "raw" });
-  assert.equal(raised.guard.maxGlobalWallMs, BULK_GUARD_DEFAULTS.maxGlobalWallMs);
-  // An operator value BELOW the default is honored (tightening for a sensitive deployment).
-  const tightened = resolveBulkGuard({ operator: { maxGlobalWallMs: 20_000 }, output: "raw" });
-  assert.equal(tightened.guard.maxGlobalWallMs, 20_000);
+test("resolveBulkGuard: operator may set the wall in [1 ms, ceiling] — local raises, hosted defaults (#148)", () => {
+  // An operator value UP TO the 180 s ceiling is HONORED — the local-binary flavor uses this to
+  // keep its pre-#148 wall (local-server.ts passes BULK_GUARD_CEILINGS.maxGlobalWallMs), and a
+  // hosted deployment may raise if it learns its real client timeout is higher.
+  assert.equal(resolveBulkGuard({ operator: { maxGlobalWallMs: 100_000 }, output: "raw" }).guard.maxGlobalWallMs, 100_000);
+  assert.equal(resolveBulkGuard({ operator: { maxGlobalWallMs: BULK_GUARD_CEILINGS.maxGlobalWallMs }, output: "raw" }).guard.maxGlobalWallMs, 180_000);
+  // ABOVE the ceiling is clamped DOWN (the hard server cap; an operator may never exceed it).
+  assert.equal(resolveBulkGuard({ operator: { maxGlobalWallMs: 300_000 }, output: "raw" }).guard.maxGlobalWallMs, BULK_GUARD_CEILINGS.maxGlobalWallMs);
+  // BELOW the default is honored (tightening); ABSENT → the 55 s hosted default.
+  assert.equal(resolveBulkGuard({ operator: { maxGlobalWallMs: 20_000 }, output: "raw" }).guard.maxGlobalWallMs, 20_000);
+  assert.equal(resolveBulkGuard({ operator: {}, output: "raw" }).guard.maxGlobalWallMs, BULK_GUARD_DEFAULTS.maxGlobalWallMs);
   // The clamp floors at 1 ms (a degenerate-but-finite wall, exercised by the firing tests).
-  const floored = resolveBulkGuard({ operator: { maxGlobalWallMs: 0 }, output: "raw" });
-  assert.equal(floored.guard.maxGlobalWallMs, 1);
+  assert.equal(resolveBulkGuard({ operator: { maxGlobalWallMs: 0 }, output: "raw" }).guard.maxGlobalWallMs, 1);
 });
 
 test("unionEgressHosts: seed + redirects + finalUrl; defeats the redirect-funnel attack", () => {

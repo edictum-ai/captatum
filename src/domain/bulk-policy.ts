@@ -30,17 +30,18 @@ export const BULK_GUARD_DEFAULTS: BulkGuard = {
   maxUrls: BULK_RAW_MAX_URLS,
   maxPerHostInBulk: 10,
   maxGlobalEgressBytes: 100 * 1024 * 1024,
-  // Tuned to the MCP client tool-call timeout window (#148). The documented binding
-  // constraint is ~60 s: chatgpt.com's hosted MCP connector hard-closes a tool call at
-  // ~60 s (HTTP 424) and the Claude Code SDK at 60 s (DEFAULT_REQUEST_TIMEOUT_MSEC);
-  // claude.ai's hosted connector is undocumented but observed shorter than Claude Desktop's
-  // 300 s (Desktop is a separate surface). A taller wall assembles a partial the client
-  // never receives — the prod audit showed 74–137 s bulks finishing orphaned (124 `context
-  // canceled` drops). 55 s lands the structured partial inside the ~60 s window. The wall fires
-  // inside execute() via AbortController, independent of the HTTP layer (the Fastify requestTimeout
-  // is NOT a backstop for this — the /mcp handler calls reply.hijack(), decoupling it). Lowering
-  // the hosted default from 180 s lost no real capability — a partial above the client window is
-  // orphaned by definition.
+  // The HOSTED default, tuned to the MCP client tool-call timeout window (#148). The documented
+  // binding constraint is ~60 s: chatgpt.com's hosted MCP connector hard-closes a tool call at
+  // ~60 s (HTTP 424) and the Claude Code SDK at 60 s (DEFAULT_REQUEST_TIMEOUT_MSEC); claude.ai's
+  // hosted connector is undocumented but observed shorter than Claude Desktop's 300 s (a separate
+  // surface). A taller wall assembles a partial the client never receives — the prod audit showed
+  // 74–137 s bulks finishing orphaned (124 `context canceled` drops). 55 s lands the structured
+  // partial inside the ~60 s window. The wall fires inside execute() via AbortController, independent
+  // of the HTTP layer (the Fastify requestTimeout is NOT a backstop — the /mcp handler calls
+  // reply.hijack(), decoupling it). This is the DEFAULT (hosted, no operator override); the CEILING
+  // stays 180 s so the local-binary flavor (no client timeout — a patient stdio client) keeps its
+  // pre-#148 wall via an operator override (local-server.ts), and lowering the hosted default lost
+  // no real capability THERE (a partial above the client window is orphaned by definition).
   maxGlobalWallMs: 55_000,
   maxConcurrency: 4,
   maxRenderedSeeds: 10,
@@ -50,12 +51,16 @@ export const BULK_GUARD_DEFAULTS: BulkGuard = {
   perSeedTransformCostUsd: 0.05,
 };
 
-/** Hard server ceilings — caller values are clamped DOWN to these (clamp +
- *  disclose, decision 10). A caller may set a LOWER cost cap, never higher. */
+/** Hard server ceilings — operator values are clamped DOWN to these (clamp +
+ *  disclose, decision 10). An operator may set a LOWER cap, never higher. Note
+ *  `maxGlobalWallMs` ceilings at 180 s (NOT the 55 s hosted default): the
+ *  local-binary flavor has no client timeout, so it keeps the pre-#148 180 s wall
+ *  via an operator override; a hosted deployment may also raise toward 180 s if it
+ *  learns its real client timeout is higher. The hosted DEFAULT stays 55 s. */
 export const BULK_GUARD_CEILINGS = {
   maxUrls: BULK_RAW_MAX_URLS,
   maxGlobalEgressBytes: 100 * 1024 * 1024,
-  maxGlobalWallMs: 55_000,
+  maxGlobalWallMs: 180_000,
   maxTransformCostUsd: 0.5,
   perSeedTransformCostUsd: 0.05,
   crawlDelayMsFloor: 500,

@@ -75,9 +75,12 @@ export function resolveBulkGuard(args: {
   const crawlDelayMs = Math.max(
     BULK_GUARD_CEILINGS.crawlDelayMsFloor, op.crawlDelayMs ?? BULK_GUARD_DEFAULTS.crawlDelayMs,
   );
-  // Operator may TIGHTEN the wall (lowering only); never past the hard server default.
+  // Operator may set the wall anywhere in [1 ms, CEILING] (#148): the local-binary flavor (no
+  // client timeout — a patient stdio client) keeps the pre-#148 180 s wall via an override, and a
+  // hosted deployment may raise toward 180 s if it learns its real client timeout is higher. Absent
+  // → the 55 s hosted DEFAULT (the orphaning-prevention value for claude.ai/chatgpt.com/Claude Code).
   const maxGlobalWallMs = op.maxGlobalWallMs !== undefined
-    ? Math.min(BULK_GUARD_DEFAULTS.maxGlobalWallMs, Math.max(1, op.maxGlobalWallMs))
+    ? Math.min(BULK_GUARD_CEILINGS.maxGlobalWallMs, Math.max(1, op.maxGlobalWallMs))
     : BULK_GUARD_DEFAULTS.maxGlobalWallMs;
   // Operator may TIGHTEN the per-host directed-DoS count bound (lowering only, min 1).
   const maxPerHostInBulk = op.maxPerHostInBulk !== undefined
