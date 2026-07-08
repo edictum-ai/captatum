@@ -1,5 +1,5 @@
 import type { AttemptTrace, Result } from "../../domain/result.ts";
-import { classifyAccess, classifyContentType } from "../../application/classify.ts";
+import { classifyAccess, classifyContentType, truncatedReason } from "../../application/classify.ts";
 import { isJsonContentType } from "../../infrastructure/http/body.ts";
 import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
 
@@ -25,7 +25,7 @@ export function resultToMcpText(result: Result, includeTextDebug = false): strin
     // so prepend the provenance comment (carrying truncated=) so a text-forward/CLI client still
     // sees the transport-unreliable signal (#149 codex P1). HTML/text raw always gets the comment.
     if (isJsonBody(result)) {
-      const truncated = result.errors.some((e) => e.code === "max_bytes" || e.code === "body_read_error");
+      const truncated = truncatedReason(result) !== undefined;
       return truncated ? `${provenance}\n${result.result}` : result.result;
     }
     return `${provenance}\n${result.result}`;
@@ -102,8 +102,9 @@ function provenanceLine(result: Result): string {
   // channel (present for every output mode, incl. raw where there is no envelope header). A
   // text-forward client that renders only content[0].text thus still sees that the bytes are
   // incomplete: `truncated=max_bytes` (clean cap prefix) or `truncated=body_read_error`
-  // (transport-truncated, may be garbled). Absent when the body is complete (#149).
-  const truncationCode = result.errors.find((e) => e.code === "max_bytes" || e.code === "body_read_error")?.code;
+  // (transport-truncated, may be garbled). `truncatedReason` excludes a zero-byte total failure
+  // (tier:error) — that is a failed fetch, not partial content (#149 codex P2).
+  const truncationCode = truncatedReason(result);
   const fields: Array<[string, string]> = [
     ["tier", String(result.tier)],
     ["output", result.output],
