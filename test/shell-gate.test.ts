@@ -119,6 +119,10 @@ test("shell-gate: a literal <nav> in a <title> doesn't delete the real body (#16
   assert.equal(extractHtml({ html: closedHead, url: "https://x.test/t1" }).shellGate.jsRequired, false, "a title's <nav> (closed head) must not delete the body");
   const omittedHeadClose = '<html><head><title>HTML <nav> element guide</title><body>' + realBody + '</body></html>';
   assert.equal(extractHtml({ html: omittedHeadClose, url: "https://x.test/t2" }).shellGate.jsRequired, false, "a title's <nav> (omitted </head>) must not delete the body");
+  // r7: a title with BOTH a fake <body> AND <nav> — inert blocks are stripped BEFORE body extraction
+  // so the fake <body> isn't selected + the fake <nav> can't mis-pair.
+  const fakeBodyInTitle = '<html><head><title>HTML <body> and <nav> element guide</title></head><body>' + realBody + '</body></html>';
+  assert.equal(extractHtml({ html: fakeBodyInTitle, url: "https://x.test/t3" }).shellGate.jsRequired, false, "a title's fake <body>/<nav> must not be selected/mis-paired");
 });
 
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY

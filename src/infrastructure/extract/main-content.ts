@@ -38,21 +38,17 @@ function stripChrome(html: string): string {
   return stripElement(stripElement(stripElement(html, "aside"), "nav"), "footer");
 }
 
-/** Equivalent to the landmark-selection pre-clean: collect `display:none` classes from the FULL
- *  html, strip `<head>` (so `<title>` RCDATA like "HTML <nav> element guide" can't mis-pair), then
- *  strip non-visible blocks (script/style/noscript/template + hidden subtrees + comments) BEFORE
- *  site chrome — so a fake chrome opener inside a `<script>`/comment/`<style>`/title can't pair
- *  with a later close tag and delete the intervening real body (#160 codex). Hidden classes are
- *  collected BEFORE `<head>`/`<style>` are stripped (stripHiddenSubtrees removes the display:none
- *  content here; extractVisibleText re-reads classes but the subtrees are gone). */
+/** Equivalent to the landmark-selection pre-clean for the no-landmark fallback. Order matters: a
+ *  literal `<body>`/`<nav>` inside a `<title>`/`<script>`/`<style>`/comment is NOT real markup, so
+ *  all inert RCDATA/code blocks (title + script/style/noscript/template + comments) are stripped
+ *  FIRST, THEN the `<body>` is extracted, THEN hidden subtrees + site chrome — so a fake opener in
+ *  any inert context can't be selected by extractBodyHtml or mis-paired by stripChrome (#160 codex).
+ *  Hidden classes are collected from the FULL html before `<style>` is stripped. */
 export function stripChromeFromRaw(html: string, revealedIds: Set<string>): string {
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
-  // Extract the <body> (handles an omitted </head> — findElements pairs on <body>…</body>, not
-  // </head>) so a <title>'s RCDATA like "HTML <nav> element guide" is excluded before chrome
-  // stripping. Falls back to stripping <head> when there's no <body> tag (#160 codex r5/r6).
-  const body = extractBodyHtml(html) ?? stripElement(html, "head");
-  const withoutCode = ["script", "style", "noscript", "template"].reduce((v, tag) => stripElement(v, tag), body);
-  return stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses, revealedIds)));
+  const inert = stripHtmlComments(["title", "script", "style", "noscript", "template"].reduce((v, tag) => stripElement(v, tag), html));
+  const body = extractBodyHtml(inert) ?? inert;
+  return stripChrome(stripHiddenSubtrees(body, hiddenClasses, revealedIds));
 }
 
 /**
