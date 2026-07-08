@@ -38,9 +38,16 @@ export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
   // Otherwise an SPA shell whose static HTML carries only nav/TOC chrome (<p>/<h2> in <nav>/<aside>)
   // satisfies the shell-gate's hasContent threshold and ships the nav menu as "content" instead of
   // escalating to render (#144 — Jira REST v3: 13,630 chars of chrome, article JS-only).
-  const text = html ? extractVisibleText(selectMainContentHtml(input.html, revealedIds) ?? stripChromeFromRaw(input.html, revealedIds), revealedIds) : input.html;
+  // The visible-text scope: a main-content landmark (<article>/<main>) when present, else the full
+  // page MINUS site chrome (aside/nav/footer, fully pre-cleaned). An SPA shell whose static HTML
+  // carries only nav/TOC chrome then doesn't satisfy the shell-gate + escalates to render (#144).
+  const scope = html ? (selectMainContentHtml(input.html, revealedIds) ?? stripChromeFromRaw(input.html, revealedIds)) : input.html;
+  const text = html ? extractVisibleText(scope, revealedIds) : input.html;
   const shellGate = evaluateShellGate({
     html: input.html,
+    // hasContent's tag-check runs against the SAME scope the text came from, so a chrome <h2>/<p>
+    // outside the scope can't satisfy it on a borderline-short body (#160 codex).
+    contentHtml: scope,
     text,
     structured: metadata.structured,
     contentType: input.contentType,

@@ -11,6 +11,11 @@ export function evaluateShellGate(input: {
   text: string;
   structured: StructuredData;
   contentType?: string;
+  /** The HTML scope the `text` was extracted from (a scoped <article> or the chrome-stripped
+   *  no-landmark fallback). hasContent's tag-check runs against THIS, not the full page, so a
+   *  chrome `<h2>`/`<p>` outside the scope can't satisfy it (#160 codex). Defaults to `html`
+   *  (full page) — scriptCount/appRoot still use `html`. */
+  contentHtml?: string;
 }): ShellGateEvidence {
   const wordCount = input.text ? input.text.split(/\s+/).length : 0;
   const evidence = {
@@ -35,7 +40,7 @@ export function evaluateShellGate(input: {
     return { ...evidence, jsRequired: false, reason: "structured-data-found" };
   }
 
-  if (hasContent(input.html, evidence.textLength, evidence.wordCount)) {
+  if (hasContent(input.contentHtml ?? input.html, evidence.textLength, evidence.wordCount)) {
     return { ...evidence, jsRequired: false, reason: "content-present" };
   }
 

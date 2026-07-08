@@ -89,6 +89,18 @@ test("shell-gate: a fake <nav> in a comment or <style> does not delete the real 
   assert.equal(extractHtml({ html: styled, url: "https://x.test/s" }).shellGate.jsRequired, false, "a <style>'s <nav> must not delete the body");
 });
 
+test("shell-gate: a chrome <h2>/<p> outside the text scope doesn't satisfy hasContent (#160 codex r3)", () => {
+  // A no-landmark SPA whose stripped body is a short placeholder (20-79 chars) but whose removed
+  // chrome carries an <h2>: hasContent's tag-check must run on the STRIPPED scope, not the full
+  // page, else the chrome tag satisfies it and the shell skips render (returns only the placeholder).
+  const html = '<html><body>'
+    + '<nav><h2>REST API v3</h2><a>About</a></nav>'
+    + '<div id="root">Loading documentation shell</div>'
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://jira.test/rest" }).shellGate;
+  assert.equal(gate.jsRequired, true, "a chrome h2 outside the scope must not satisfy hasContent");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no
