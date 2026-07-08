@@ -7,8 +7,7 @@
 // Conservative by design: each requires multiple strong signals so a legitimate page is not
 // false-positive'd. Better to miss a thin page than to mislabel real content.
 import type { Result } from "../domain/result.ts";
-import { primaryTypes } from "./classify.ts";
-import { CONTENT_TITLE_TYPES } from "./use-cases/tier1-payload.ts";
+import { hasContentBearingJsonLd } from "../domain/content-bearing.ts";
 
 export type ContentQuality = "app_error" | "low_value";
 
@@ -48,7 +47,9 @@ function detectLowValue(result: Result): boolean {
   // small `bytes` but large `egressBytes`, so the threshold must use the network size (#159 codex).
   if ((result.egressBytes ?? result.bytes) < LOW_VALUE_MIN_BYTES) return false;
   if (!GENERIC_TITLES.has((result.title ?? "").trim().toLowerCase())) return false;
-  return !primaryTypes(result.structured?.jsonLd).some((t) => CONTENT_TITLE_TYPES.has(t));
+  // Reuse the shell-gate's exact content-bearing predicate (a @type node OR a content property OR a
+  // nested mainEntity/about entity) — not a narrower allowlist, so the two never drift (#159 codex).
+  return !hasContentBearingJsonLd(result.structured?.jsonLd);
 }
 
 /** Classify content quality: "app_error" (demote) or "low_value" (warn). undefined = normal. App-error

@@ -2,7 +2,7 @@ import type { ShellGateEvidence } from "../../domain/shell-gate.ts";
 import type { StructuredData } from "../../domain/platform.ts";
 import { isHtmlContentType } from "../http/body.ts";
 import { findStartTags } from "./html.ts";
-import { shortSchemaType } from "./images.ts";
+import { hasContentBearingJsonLd } from "../../domain/content-bearing.ts";
 
 const APP_ROOT_IDS = new Set(["__next", "app", "gatsby-focus-wrapper", "root", "svelte"]);
 
@@ -57,75 +57,9 @@ export function hasUsableStructuredData(structured: StructuredData): boolean {
   return hasContentBearingAppState(structured.appState);
 }
 
-/** @type values that are page-structure METADATA, not content. A node typed ONLY as one of these
- *  is "scaffolding" — it labels the page (name/url) but carries no body content, so it must not
- *  satisfy the shell-gate on its own. JetBrains/Writerside ship WebPage nodes with an empty
- *  description as routing metadata; treating those as content let a true empty shell stop at Tier-1
- *  and return no content (#109, dual of #81). Data types (Article/Product/JobPosting/…) and nodes
- *  with a non-@type key still count via the general rule below. Lowercased to match
- *  shortSchemaType, which also flattens full-IRI forms like https://schema.org/WebPage. */
-const SCAFFOLDING_TYPES = new Set([
-  "webpage", "website", "collectionpage", "searchresultspage", "itempage",
-  "breadcrumblist", "sitenavigationelement", "aboutpage", "contactpage", "profilepage",
-]);
-
-/** schema.org text properties whose non-empty value means real body content an agent can use. */
-const CONTENT_PROPERTIES = new Set(["description", "articleBody", "text", "headline", "abstract", "caption", "body"]);
-
-function nodeTypes(node: Record<string, unknown>): string[] {
-  const type = node["@type"];
-  const raw = typeof type === "string" ? [type] : Array.isArray(type) ? type.filter((t): t is string => typeof t === "string") : [];
-  return raw.map(shortSchemaType);
-}
-
-/** A node typed ONLY with scaffolding @types (e.g. WebPage) — needs a content property to count. */
-function isScaffoldingOnly(node: Record<string, unknown>): boolean {
-  const types = nodeTypes(node);
-  return types.length > 0 && types.every((t) => SCAFFOLDING_TYPES.has(t));
-}
-
-function hasNonEmptyContentProp(node: Record<string, unknown>): boolean {
-  return Object.entries(node).some(
-    ([key, value]) => CONTENT_PROPERTIES.has(key) && typeof value === "string" && value.trim().length > 0,
-  );
-}
-
-/** schema.org properties that link a page-wrapper (WebPage/…) to its primary inline content
- *  entity. A URL string here is a reference, not content — only inline objects are followed. */
-const NESTED_CONTENT_LINKS = ["mainEntity", "mainEntityOfPage", "about", "subject", "hasPart"];
-/** Cap on chained scaffolding-wrapper descent (mainEntity → …) — guards isPartOf/hasPart cycles. */
-const MAX_NESTED_DEPTH = 4;
-
-function hasNestedContent(node: Record<string, unknown>, depth: number): boolean {
-  if (depth >= MAX_NESTED_DEPTH) return false;
-  return NESTED_CONTENT_LINKS.some((key) => {
-    const value = node[key];
-    return value !== undefined && value !== null && typeof value === "object"
-      && hasContentBearingJsonLd(value as Record<string, unknown>, depth + 1);
-  });
-}
-
-/**
- * Whether JSON-LD actually carries content an agent can use WITHOUT rendering — a
- * typed node or a real data property. `null` / `[]` / `{}` / a context-only
- * `{"@context":…}` node do NOT count: those are common on client-rendered SPA shells,
- * and treating any-defined jsonLd as usable let an empty `<script type="ld+json">[]`
- * stop a true empty shell from rendering, returning no content (#81). Recurses arrays
- * and `@graph`. A scaffolding-only node (WebPage/WebSite/…) counts with a non-empty content
- * property OR a content-bearing nested entity (mainEntity/about/…) (#109). (Trivial JSON-LD is
- * still harvested into `structured` for output.)
- */
-function hasContentBearingJsonLd(jsonLd: unknown, depth = 0): boolean {
-  if (Array.isArray(jsonLd)) return jsonLd.some((n) => hasContentBearingJsonLd(n, depth));
-  if (!jsonLd || typeof jsonLd !== "object") return false;
-  const node = jsonLd as Record<string, unknown>;
-  if (hasContentBearingJsonLd(node["@graph"], depth)) return true;
-  if (isScaffoldingOnly(node)) {
-    return hasNonEmptyContentProp(node) || hasNestedContent(node, depth);
-  }
-  // A real node declares a @type or carries a data property beyond @context/@id/@graph.
-  return Object.keys(node).some((key) => key !== "@context" && key !== "@id" && key !== "@graph");
-}
+/** Whether JSON-LD carries usable content is decided by the shared domain predicate
+ *  `hasContentBearingJsonLd` (imported above) — also used by content-quality so the two never
+ *  drift on what counts as real content (#159 codex). */
 
 const CONTENT_BEARING_APP_STATE_KEYS = new Set([
   "__NEXT_DATA__",

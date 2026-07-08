@@ -13,7 +13,7 @@ import { isPinDetailPage } from "../classify.ts";
  * embed on an unrelated page, not the subject — surfacing a pin's caption is
  * handled separately in leadDescription (pass 2) so it can never steal the title.
  */
-export const CONTENT_TITLE_TYPES = new Set([
+const CONTENT_TITLE_TYPES = new Set([
   "jobposting", "article", "newsarticle", "blogposting", "techarticle",
   "scholarlyarticle", "report", "product", "event", "recipe", "course",
   "review", "webapplication", "softwareapplication", "videoobject",

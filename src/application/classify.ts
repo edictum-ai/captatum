@@ -148,7 +148,7 @@ function needsRender(result: Result): boolean {
 }
 
 /** Collect every short schema.org @type across top-level nodes and @graph. */
-export function primaryTypes(jsonLd: unknown): string[] {
+function primaryTypes(jsonLd: unknown): string[] {
   const types: string[] = [];
   for (const node of asArray(jsonLd)) {
     if (!isRecord(node)) continue;
