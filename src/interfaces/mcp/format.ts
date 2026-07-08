@@ -19,11 +19,15 @@ function formatAttempt(a: AttemptTrace): string {
 export function resultToMcpText(result: Result, includeTextDebug = false): string {
   const provenance = provenanceLine(result);
   if (result.output === "raw") {
-    // A raw Tier-2 roster (any application/json body) must stay parseable JSON for clients that read
-    // content[0].text as JSON, so omit the comment for JSON bodies (it remains in structuredContent).
-    // HTML/text raw bodies still get the prepended provenance line. (Debug-in-text never applies to
-    // raw — the caller asked for clean content.)
-    if (isJsonBody(result)) return result.result;
+    // A raw JSON body (application/json or +json) stays parseable JSON for clients that read
+    // content[0].text as JSON, so omit the comment — UNLESS the body was truncated. A truncated
+    // JSON body is partial/unparseable anyway (the "stay parseable" rationale no longer holds),
+    // so prepend the provenance comment (carrying truncated=) so a text-forward/CLI client still
+    // sees the transport-unreliable signal (#149 codex P1). HTML/text raw always gets the comment.
+    if (isJsonBody(result)) {
+      const truncated = result.errors.some((e) => e.code === "max_bytes" || e.code === "body_read_error");
+      return truncated ? `${provenance}\n${result.result}` : result.result;
+    }
     return `${provenance}\n${result.result}`;
   }
   const header = envelopeHeader(result);

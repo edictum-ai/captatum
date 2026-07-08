@@ -58,6 +58,11 @@ test("resultToMcpText provenance carries truncated= for a mid-read transport tru
   assert.doesNotMatch(resultToMcpText(summaryResult(), false), /truncated=/);
   // Raw output ALSO carries it — the raw path has no envelope header, so this is the ONLY signal.
   assert.match(resultToMcpText(summaryResult({ output: "raw", result: "<html>partial</html>", errors: transportErr }), false), /truncated=body_read_error/);
+  // #149 codex P1: a raw JSON body normally omits the comment (stays parseable JSON), but a TRUNCATED
+  // raw JSON body is partial/unparseable anyway, so the comment (with truncated=) is prepended — the
+  // text-forward client still sees the signal. A clean raw JSON body stays comment-free (parseable).
+  assert.equal(resultToMcpText(summaryResult({ output: "raw", contentType: "application/json", result: '{"jobs":[]}', errors: [] }), false), '{"jobs":[]}', "clean raw JSON stays parseable (no comment)");
+  assert.match(resultToMcpText(summaryResult({ output: "raw", contentType: "application/json", result: '{"jobs":[1,2', errors: transportErr }), false), /^<!-- captatum .*truncated=body_read_error/, "truncated raw JSON prepends the provenance comment");
 });
 
 test("resultToMcpText with textDebug appends a diagnostics block for non-raw output", () => {
