@@ -101,6 +101,14 @@ test("shell-gate: a chrome <h2>/<p> outside the text scope doesn't satisfy hasCo
   assert.equal(gate.jsRequired, true, "a chrome h2 outside the scope must not satisfy hasContent");
 });
 
+test("shell-gate: a short legitimate <article> (no inner tags) resolves, not falsely escalated (#160 codex r4)", () => {
+  // A selected landmark IS content even if short + tagless — the scope is the article's INNER html
+  // (no <article> wrapper), so hasContent must not require the tag-check for it.
+  const html = '<html><body><article>Short but legitimate article body.</article></body></html>';
+  const gate = extractHtml({ html, url: "https://x.test/a" }).shellGate;
+  assert.equal(gate.jsRequired, false, "a short selected <article> must not be falsely escalated");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no
