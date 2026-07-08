@@ -37,6 +37,7 @@ export function buildStructuredContent(result: Result, debug: boolean): Record<s
     platform: result.platform,
     jsRequired: result.jsRequired,
     access,
+    ...(result.contentQuality ? { contentQuality: result.contentQuality } : {}),
     provenance: {
       tier: result.tier,
       resolvedVia: result.resolvedVia,

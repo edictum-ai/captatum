@@ -469,8 +469,9 @@ Default (lean) `structuredContent`:
   tier, code, codeText, bytes,         // kept for existing consumers
   resolvedVia, platform, jsRequired,
   access: { mainContentAccessible, gated, gateReason: "paywall"|"js-required"|"captcha"|"byte_cap"|"http_error"|"none" },
+  contentQuality?: "app_error" | "low_value",   // present only when a successful fetch's bytes aren't real/usable content (#145/#150)
   provenance: { tier, resolvedVia, code, bytes },     // convenience envelope
-  warnings: [{ code, message }],       // non-fatal (tier !== "error"): advisories, render-failed-but-tier1-ok, byte-cap truncation, extract_schema_invalid, transform_truncated
+  warnings: [{ code, message }],       // non-fatal (tier !== "error"): advisories, render-failed-but-tier1-ok, byte-cap/body_read_error truncation, extract_schema_invalid, transform_truncated, low_value_extraction
   images: ["https://…"],               // bounded absolute http(s) URLs for optional multimodal vision fetch
   errors: [{ code, message }],         // fatal only (tier === "error")
   transform: { provider, model?, free?, inTokens?, outTokens? },   // lean token-efficiency signal; present when a transform ran
@@ -484,6 +485,7 @@ Rules:
 - **contentType:** `json` when the response's HTTP content-type is `application/json` (or a `+json` suffix); else `pin` for pinterest.*/pin.it hosts; else from the first content-bearing JSON-LD `@type` (`JobPosting`→job, `Product`→product, Article family→article); else `og:type`; else `spa` when `jsRequired`; else `unknown`.
 - **images:** never fetched by this service — surfaced for the calling agent's optional vision fetch. Private/loopback hosts are stripped (string check, no DNS).
 - **result:** snippeted to ~2000 chars in `structuredContent` when large; the full text is always delivered as MCP `content[0].text` (the primary agent channel), so mirroring a huge body in the structured payload would only duplicate tokens. Summaries are small and pass through unchanged.
+- **contentQuality:** present only when a SUCCESSFUL fetch's bytes aren't real/usable content (#145/#150), so an agent never mistakes HTTP success for content success. `"app_error"` = the page is a client-app error-boundary screen (HTTP 200, non-empty crash text like "Something went wrong") that the render promoted — **demoted to `tier:"error"`** (status `fail`) with a `render_app_error` error; the crash text stays in `result` for the agent to read. `"low_value"` = HTTP success but near-empty useful content (e.g. a rendered SPA whose visible text is just "Careers") — a **non-fatal `low_value_extraction` warning** (status `partial`). Both detectors are conservative (multiple strong signals: a short result matching a known crash signature; or large bytes ≫ tiny text + a generic title + no content-bearing JSON-LD) to avoid false-positive'ing legitimate short/generic pages. Absent = normal content.
 
 `debug: true` adds the heavy fields (`attempts`, `timings`, full `structured`
 including JSON-LD `description`/`articleBody`, `redirects`, `durationMs`,

@@ -91,6 +91,7 @@ function envelopeHeader(result: Result): string {
     result.title ? `title: ${clip(sanitizePrintable(result.title), 140)}` : null,
     `finalUrl: ${redactSignedQueryParams(result.finalUrl)}`,
     `access: ${access.gated ? `gated (${access.gateReason}${access.challengeProvider ? `: ${access.challengeProvider}` : ""})` : "public"}`,
+    result.contentQuality ? `contentQuality: ${result.contentQuality}` : null,
     `images: ${images.length}${images[0] ? ` (e.g. ${images[0]})` : ""}`,
     result.transform?.model ? `transformModel: ${result.transform.model}` : null,
   ];

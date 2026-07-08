@@ -340,3 +340,12 @@ test("access gating: paywall / byte_cap / login", () => {
   assert.deepEqual(jsRequired.access, { mainContentAccessible: false, gated: true, gateReason: "js-required" });
   assert.equal(jsRequired.status, "fail");
 });
+
+test("structuredContent surfaces contentQuality when set (#145/#150)", () => {
+  const appError = buildStructuredContent(base({ contentQuality: "app_error", tier: "error", result: "Something went wrong" }), false);
+  assert.equal(appError.contentQuality, "app_error");
+  const lowValue = buildStructuredContent(base({ contentQuality: "low_value" }), false);
+  assert.equal(lowValue.contentQuality, "low_value");
+  // Absent for normal content (the field is omitted, not null).
+  assert.equal(buildStructuredContent(base(), false).contentQuality, undefined);
+});
