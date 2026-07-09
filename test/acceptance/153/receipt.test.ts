@@ -82,18 +82,37 @@ test("C5: a summary→raw degrade stamps outputRequested on the result AND surfa
   assert.equal(buildStructuredContent(result, false).outputRequested, "summary", "the lean receipt forwards outputRequested");
 });
 
-// --- C9: outputRequested on a SUCCESS (non-degrade path). A completed summary carries
-//     outputRequested:"summary"; success never sets a transform.reason. ---
+// --- C9: outputRequested on a SUCCESS path. execute() drives a RESOLVING transform (NOT a throw,
+//     NOT provider:none) — proves STAMPING on the result + lean forwarding. NO fixture seeding. ---
 
-test("C9: a successful summary carries outputRequested:'summary'", () => {
-  const result = baseResult({
-    output: "summary",
-    outputRequested: "summary",
-    transform: { provider: "openrouter", model: "some-model", inTokens: 10, outTokens: 5 },
+test("C9: a successful summary stamps outputRequested on the result (success path, not just degrade)", async () => {
+  const text = "Some real page content for the success-path stamping proof.";
+  const b = new TextEncoder().encode(`<main>${text}</main>`);
+  const fetcher: FetcherPort = {
+    async fetchGuarded(): Promise<FetcherResult> {
+      return {
+        status: 200, finalUrl: "https://x.test/", redirects: [],
+        bodyStream: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(b); c.close(); } }),
+        contentType: "text/html; charset=utf-8", bytes: b.byteLength,
+      };
+    },
+  };
+  const extractHtml = (_input: HtmlExtractionInput): HtmlExtraction => ({
+    text, structured: {},
+    shellGate: { jsRequired: false, reason: "content-present", textLength: text.length,
+      wordCount: text.split(/\s+/).length, scriptCount: 0, appRootFound: false, structuredDataFound: false },
+    errors: [],
   });
-  const lean = buildStructuredContent(result, false);
-  assert.equal(lean.outputRequested, "summary");
-  assert.equal(lean.status, "pass", "a real summary is a pass, not a degrade");
+  const transformer: TransformPort = {
+    async transform() {
+      return { result: "summary body", info: { provider: "openrouter", model: "m", inTokens: 5, outTokens: 3 } };
+    },
+  };
+  const useCase = createCaptatumUseCase({ fetcher, extractHtml, transformer, adapters: new PlatformAdapterRegistry([]), clock: { nowMs: () => 0 } });
+  const result = await useCase.execute({ url: "https://x.test/", output: "summary" });
+  assert.equal(result.outputRequested, "summary", "applyOutputMode stamps outputRequested on the success path");
+  assert.equal(result.output, "summary", "a real summary is produced (success, not a degrade to raw)");
+  assert.equal(buildStructuredContent(result, false).outputRequested, "summary", "the lean receipt forwards outputRequested");
 });
 
 // --- C6: typed reason + status conformance fix. Any provider:"none" ⇒ status "partial"

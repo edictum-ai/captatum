@@ -190,8 +190,9 @@ test("C4: normalizeBulkInput throws extract_schema_unsupported_keyword for a uni
   assert.equal(err.body.error.code, "extract_schema_unsupported_keyword");
 });
 
-// --- C7: depth cap. A schema nested deeper than MAX_SCHEMA_DEPTH fails closed
-//     (extract_schema_too_deep); a deep-but-supported schema within the limit is accepted. ---
+// --- C7: depth cap. The boundary is pinned at MAX_SCHEMA_DEPTH: a schema AT the cap is accepted,
+//     one PAST it fails closed (extract_schema_too_deep). Matches the walker's depth > MAX
+//     semantics and self-aligns with the constant — if the cap changes, both cases track it. ---
 
 /** Build a schema with `levels` nested `properties.a` wrappings (all SUPPORTED keywords).
  *  Each level is one applied-subschema recursion for the walker. */
@@ -204,16 +205,20 @@ function nestedSchema(levels: number): unknown {
 }
 
 test("C7: MAX_SCHEMA_DEPTH constant is 64 (spec-pinned depth cap)", () => {
-  // Pin the contract via the constant. The fixed depths below (20 within / 200 over) are robust to
-  // any reasonable depth counting — the walker's exact off-by-one is implementation latitude, NOT
-  // contract, so MAX_SCHEMA_DEPTH±1 boundaries are deliberately avoided (they would freeze brittlely).
+  // Pin the contract via the constant. The boundary cases below pin at MAX_SCHEMA_DEPTH itself
+  // (within) and MAX_SCHEMA_DEPTH + 1 (over) — self-aligning with the constant so a future cap
+  // change moves both with it, matching the walker's depth > MAX rejection semantics.
   assert.equal(MAX_SCHEMA_DEPTH, 64, "spec: depth cap constant is 64");
 });
 
-test("C7: a schema nested 20 levels (all supported keywords) is accepted", () => {
-  // Fixed 20 is clearly within the 64 cap under any reasonable depth-counting convention.
-  const within = nestedSchema(20);
+test("C7: a schema nested MAX_SCHEMA_DEPTH (64) levels (all supported keywords) is accepted", () => {
+  // The boundary is pinned at MAX_SCHEMA_DEPTH: nestedSchema(MAX_SCHEMA_DEPTH) has its deepest node
+  // AT exactly the cap and is accepted (the walker rejects only when depth > MAX). Self-aligns with
+  // the constant — if the cap changes, this case tracks it.
+  const within = nestedSchema(MAX_SCHEMA_DEPTH);
   assert.equal(findUnsupportedSchemaKeyword(within), undefined);
+  // normalizeCaptatumInput must NOT throw for a schema exactly at the depth cap (proves fail-open
+  // at the boundary, not fail-closed one shy of it).
   const normalized = normalizeCaptatumInput({
     url: "https://x.test/",
     output: "extract",
@@ -222,9 +227,10 @@ test("C7: a schema nested 20 levels (all supported keywords) is accepted", () =>
   assert.equal(normalized.requestedOutput, "extract");
 });
 
-test("C7: a schema nested 200 levels is rejected as too_deep", () => {
-  // Fixed 200 is clearly over the 64 cap under any reasonable depth-counting convention.
-  const over = nestedSchema(200);
+test("C7: a schema nested MAX_SCHEMA_DEPTH + 1 (65) levels is rejected as too_deep", () => {
+  // The boundary is pinned at MAX_SCHEMA_DEPTH: nestedSchema(MAX_SCHEMA_DEPTH + 1) is ONE PAST the
+  // cap and is rejected (the walker rejects when depth > MAX). Self-aligns with the constant.
+  const over = nestedSchema(MAX_SCHEMA_DEPTH + 1);
   assert.equal(findUnsupportedSchemaKeyword(over)?.kind, "too_deep");
 
   const err = captureInputError(() =>
