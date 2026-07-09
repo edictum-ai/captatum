@@ -36,6 +36,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check
       - run: pnpm test
+      - run: pnpm run test:acceptance  # frozen acceptance suite (activated phases)
 
   images:
     needs: gate

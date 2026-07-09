@@ -44,6 +44,7 @@
     "smoke:stdio:process": "node --no-warnings src/dev/smoke-stdio-process.ts",
     "test": "node --test test/*.test.ts",
     "test:integration": "node --no-warnings --test test/integration/*.test.ts",
+    "test:acceptance": "node --no-warnings src/dev/acceptance-runner.ts",
     "smoke:hosted": "node --no-warnings src/dev/smoke-test.ts",
     "smoke:local": "node --no-warnings src/dev/smoke-stdio.ts && node --no-warnings src/dev/smoke-stdio-process.ts"
   },

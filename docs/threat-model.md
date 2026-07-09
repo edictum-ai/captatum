@@ -97,6 +97,15 @@ the contract reference; this file is the security reasoning.
   synchronous event loop. The byte budget is a backstop, not the primary control; it was
   raised 1 MB → 5 MB so deep-content pages whose article sits late in a large HTML body
   (e.g. Atlassian Jira REST docs, ~2.9 MB with the article at ~2.8 MB) are not beheaded.
+  `stripHtmlTags` is quote-aware (#146): it tracks `"`/`'` so a `>` inside a quoted attribute
+  value is not a tag terminator (was quote-blind → attacker-controllable Alpine/Vue/Tailwind
+  directive JS like `x-init="…if(a>b)…"` leaked into the visible-text feed — content-integrity
+  / prompt-injection-adjacent; malformed unterminated quotes fall back to the legacy first-`>`
+  so malformed input neither drops content nor leaks markup, ≤~2× per char on the malformed
+  tail, still linear). The `prescanMetaCharset` meta-tag-end scan (`src/infrastructure/http/charset.ts`)
+  was the same class of quote-blind bug (a `>` in a meta attr could hide the charset → mojibake)
+  and is fixed the same way. Residual: the extract layer remains hand-rolled (house rule prefers
+  a proven library); a wholesale replacement is a separate change.
 - Bounded transform generation: every provider call carries a bounded
   `max_tokens`/`num_predict` — the server default (`TRANSFORM_MAX_OUTPUT_TOKENS`,
   2000) when `budget` is omitted, clamped to a 4000 hard cap — so a missing budget
