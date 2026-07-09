@@ -1156,6 +1156,20 @@ test("stripHtmlTags replaces tags with spaces so words don't merge", () => {
   assert.match(out, /y/);
 });
 
+test("stripHtmlTags: a literal non-tag '<' with a quoted + later unquoted '>' keeps the trailing content (#166 codex P2)", () => {
+  // `< "foo>bar" >` is NOT a real tag (the '<' is followed by a space), so the quote-aware
+  // scan must NOT run (it would swallow the quoted `>` + the later unquoted `>` and DROP
+  // `threshold now`). It falls through to the legacy first-`>` (byte-identical to pre-fix).
+  const out = stripHtmlTags(`<p>Use < "foo>bar" > threshold now</p>`).replace(/\s+/g, " ").trim();
+  assert.match(out, /threshold now/, "the trailing visible content is not dropped");
+  // Regression: the #146-C fix still holds for a REAL opener with a quoted `>`.
+  assert.equal(
+    stripHtmlTags(`<div x-init="$nextTick(() => { if (a > b) { foo() } })">REAL</div>`).replace(/\s+/g, " ").trim(),
+    "REAL",
+    "a real opener with a quoted '>' still strips the whole tag (no JS leak)",
+  );
+});
+
 test("stripHtmlComments is linear on unterminated `<!--` and replaces with a space", () => {
   assert.equal(stripHtmlComments("<!--".repeat(50_000)), " "); // no '-->' → stop
   assert.equal(stripHtmlComments("a<!-- c -->b"), "a b");

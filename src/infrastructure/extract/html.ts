@@ -94,27 +94,27 @@ export function stripHtmlComments(html: string): string {
 }
 
 /** Remove `<...>` tag spans linearly → " ". Quote-aware (#146-C): a `>` inside a quoted attr
- *  (Alpine/Vue x-init="…if(a>b)…") is NOT a terminator — the tag end is the first UNQUOTED `>`.
- *  An unquoted `<` (next tag) means this opener is malformed → fall back to the legacy first-`>`
- *  so malformed input neither drops content nor leaks markup (byte-identical to pre-fix; ≤~2×/char). */
+ *  is NOT a terminator. Only a REAL opener (`<` + letter/`!`/`?`/`/`) gets the quote-aware scan;
+ *  a literal `<` and a malformed opener fall back to the legacy first-`>` (byte-identical to pre-fix). */
 export function stripHtmlTags(html: string): string {
-  let out = "";
-  let cursor = 0;
+  let out = "", cursor = 0;
   while (cursor < html.length) {
     const start = html.indexOf("<", cursor);
     if (start === -1) { out += html.slice(cursor); break; }
-    let quote: string | null = null;
-    let end = -1;
-    for (let i = start + 1; i < html.length; i += 1) {
-      const c = html[i];
-      if (quote) { if (c === quote) quote = null; continue; }
-      if (c === "\"" || c === "'") quote = c;
-      else if (c === ">") { end = i; break; }
-      else if (c === "<") break; // next tag → opener malformed (no `>`)
+    let quote: string | null = null, end = -1;
+    // Real opener → quote-aware; a literal '<' ("a < b", `< "f>g" >`) skips it so a quoted + later-unquoted '>' can't drop content. (#166 P2)
+    if (/[A-Za-z!?\/]/.test(html[start + 1] ?? "")) {
+      for (let i = start + 1; i < html.length; i++) {
+        const c = html[i];
+        if (quote) { if (c === quote) quote = null; continue; }
+        if (c === "\"" || c === "'") quote = c;
+        else if (c === ">") { end = i; break; }
+        else if (c === "<") break; // next tag → opener malformed (no `>`)
+      }
     }
-    if (end !== -1) { out += `${html.slice(cursor, start)} `; cursor = end + 1; continue; }
-    const legacy = html.indexOf(">", start + 1); // malformed → legacy recovery (pre-fix)
-    if (legacy !== -1) { out += `${html.slice(cursor, start)} `; cursor = legacy + 1; continue; }
+    if (end !== -1) { out += html.slice(cursor, start) + " "; cursor = end + 1; continue; }
+    const legacy = html.indexOf(">", start + 1); // literal '<' OR malformed opener → legacy (pre-fix)
+    if (legacy !== -1) { out += html.slice(cursor, start) + " "; cursor = legacy + 1; continue; }
     out += html.slice(cursor); break; // no `>` anywhere → rest is literal
   }
   return out;

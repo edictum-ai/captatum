@@ -4,8 +4,6 @@
 // so a page served as plain text/html with `<meta charset="windows-1252">` is not
 // mojibake'd (Café → CafÃ©). Internal to the HTTP body layer.
 
-import { findTagEnd } from "../extract/html.ts";
-
 /** WHATWG-ish charset prescan: inspect the first 1024 bytes (as an ASCII view
  *  where each byte < 128 maps to its char and bytes ≥ 128 become '_') for a
  *  `<meta charset=…>` (HTML5) or `<meta http-equiv=Content-Type
@@ -34,12 +32,20 @@ export function prescanMetaCharset(bytes: Uint8Array): string | undefined {
       cursor = at + 5;
       continue;
     }
-    const close = findTagEnd(lower, at); // quote-aware; lower.length if no unquoted `>`
-    // findTagEnd returns lower.length both for an unterminated tag and for one whose `>` is
-    // the last char (a short page, or a meta ending at the 1024-byte window edge). The char
-    // check disambiguates so a well-formed meta at EOF is not mistaken for unterminated
-    // (which would hide the charset → mojibake). (#146 charset sibling)
-    if (close >= lower.length && lower[lower.length - 1] !== ">") return undefined;
+    // Quote-aware meta tag end that records whether it terminated on an UNQUOTED `>`. The
+    // last char being `>` is NOT enough: `<meta charset="utf-8" data="x>` ends inside the open
+    // data= quote (the `>` is in-quote, not a real terminator) — trusting it would decode from
+    // malformed markup. Only a genuine unquoted `>` terminates; else the meta is malformed. (#166 P2)
+    let mq: string | null = null;
+    let close = lower.length;
+    let terminated = false;
+    for (let j = at; j < lower.length; j += 1) {
+      const ch = lower[j];
+      if (mq) { if (ch === mq) mq = null; continue; }
+      if (ch === "\"" || ch === "'") mq = ch;
+      else if (ch === ">") { close = j + 1; terminated = true; break; }
+    }
+    if (!terminated) return undefined;
     const cs = metaCharsetFromTag(lower.slice(at, close));
     if (cs) return cs;
     cursor = close;
