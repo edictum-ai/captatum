@@ -2,12 +2,26 @@
 
 - **Issue:** [#153](https://github.com/edictum-ai/captatum/issues/153) (bug, MED)
 - **Tier:** T3 — the caller-supplied JSON Schema for `output:"extract"` is **untrusted input**. This change adds keyword-allowlist validation at the **input boundary** (before any fetch/LLM), which crosses the trust boundary, so the full pipeline applies. Repo is Engineering OS tier **S**.
-- **Status:** v1 — awaiting independent critique.
+- **Status:** v2 — READY. One independent 3-lens critique (`…critique.md`) returned BLOCKED on a single defect (no depth cap on the new pre-fetch walker, justified by a false "body size bounds depth" claim). All 7 required changes are resolved below (§"Critique resolutions"). No open decision remains.
 - **Spec trailer for downstream PRs:** `Spec: docs/specs/153-extract-schema-input-validation.md`
+
+## Critique resolutions (v1 → v2)
+
+The critique's core security posture was confirmed sound (walker is a verified superset of `validateAt`'s traversal; fail-closed before egress; no schema value echoed; status simplification is a real conformance fix). v2 resolves:
+
+1. **(BLOCKER → fixed) Depth cap.** `findUnsupportedSchemaKeyword` now carries an explicit `MAX_SCHEMA_DEPTH = 64` and fails closed (`extract_schema_too_deep`) on exceed. v1's "no cap, matches `validateAt` precedent" was unsound: request-body **size** bounds total nodes, not nesting **depth** (a <1 MB body of nested objects reaches ~150K depth), and — decisively — the walker runs **pre-fetch, free to attack**, whereas `validateAt` is post-fetch/egress-rate-limited. The trust-boundary framing argues *for* a cap, not parity. The cap is also the **chokepoint**: a deep schema is rejected at input, so `validateAt` (same exposure, post-fetch) is protected for every captatum/bulk path. Threat-model wording corrected.
+2. **(P1 → fixed) Test-ripple enumerated.** v1 falsely claimed "verified-clean." Real ripple (all enumerated in §"Test impact"): `finalize.test.ts:10` (`"test"`→valid), `mcp-shape.test.ts:96/105` (drop degrade-only `reason` from a success fixture), `llm-transform.test.ts:264` (`"failed"`→`"transform_failed"`), and **two whole test bodies** `llm-transform.test.ts:163–186` + `188–215` (currently assert a *returned* `extract_schema_invalid` degrade; after the input fail-fast, `execute()` *throws* `extract_schema_unsupported_keyword` — rewrite to `assert.throws`). `format.ts:66` added to the reader sweep.
+3. **(P2 → decided) Walker ⊆ `validateAt` exactly.** v1 recursed into `$defs`/`definitions`, which `validateAt` **never** visits (no `$ref` support ⇒ `$defs` content is dead). Recursing there would *over-reject* schemas finalize accepts. **Dropped**: the walker visits exactly `validateAt`'s applied-subschema set. Tuple-form `items` (array) is **skipped** (`finalize` rejects it; recursing is unrequested machinery).
+4. **(P2 → decided) 7-value `TransformReason` kept, labeled scope expansion.** Preserves actionable router signal (`no_model_fit` ⇒ retry w/ larger budget; `unconfigured` ⇒ missing key). The ripple is inherent to narrowing+rename+fail-fast (all issue-required), not unique to 7 values. Narrows **both** `ModelPick.reason` and `TransformInfo.reason` (no casts; `ModelPick.reason` is genuinely a `noneReason` value in production).
+5. **(P2 → fixed) Path segments capped.** v1 capped only the offending key; the **property-name** path segment is also caller-controlled. Both are length-capped now.
+6. **(P2 → fixed) C2 strengthened** to an `execute()`-level assertion (fail-on-call fetcher + adapter) — honest proof of "before any fetch."
+7. **(Nits)** "four"→"five" `noneReason` values; `finalize` defense-in-depth stated as dead in the production call graph (retained for hypothetical direct-`TransformPort` callers); `outputRequested` stated as stamped on `applyOutputMode` + `rejectResult` only.
+
+**Layering (pre-finding, not from critique).** `captatum-input.ts` (application) cannot import `infrastructure/llm/json-schema.ts`. The supported-keyword set is **shared policy** both layers need, so it (and the pure walker + message helpers + depth cap) lives in a new **`src/domain/schema-allowlist.ts`**, imported by both `json-schema.ts` (infrastructure→domain, allowed) and `captatum-input.ts`/`bulk-input.ts` (application→domain, allowed).
 
 ## Problem (the bug)
 
-An `output:"extract"` call whose `schema` uses an unsupported JSON Schema keyword (the repro used `budget` — clearly meant for the *tool*, not the schema) returns a confusing, misleading error and silently degrades to `raw`:
+An `output:"extract"` call whose `schema` uses an unsupported JSON Schema keyword (the repro used `budget` — meant for the *tool*, not the schema) returns a confusing, misleading error and silently degrades to `raw`:
 
 ```
 captatum({ url, output: "extract",
@@ -17,129 +31,59 @@ captatum({ url, output: "extract",
   → output degraded to "raw" (after a full fetch + LLM round-trip)
 ```
 
-Two defects:
-
-1. **The error message visually lies.** `validateSupported`
-   (`src/infrastructure/llm/json-schema.ts:52-55`) emits
-   `` `${path} schema keyword "${key}" is not supported` `` with `path = "$"`. That renders
-   as **`$ schema keyword "budget"`**, which the eye reads as **`$schema keyword "budget"`** —
-   implicating `$schema` (which *is* supported) instead of the real offender `budget`.
-2. **The check runs only AFTER fetch + LLM** (`finalize.ts:49`, inside the transform). A
-   schema that can never produce a valid extract still burns a network round-trip + a paid
-   model call before being rejected, then degrades to `raw` with no receipt field saying what
-   the caller *asked for* or *why* it degraded. Hard to diagnose; wasteful.
-
-### Root cause
-
-`$schema` IS in `SUPPORTED_KEYS` (`json-schema.ts:8`); the offender was `budget`. The
-keyword-allowlist check (`validateSupported`) is correct in *result* (it does reject `budget`)
-but is (a) phrased so the key name merges into the path, and (b) invoked only from
-`validateAt`, which runs during `finalize` — i.e. after the fetch + transform.
+Two defects: (1) the message renders `$ schema keyword "budget"`, which the eye reads as `$schema keyword "budget"` — implicating `$schema` (supported) not `budget`; (2) the check runs only AFTER fetch + LLM (`finalize.ts:49`), wasting a round-trip + paid call before rejecting, with no receipt field saying what was asked for or why it degraded.
 
 ## Design
 
-Three changes, all contract-first (contract deltas in the next section).
+### (1) Rephrase the message to lead with the offending key (both caller-controlled strings capped)
 
-### (1) Rephrase the message to lead with the offending key
-
-`validateSupported` (`src/infrastructure/llm/json-schema.ts`) leads with the key name and
-keeps the path visually separate. The key is the schema's own property name (untrusted data),
-so it is length-capped before interpolation and **no schema value is ever echoed** — the
-schema is treated as data, never a directive:
-
-```ts
-function validateSupported(schema: Record<string, unknown>, path: string): SchemaValidationResult {
-  const unsupportedKey = Object.keys(schema).find((key) => !SUPPORTED_KEYS.has(key));
-  return unsupportedKey
-    ? unsupported(`${messageForUnsupportedKeyword(unsupportedKey, path)}`)
-    : ok();
-}
-```
-
-`messageForUnsupportedKeyword` (shared by the input-boundary check and the finalize
-defense-in-depth path):
+`validateSupported` (`src/infrastructure/llm/json-schema.ts`) leads with the key name; the path stays visually separate. The key AND each property-name path segment are length-capped (≤80 chars + ellipsis) — both are caller-controlled, both subject to the no-bloat principle. **No schema value is ever echoed** (schema = data, never a directive). Shared helper in `domain/schema-allowlist.ts`:
 
 ```
 Unsupported JSON Schema keyword "budget" at $ — captatum cannot verify it; remove it.
 Unsupported JSON Schema keyword "format" at $.properties.email — captatum cannot verify it; remove it.
 ```
 
-The key name is truncated to ≤ 80 chars (an adversarial megabyte-long key must not bloat the
-error / receipt). The path (`$`, `$.properties.email`, …) is constructed by captatum — never
-echoes caller data beyond the property name.
+### (2) Fail-fast keyword-allowlist validation at the input boundary (+ depth cap)
 
-### (2) Fail-fast keyword-allowlist validation at the input boundary
-
-A new **pure, value-free** recursive walker exported from `json-schema.ts` walks the schema
-graph and returns the first keyword not in `SUPPORTED_KEYS` (with its path), or `undefined`.
-This is an **allowlist** (the issue's requirement: name what is permitted, not what is denied):
+New file **`src/domain/schema-allowlist.ts`** exports:
 
 ```ts
-export interface UnsupportedSchemaKeyword { key: string; path: string }
-export function findUnsupportedSchemaKeyword(schema: unknown): UnsupportedSchemaKeyword | undefined
+export const SUPPORTED_SCHEMA_KEYS: ReadonlySet<string>;      // moved from json-schema.ts (single source of truth)
+export const MAX_SCHEMA_DEPTH = 64;                            // >> any legit schema (~20); << V8 ~10K-frame stack
+export type SchemaKeywordFinding =
+  | { kind: "unsupported"; key: string; path: string }
+  | { kind: "too_deep"; path: string };
+export function findUnsupportedSchemaKeyword(schema: unknown): SchemaKeywordFinding | undefined;
+export function messageForUnsupportedKeyword(key: string, path: string): string;
 ```
 
-The walk recurses into every subschema location the JSON Schema subset defines:
-`properties.*`, `items`, `additionalProperties` (when a schema), `allOf`/`anyOf`/`oneOf.*`,
-`not`, `$defs.*`, `definitions.*`. It checks each node's own keys against `SUPPORTED_KEYS`
-exactly as `validateSupported` does, so the two never disagree. An object-identity visited
-`Set` guards against programmatic cycles (JSON.parse cannot cycle, but the guard is cheap
-defense-in-depth and matches `validateAt`'s pattern).
+The walker is **pure + value-free**, checks each node's own keys against `SUPPORTED_SCHEMA_KEYS` (identical check to `validateSupported`), and recurses into **exactly** the applied-subschema locations `validateAt` visits — `properties.*`, `items` (single-schema form only; tuple arrays skipped), `additionalProperties` (when a schema), `allOf`/`anyOf`/`oneOf` (each element), `not`. It does **not** visit `$defs`/`definitions` (dead — no `$ref`). It carries a `depth` counter; `depth > MAX_SCHEMA_DEPTH` ⇒ `{ kind: "too_deep" }` (fail-closed). An object-identity `seen` Set guards cycles (JSON.parse can't cycle; cheap defense). Per-node key order matches `Object.keys` (same as `validateSupported`), so the first offending keyword found agrees with finalize on any schema both visit.
 
-`normalizeCaptatumInput` (`src/application/use-cases/captatum-input.ts`) runs this **before
-returning** — i.e. before any fetch — and throws `CaptatumInputError` (→ JSON-RPC
-`InvalidParams` / HTTP `{error:{code,message}}`) when a finding is present:
+`normalizeCaptatumInput` (`src/application/use-cases/captatum-input.ts`) runs this **before returning** — before any fetch — and throws `CaptatumInputError` (→ JSON-RPC `InvalidParams` / HTTP `{error:{code,message}}`):
 
 ```ts
-// After parseInput, before building the normalized object:
 if (parsed.output === "extract" && parsed.schema !== undefined) {
   const finding = findUnsupportedSchemaKeyword(parsed.schema);
   if (finding) {
-    throw new CaptatumInputError(
-      "extract_schema_unsupported_keyword",
-      messageForUnsupportedKeyword(finding.key, finding.path),
-    );
+    if (finding.kind === "too_deep")
+      throw new CaptatumInputError("extract_schema_too_deep",
+        `JSON Schema nesting exceeds the supported depth (>${MAX_SCHEMA_DEPTH}); simplify it.`);
+    throw new CaptatumInputError("extract_schema_unsupported_keyword",
+      messageForUnsupportedKeyword(finding.key, finding.path));
   }
 }
 ```
 
-This rejects the repro **before any egress or LLM call**, with the now-clear message.
+**Sibling path.** `normalizeBulkInput` (`src/application/use-cases/bulk-input.ts`) gets the same check (a bad uniform schema would waste N fetches); it throws at the tool level before any seed (same severity as `too_many_urls`).
 
-**Sweep — sibling path.** `normalizeBulkInput` (`src/application/use-cases/bulk-input.ts`)
-accepts the same uniform `schema` + `output:"extract"`. A bulk extract with an unsupported
-keyword would otherwise waste **N** fetches. The same check is added there: a bad schema is a
-**whole-call** failure (it applies uniformly to every seed), so it throws `CaptatumInputError`
-(tool-level `InvalidParams`) before any seed is processed — the same severity as
-`too_many_urls`.
+**Defense-in-depth retained (dead in the production call graph).** `finalize.ts`'s unsupported-keyword branch is kept, not deleted. It is unreachable via captatum/bulk (normalize always runs first), and the only production `TransformPort` caller is `captatum.ts:159`. It is retained solely for a hypothetical future direct-`TransformPort` caller; its message uses (1) and its degrade reason becomes `schema_validation_failed` (3). `contracts.md` says "on the rare reach" — accurate.
 
-**Defense-in-depth retained.** The `finalize.ts` unsupported-keyword branch
-(`finalize.ts:52-58`) is kept, not removed. It is unreachable via the normal flow after (2)
-(normalize always runs before fetch), but the transform seam is a trust boundary in its own
-right: a future caller that invokes `TransformPort` directly (bypassing normalize) must still
-fail closed rather than accept unvalidated structured data. Its message is updated via (1) and
-its degrade reason becomes `schema_validation_failed` (see (3)).
+### (3) Enrich the receipt: `outputRequested` + typed `reason` enum
 
-**Recursion-depth note.** The walker recurses without an explicit depth cap, **matching the
-existing precedent** of `validateAt` (which recurses into the same untrusted schema without a
-cap). Total schema size is bounded upstream by the request-body size limit + `JSON.parse`, so
-practical nesting is bounded; the residual (deep-nesting stack pressure) is shared with the
-existing finalize path and is **not introduced** by this change. Recorded in
-`docs/threat-model.md`; iterative-walk + depth cap is noted as future hardening if profiling
-shows need. (A depth cap on *only* the new walker would diverge from the existing path for no
-net soundness gain — least machinery.)
+**(3a) `outputRequested?: Output`** on `Result` (`src/domain/result.ts`) — what the caller *requested* (vs `output`, the *actual* post-degrade output). Stamped on `applyOutputMode` (`base.outputRequested = request.requestedOutput`) and `rejectResult` — **not** on synthetic bulk error results (`bulk-seed.ts` `abortedSeedResult`/`wallAbandonedResult`/`syntheticFail`, which are `tier:error`/`fail` where it adds nothing). Surfaced in the lean `structuredContent`. Excluded from `computeProvenanceHash` (no hash ripple).
 
-### (3) Enrich the receipt: `outputRequested` + a typed `reason` enum
-
-**(3a) `outputRequested`.** Add `outputRequested?: Output` to `Result`
-(`src/domain/result.ts`) — the output the caller *requested*, distinct from `output` (the
-*actual* output after degradation). Stamped on every agent-facing Result: at the top of
-`applyOutputMode` (`base.outputRequested = request.requestedOutput`) and in `rejectResult`.
-Surfaced in the lean `structuredContent` (`src/interfaces/mcp/shape.ts`) so an agent can
-compare `output !== outputRequested` to detect a silent degrade — the issue's "hard to tell
-why it degraded" complaint.
-
-**(3b) Typed `TransformReason` enum.** `TransformInfo.reason` (`src/domain/result.ts:28`) is
-today a free `string`. It becomes a **closed union** of the *actual* degrade causes:
+**(3b) `TransformReason` typed union.** `TransformInfo.reason` (`src/domain/result.ts`) narrows `string` → closed union of the **actual** degrade causes:
 
 ```ts
 export type TransformReason =
@@ -148,128 +92,56 @@ export type TransformReason =
   | "model_unavailable"                     // caller-requested model not present
   | "no_model_fit"                          // candidates exist but none fit budget/context/supportsJson
   | "sensitive_content_no_local_provider"   // sensitive page; no local provider permitted
-  | "transform_failed"                      // provider ran but threw (LLM/network/invalid-JSON/billing)  [was "failed"]
+  | "transform_failed"                      // provider ran but threw (was "failed")
   | "schema_validation_failed";             // extract output failed schema validation (unsupported keyword)
 ```
 
-The issue lists three values (`schema_validation_failed | transform_failed | unconfigured`);
-this union is a **superset** — the four `noneReason` values (`router-helpers.ts:27-37`) are
-real degrade causes an agent can act on (e.g. `"no_model_fit"` ⇒ retry with a larger budget;
-`"unconfigured"` ⇒ a missing key, not a budget problem). Collapsing them into `"unconfigured"`
-would destroy actionable signal and *mislead* (providers can exist under `no_model_fit`). The
-issue's three are the high-level categories; the router contributes finer sub-reasons. All
-seven are "degraded" for status purposes (below).
+Issue #153 names 3 (`schema_validation_failed | transform_failed | unconfigured`); this is a **deliberate superset** — the 5 `noneReason` values (`router-helpers.ts:27-37`) are real, actionable degrade causes (collapsing `no_model_fit`→`unconfigured` would mislead). **Scope expansion, explicitly flagged.** Rename `"failed"`→`"transform_failed"` (`captatum.ts:174`); the catch maps `extract_schema_invalid`→`schema_validation_failed`, else `transform_failed`. `noneReason` returns `TransformReason`; `rawFallback` takes `TransformReason`; `ModelPick.reason` narrows `string`→`TransformReason` (genuinely a `noneReason` value in production — no cast).
 
-**Rename `failed` → `transform_failed`** (`captatum.ts:174`). The catch maps the
-`extract_schema_invalid` TransformError code to `schema_validation_failed`, every other thrown
-error to `transform_failed`:
+**(3c) Status conformance fix (related scope, not literal issue).** `provider:"none"` is set **only** on a degrade (verified at all four writers: `captatum.ts:145,174,185,194`; explicit-`raw` returns at `:137` before transform is set; `rejectResult` sets no transform). `contracts.md:484` **already** mandates `partial` when `transform.provider === "none"`. So `shape.ts:76` + `bulk-seed.ts:35`'s brittle reason allowlist (`reason === "failed" || "unconfigured"`) both under-reports (router sub-reasons today mislabel `pass`) **and** would break under the rename. Simplify both to `t && t.provider === "none"` ⇒ `partial`: a conformance fix, not a contract change.
 
-```ts
-const reason: TransformReason =
-  transformErrorCode(error) === "extract_schema_invalid" ? "schema_validation_failed" : "transform_failed";
-base.transform = { provider: "none", reason, latencyMs: transformMs, … };
-```
+## Contract changes (`docs/contracts.md`) — already landed in v1; v2 adds the too_deep code
 
-**Type ripple.** `noneReason` (`router-helpers.ts`) returns `TransformReason`; `rawFallback`
-takes `TransformReason`; `ModelPick.reason` (`application/ports/model-router.ts`) narrows from
-`string` to `TransformReason` (it is only ever set from `noneReason`). No new values invented.
+v1 landed: typed `TransformReason`; input-time `extract_schema_unsupported_keyword` reject; `outputRequested`; lean-payload `outputRequested`; `captatum_bulk` uniform-schema reject. **v2 adds** the `extract_schema_too_deep` hard-reject code (depth > 64) to the Error-shape input-validation list + the Transform § (alongside `extract_schema_unsupported_keyword`). The status rule (`provider:"none"`⇒`partial`) was already in the contract (code now conforms).
 
-**Status-classification simplification + latent-bug fix.** Two readers gate `status:"partial"`
-on a brittle reason-string allowlist:
-- `src/interfaces/mcp/shape.ts:76` — `t.provider === "none" && (t.reason === "failed" || t.reason === "unconfigured")`
-- `src/application/use-cases/bulk-seed.ts:35` — same.
+## Threat-model note (`docs/threat-model.md`) — corrected in v2
 
-`provider:"none"` is set **only** on a degrade-to-raw summary/extract (it never appears on a
-clean summary or an explicitly-`raw` request). So the reason-gated check is both brittle (the
-rename would break it) and a **latent bug**: a summary that degraded because `"no_model_fit"`
-/`"provider_unconfigured"`/`"model_unavailable"`/`"sensitive_content_no_local_provider"`
-currently reports `status:"pass"` — mislabeling a degrade as success, exactly the "hard to
-tell it degraded" complaint. Both readers simplify to `t && t.provider === "none"` (robust
-under the rename; fixes the latent bug; aligns with the issue's clarity goal).
+The `output:"extract"` schema is untrusted input validated at the input boundary against the `SUPPORTED_SCHEMA_KEYS` allowlist (`findUnsupportedSchemaKeyword`) — fail-closed before any egress/LLM. Allowlist (not blocklist); key + property-name path segment length-capped; **no schema value echoed** (schema = data). Same check on `captatum_bulk`'s uniform schema (whole-call reject). **Depth:** the walker carries `MAX_SCHEMA_DEPTH = 64` and fails closed (`extract_schema_too_deep`) on exceed. v1 mis-stated the implicit bound as the request-body *size* limit; the real implicit bound is **V8's `JSON.parse` recursion limit** (~thousands of levels — a deep body throws `RangeError` at parse, before the walker). The walker is the **more exposed** path (pre-fetch, free) vs `validateAt` (post-fetch, egress-rate-limited), so it gets the explicit cap; the cap is also the chokepoint that protects `validateAt` for all captatum/bulk paths. (A `RangeError` from either path is caught by `callCaptatum`/`callBulk` → `toMcpError` → `InternalError` — no crash vector; the cap removes the free-reachable error entirely.)
 
-## Contract changes (`docs/contracts.md`)
-
-1. **Transform §** (`extract` validation, ~L577): unsupported schema keywords are now
-   **rejected at the input boundary** (`extract_schema_unsupported_keyword`, JSON-RPC
-   `InvalidParams`, before any fetch/LLM), not as a post-LLM `extract_schema_invalid`. The
-   post-LLM unsupported-keyword path is retained only as defense-in-depth at the transform
-   seam. Supported-keyword value mismatches remain the non-fatal `extract_schema_invalid`
-   advisory (unchanged).
-2. **Transform §** (~L583): `reason` values are now the typed `TransformReason` set;
-   `"failed"` → `"transform_failed"`; add `"schema_validation_failed"`. Enumerate all seven.
-3. **Result schema §** (~L410/L426): add `outputRequested: "summary" | "raw" | "extract"`
-   (the requested output; `output` remains the actual post-degrade output).
-4. **structuredContent §** (~L448/L483): the lean payload carries `outputRequested`; `status`
-   is `partial` whenever `transform.provider === "none"` (any degrade reason — was a brittle
-   reason allowlist that under-reported).
-5. **Error shape §** (~L677/L699): add `extract_schema_unsupported_keyword` to the
-   input-validation reject codes (hard reject before egress; distinct from the non-fatal
-   `extract_schema_invalid` advisory). Note `extract_schema_invalid` is advisory-only,
-   unchanged.
-6. **captatum_bulk §** (~L98/L333): a bulk extract whose uniform `schema` uses an unsupported
-   keyword is a tool-level `extract_schema_unsupported_keyword` reject (before any seed),
-   consistent with `too_many_urls`.
-
-## Threat-model note (`docs/threat-model.md`)
-
-Add to the input/parsing controls: the `output:"extract"` schema is **untrusted input**
-validated at the **input boundary** against the `SUPPORTED_KEYS` allowlist
-(`findUnsupportedSchemaKeyword`) — fail-closed (`CaptatumInputError`) before any egress/LLM.
-Allowlist (not blocklist); the key name is length-capped and no schema value is echoed (schema
-= data, never a directive). Recursion-depth residual is shared with the pre-existing
-`validateAt` path (no depth cap on either; bounded in practice by request-body limit +
-JSON.parse) — not introduced here; iterative walk + depth cap noted as future hardening.
-
-## Sibling sweep inventory (the "fixed here, forgotten there" guard)
-
-Captatum sibling axes for this change and where each is handled:
+## Sibling-sweep inventory (complete, per critique)
 
 | Path | Surface | Handling |
 |---|---|---|
 | Single-fetch extract | `normalizeCaptatumInput` | (2) fail-fast throw |
-| **Bulk** extract | `normalizeBulkInput` | (2) fail-fast throw (whole-call) |
-| Transform seam (defense-in-depth) | `finalize.ts` unsupported branch | (1) new message + (3b) `schema_validation_failed` reason |
-| Degrade-reason readers | `shape.ts` classifyStatus, `bulk-seed.ts` | (3b) simplify to `provider==="none"` |
+| Bulk extract | `normalizeBulkInput` | (2) fail-fast throw (whole-call) |
+| Transform seam | `finalize.ts` unsupported branch | (1) message + (3b) `schema_validation_failed`; dead in prod, retained for direct-`TransformPort` |
+| Degrade-reason readers | `shape.ts` classifyStatus, `bulk-seed.ts`, **`format.ts:66`** (debug-text reason reader) | (3c) simplify to `provider==="none"` (shape/bulk-seed); `format.ts:66` renders the new value (display-only, no code change beyond the rename) |
 | Receipt degrade signal | `Result.outputRequested`, lean payload | (3a) |
 
-Grep confirms no other `transform.reason` constructor or `reason ===` reader outside the
-above (the bulk-result envelope `transform.reason` is a separate, loosely-typed shape and is
-left as-is — it carries the same values but is not a typed contract surface; a sweep grep at
-implementation time will re-confirm).
+`bulk-result.ts:30` (`transform?: { …, reason?: string }`) is a loose envelope the spec leaves as-is (not a typed contract surface). Audit log (`ln.tool`) carries no `reason` — unaffected.
+
+## Test impact (complete ripple — per critique P1)
+
+- `test/finalize.test.ts:10` — `RecordingRouter` fake `reason:"test"` → `"unconfigured"` (`ModelPick.reason` now `TransformReason`).
+- `test/mcp-shape.test.ts:96,105` — success-transform fixture `reason:"selected"` → **drop `reason`** (degrade-only; success never sets it). Keeps the leanTransform pass-through intent via a separate provider:`"none"` fixture if needed.
+- `test/llm-transform.test.ts:264` — `reason:"failed"` → `"transform_failed"` (rename).
+- `test/llm-transform.test.ts:163–186` + `188–215` — **rewrite**: currently assert a returned `{output:"raw", errors:[{code:"extract_schema_invalid",…}]}` for an extract schema with unsupported keywords (`format`; nested `anyOf`/`oneOf`/`not`). After (2), `execute()` throws `CaptatumInputError("extract_schema_unsupported_keyword")` before fetch → `assert.throws`. (Coverage of the retained finalize branch stays via `finalize.test.ts:56`.)
+- **New** (acceptance + unit): see C1–C9 below. Re-grep for other `ModelRouterPort` fakes at impl time.
 
 ## Acceptance criteria (frozen suite, `test/acceptance/153/`)
 
-Authored by a **different harness** than the coder, frozen (hash-manifest) in PR A, activated
-in PR B. The suite is pure/unit-level (no browser) and asserts DESIRED behavior:
+Authored by a **different harness**, frozen (hash-manifest) in PR A, activated in PR B. Pure/unit-level (no browser), asserts DESIRED behavior:
 
-- **C1 (message clarity):** `validateSupported`/`findUnsupportedSchemaKeyword` on
-  `{ ..., budget: 1 }` reports `budget` as the offender, and the message leads with
-  `Unsupported JSON Schema keyword "budget"` and does **not** contain `$schema` as the
-  implicated key. A `$schema`-only schema is accepted.
-- **C2 (input fail-fast, single):** `normalizeCaptatumInput({url, output:"extract",
-  schema:{...,budget:1}})` throws `CaptatumInputError` with code
-  `extract_schema_unsupported_keyword` **before any fetch** (no fetcher invoked). A supported
-  schema does not throw.
-- **C3 (nested):** an unsupported keyword nested in `properties.email` (`format`) is caught
-  at input with path `$.properties.email`.
-- **C4 (bulk fail-fast):** `normalizeBulkInput({urls:[...], output:"extract",
-  schema:{...,budget:1}})` throws `CaptatumInputError` (`extract_schema_unsupported_keyword`)
-  before any seed is processed.
-- **C5 (outputRequested):** a degraded summary→raw result carries
-  `outputRequested:"summary"` and `output:"raw"`; the lean `structuredContent` surfaces
-  `outputRequested`.
-- **C6 (typed reason + status):** a transform-failed degrade yields
-  `transform.reason:"transform_failed"` and `status:"partial"`; a `provider:"none"` degrade
-  for *any* reason (incl. `no_model_fit`) is `status:"partial"` (the latent-bug fix).
+- **C1 (message clarity):** `{ ..., budget: 1 }` reports `budget`; message leads with `Unsupported JSON Schema keyword "budget"` and does **not** contain `$schema` as the implicated key. A `$schema`-only schema is accepted.
+- **C2 (input fail-fast, single — at the `execute()` boundary):** `CaptatumUseCase.execute({url, output:"extract", schema:{...,budget:1}})` throws `CaptatumInputError` (code `extract_schema_unsupported_keyword`) with **zero** fetcher invocations AND **zero** adapter invocations (fail-on-call mocks) — honest proof of "before any fetch." (Plus the direct `normalizeCaptatumInput` unit assertion.)
+- **C3 (nested + path):** unsupported keyword nested in `properties.email` (`format`) caught at input, path `$.properties.email`.
+- **C4 (bulk fail-fast):** `normalizeBulkInput({urls:[...], output:"extract", schema:{...,budget:1}})` throws `extract_schema_unsupported_keyword` before any seed.
+- **C5 (outputRequested):** a degraded summary→raw carries `outputRequested:"summary"`, `output:"raw"`; lean `structuredContent` surfaces `outputRequested`.
+- **C6 (typed reason + status):** transform-failed degrade ⇒ `reason:"transform_failed"`, `status:"partial"`; a `provider:"none"` degrade for `no_model_fit` ⇒ `status:"partial"` (conformance fix).
+- **C7 (depth cap):** a schema nested > 64 deep ⇒ `CaptatumInputError("extract_schema_too_deep")` (no fetch); a 64-deep supported schema is accepted.
+- **C8 (finalize defense-in-depth):** `finalize()` called directly with an unsupported-keyword schema throws AND the resulting degrade reason (via the catch) is `schema_validation_failed`.
+- **C9 (outputRequested on success):** a successful summary carries `outputRequested:"summary"` (non-degrade path).
 
 ## Verify bar
 
-- `pnpm run check` (syntax + 250-line + typecheck), `pnpm test`, real-Chromium
-  `node --no-warnings --test test/integration/fixtures.test.ts` (NOT skipped),
-  `pnpm run smoke`, `pnpm run test:acceptance` (phase 153 active), and the process-guard
-  check (freeze-hash · mixed-diff · stage-artifact) all green.
-- **Real-input empirical verification (×N):** reproduce the issue's exact case end-to-end —
-  `captatum({url, output:"extract", schema:{$schema:"...", type:"object", properties:{...},
-  budget:...}})` — and confirm (a) it now rejects at input with the clear message and **no**
-  fetch, and (b) a valid extract schema still completes. Plus the supported-keyword mismatch
-  advisory path still returns parsed JSON + non-fatal `extract_schema_invalid`.
+`pnpm run check` (syntax + 250-line + typecheck), `pnpm test`, real-Chromium `node --no-warnings --test test/integration/fixtures.test.ts` (NOT skipped), `pnpm run smoke`, `pnpm run test:acceptance` (phase 153 active), process-guard (freeze-hash · mixed-diff · stage-artifact) — all green. **Real-input empirical ×N:** reproduce the issue's exact case end-to-end and confirm (a) it rejects at input with the clear message and **no** fetch, (b) a valid extract still completes, (c) the supported-keyword mismatch advisory still returns parsed JSON + non-fatal `extract_schema_invalid`.

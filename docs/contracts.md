@@ -701,7 +701,8 @@ transform/extract — are non-fatal advisories only; they never hard-reject a fe
 validation also hard-rejects, before any egress: `extract_schema_unsupported_keyword` for an
 `output:"extract"` schema using a keyword the validator cannot verify (allowlist fail-closed;
 distinct from the advisory `extract_schema_invalid`; applies to `captatum_bulk`'s uniform
-schema too). (#153)
+schema too), and `extract_schema_too_deep` for a schema whose nesting exceeds the supported
+depth (`> 64`; a pre-fetch DoS guard — the walker runs free, before any egress). (#153)
 For `body_read_error` specifically: when the response body stream breaks **mid-read
 after partial bytes arrived** (premature close / Content-Length mismatch /
 decompression truncation), `readCappedBody` returns those partial bytes with
@@ -726,7 +727,7 @@ not a tool-level error — partial failure is normal): `bulk_per_host_cap`,
 `tier2_board_not_supported_in_bulk`, `ashby_embed_not_supported_in_bulk`,
 `bulk_deadline_exceeded`, `bulk_budget_exceeded`. Tool-level errors for bulk are
 limited to input validation (`invalid_input` / `invalid_url` / `bulk_urls_empty` /
-`too_many_urls` / `extract_schema_unsupported_keyword` for an unsupported extract-schema keyword), auth, admission `OverloadedError` (`-32050`),
+`too_many_urls` / `extract_schema_unsupported_keyword` / `extract_schema_too_deep` for an unsupported or too-deep extract-schema keyword), auth, admission `OverloadedError` (`-32050`),
 `bulk_quota_exceeded` (retryable), and `bulk_quota_store_error` (fail-closed).
 `bulk_render_cap_exceeded` and `bulk_retried_429` are per-seed WARNINGS (the seed
 runs degraded), not fail codes.
