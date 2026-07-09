@@ -17,6 +17,23 @@ export interface AttemptTrace {
   reason?: string;
 }
 
+/** Why a summary/extract degraded to raw (`transform.provider: "none"`). Typed enum so the
+ *  receipt's degrade cause is a closed set (#153): `unconfigured` = no provider configured;
+ *  `unsupported_provider` = an unrecognized caller `transform.provider` override;
+ *  `provider_unconfigured`/`model_unavailable`/`no_model_fit`/`sensitive_content_no_local_provider`
+ *  from the model router when no candidate could be picked; `transform_failed` = the provider ran
+ *  and threw; `schema_validation_failed` = the extract output failed schema validation (normally
+ *  caught earlier at the input boundary). */
+export type TransformReason =
+  | "unconfigured"
+  | "unsupported_provider"
+  | "provider_unconfigured"
+  | "model_unavailable"
+  | "no_model_fit"
+  | "sensitive_content_no_local_provider"
+  | "transform_failed"
+  | "schema_validation_failed";
+
 export interface TransformInfo {
   provider: string;
   model?: string;
@@ -25,7 +42,8 @@ export interface TransformInfo {
   outTokens?: number;
   latencyMs?: number;
   costUsd?: number;
-  reason?: string;
+  /** Degrade cause when `provider` is "none" (typed enum, #153). Absent on a successful transform. */
+  reason?: TransformReason;
   /**
    * Non-fatal extract-schema mismatch message. When `output: extract` returns
    * parsed JSON that violates the requested schema, the data is still returned
@@ -77,6 +95,10 @@ export interface Result {
   redirects: Redirect[];
   tier: Tier;
   output: Output;
+  /** What the caller REQUESTED (vs `output`, the ACTUAL post-degrade mode). Stamped on the
+   *  `applyOutputMode` + `rejectResult` paths; differs from `output` when a summary/extract
+   *  degraded to raw. Absent on legacy/synthetic results. (#153) */
+  outputRequested?: Output;
   platform: Platform;
   jsRequired: boolean;
   resolvedVia: string;

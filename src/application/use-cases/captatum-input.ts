@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Output } from "../../domain/tier.ts";
 import type { TransformOverride } from "../ports/transformer.ts";
+import { findUnsupportedSchemaKeyword, MAX_SCHEMA_DEPTH, messageForUnsupportedKeyword } from "../../domain/schema-allowlist.ts";
 
 const CRLF = /[\r\n]|%0d|%0a/i;
 const DEFAULT_PROMPT = "Provide a concise summary of the page.";
@@ -97,11 +98,35 @@ export class CaptatumInputError extends Error {
   }
 }
 
+/**
+ * Fail-closed at the input boundary (#153): for `output:"extract"` with a caller schema, reject
+ * BEFORE any fetch/LLM if the schema uses an unsupported keyword (the validator is an allowlist of
+ * supported keywords, not a blocklist) or nests beyond the cap. The schema is untrusted DATA: only
+ * the (capped) key name + a captatum-constructed path enter the message; no schema value is echoed.
+ * Shared by `normalizeCaptatumInput` and `normalizeBulkInput` (bulk's uniform schema).
+ */
+export function assertExtractSchemaSupported(output: unknown, schema: unknown): void {
+  if (output !== "extract" || schema === undefined) return;
+  const finding = findUnsupportedSchemaKeyword(schema);
+  if (!finding) return;
+  if (finding.kind === "too_deep") {
+    throw new CaptatumInputError(
+      "extract_schema_too_deep",
+      `JSON Schema nesting exceeds the supported depth (>${MAX_SCHEMA_DEPTH}); simplify it.`,
+    );
+  }
+  throw new CaptatumInputError("extract_schema_unsupported_keyword", messageForUnsupportedKeyword(finding.key, finding.path));
+}
+
 export function normalizeCaptatumInput(
   value: unknown,
   defaults: CaptatumDefaults = DEFAULT_CAPTATUM_DEFAULTS,
 ): NormalizedCaptatumInput {
   const parsed = parseInput(value);
+  // Fail fast at the INPUT boundary (#153): an extract schema using an unsupported keyword
+  // (or nesting beyond the cap) cannot be verified, so reject before any fetch/LLM rather than
+  // degrading post-transform. Shared with captatum_bulk's uniform schema (assertExtractSchemaSupported).
+  assertExtractSchemaSupported(parsed.output, parsed.schema);
   const url = normalizeContractUrl(parsed.url);
   return {
     url,

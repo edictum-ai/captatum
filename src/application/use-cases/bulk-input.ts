@@ -14,6 +14,7 @@ import type { Output } from "../../domain/tier.ts";
 import type { TransformOverride } from "../ports/transformer.ts";
 import type { ValidatedSeed } from "../../domain/bulk-policy.ts";
 import {
+  assertExtractSchemaSupported,
   CaptatumInputError,
   DEFAULT_CAPTATUM_DEFAULTS,
   normalizeContractUrl,
@@ -92,6 +93,10 @@ export interface NormalizedBulkInput {
  */
 export function normalizeBulkInput(value: unknown): NormalizedBulkInput {
   const parsed = parseInput(value);
+  // Fail fast at the input boundary (#153): a uniform extract schema using an unsupported keyword
+  // would otherwise waste N fetches. A bad schema is a whole-call (tool-level) reject, thrown before
+  // any seed is processed — same severity as too_many_urls.
+  assertExtractSchemaSupported(parsed.output, parsed.schema);
   const request: NormalizedBulkRequest = {
     prompt: parsed.prompt ?? DEFAULT_PROMPT,
     requestedOutput: parsed.output ?? "raw",
