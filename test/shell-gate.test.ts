@@ -147,6 +147,18 @@ test("shell-gate: real content BEFORE an unterminated <nav> is preserved, not dr
   assert.equal(extractHtml({ html, url: "https://x.test/u" }).shellGate.jsRequired, false, "content before an unterminated <nav> must survive");
 });
 
+test("shell-gate: NESTED chrome (<nav>…<nav>…</nav>…</nav>) doesn't leave leftover chrome (#160 codex r10)", () => {
+  // A non-nesting-aware strip pairs the outer <nav> open with the inner </nav> close, leaving the
+  // outer nav's trailing chrome (>= 80 chars) in the scope → hasContent → no render. The nesting-
+  // aware stripChromeElement pairs the outer open with its MATCHING close (depth-aware) → no leftover.
+  const html = '<html><body>'
+    + '<nav>menu<nav>sub</nav>' + "chrome text ".repeat(10) + '</nav>'  // nested nav; trailing chrome crosses the threshold
+    + '<div id="root"></div>'
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://x.test/n" }).shellGate;
+  assert.equal(gate.jsRequired, true, "nested <nav> must not leave leftover chrome that satisfies hasContent");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no

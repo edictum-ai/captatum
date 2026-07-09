@@ -1,6 +1,6 @@
 import { collectHiddenDisplayNoneClasses } from "./hidden-classes.ts";
 import { revealedReactBoundaryIds, stripHiddenSubtrees } from "./hidden.ts";
-import { extractBodyHtml, extractVisibleText, findElements, stripElement, stripHtmlComments } from "./html.ts";
+import { extractBodyHtml, extractVisibleText, findCloseTag, findElements, findStartTags, findTagEnd, stripElement, stripHtmlComments } from "./html.ts";
 
 /**
  * <main> overrides the best <article> only when it is substantially richer. Calibrated against
@@ -34,10 +34,41 @@ export const SKELETON_ARTICLE_MAX_CHARS = 1000;
  * article pick by out-lengthing the real article. Verified no existing fixture places these tags
  * inside <main>, so the strip is fixture-safe. (#108)
  */
+/** Depth-aware matching close for a chrome tag — pairs an outer open with its MATCHING close, not
+ *  the inner's (handles nested same-tag chrome like `<nav>…<nav>…</nav>…</nav>`) (#160 codex r10). */
+function findMatchingClose(lower: string, close: string, opens: readonly { start: number }[], openIdx: number, from: number): number {
+  let depth = 1, search = from, nextOpenIdx = openIdx + 1;
+  for (;;) {
+    const nc = findCloseTag(lower, close, search);
+    if (nc === -1) return -1;
+    const no = nextOpenIdx < opens.length ? opens[nextOpenIdx].start : -1;
+    if (no !== -1 && no < nc) { depth++; nextOpenIdx++; search = no + 1; }
+    else { if (--depth === 0) return nc; search = nc + close.length; }
+  }
+}
+
+/** Nesting-aware chrome strip: pairs each open with its matching close (depth-aware), and an
+ *  unterminated chrome element (no close) is stripped to end (keep text-before). Replaces the
+ *  non-nesting-aware stripElement for aside/nav/footer so nested menus don't leave leftover chrome. */
+function stripChromeElement(html: string, tagName: string): string {
+  const wanted = tagName.toLowerCase();
+  const lower = html.toLowerCase();
+  const opens = findStartTags(html, wanted);
+  const close = `</${wanted}`;
+  let out = "", cursor = 0;
+  for (let i = 0; i < opens.length; i++) {
+    const tag = opens[i];
+    if (tag.start < cursor) continue;
+    const closeStart = findMatchingClose(lower, close, opens, i, tag.end);
+    if (closeStart === -1) return out + html.slice(cursor, tag.start); // unterminated: keep before, drop opener+remainder
+    out += `${html.slice(cursor, tag.start)} `;
+    cursor = findTagEnd(html, closeStart + 2);
+  }
+  return out + html.slice(cursor);
+}
+
 function stripChrome(html: string): string {
-  // stripUnterminated: a malformed-but-tolerated <nav>/<aside>/<footer> with no close tag extends
-  // to </body> (browser auto-close), so its content is chrome — strip it to end, not keep it.
-  return stripElement(stripElement(stripElement(html, "aside", true), "nav", true), "footer", true);
+  return stripChromeElement(stripChromeElement(stripChromeElement(html, "aside"), "nav"), "footer");
 }
 
 /** Equivalent to the landmark-selection pre-clean for the no-landmark fallback. Order matters: a

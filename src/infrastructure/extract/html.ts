@@ -230,7 +230,7 @@ export function stripElement(html: string, tagName: string, stripUnterminated = 
 }
 
 /** Find `</name` followed by a tag boundary (`>` `/` whitespace) at/after `from`. */
-function findCloseTag(lower: string, closeOpen: string, from: number): number {
+export function findCloseTag(lower: string, closeOpen: string, from: number): number {
   let search = from;
   for (;;) {
     const at = lower.indexOf(closeOpen, search);
