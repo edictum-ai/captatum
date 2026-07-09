@@ -118,6 +118,7 @@ test("C2 (unit): normalizeCaptatumInput throws extract_schema_unsupported_keywor
     }),
   );
   assert.equal(err.body.error.code, "extract_schema_unsupported_keyword");
+  assert.match(err.body.error.message, /Unsupported JSON Schema keyword "budget"/, "the clear message reaches the InvalidParams response, not just the code");
 });
 
 test("C2 (unit): a supported-keyword extract schema is accepted by normalizeCaptatumInput", () => {
@@ -190,6 +191,20 @@ test("C4: normalizeBulkInput throws extract_schema_unsupported_keyword for a uni
   assert.equal(err.body.error.code, "extract_schema_unsupported_keyword");
 });
 
+test("C4: normalizeBulkInput rejects a too-deep uniform schema before any seed", () => {
+  const err = captureInputError(() =>
+    normalizeBulkInput({ urls: ["https://x.test/"], output: "extract", schema: nestedSchema(MAX_SCHEMA_DEPTH + 1) }),
+  );
+  assert.equal(err.body.error.code, "extract_schema_too_deep");
+});
+
+test("C4: normalizeBulkInput rejects a tuple-form uniform schema before any seed", () => {
+  const err = captureInputError(() =>
+    normalizeBulkInput({ urls: ["https://x.test/"], output: "extract", schema: { type: "array", items: [{ type: "string" }] } }),
+  );
+  assert.equal(err.body.error.code, "extract_schema_tuple_unsupported");
+});
+
 // --- C7: depth cap. The boundary is pinned at MAX_SCHEMA_DEPTH: a schema AT the cap is accepted,
 //     one PAST it fails closed (extract_schema_too_deep). Matches the walker's depth > MAX
 //     semantics and self-aligns with the constant — if the cap changes, both cases track it. ---
@@ -257,4 +272,16 @@ test("C7b: tuple-form items are fail-closed at input (the value validator only a
     normalizeCaptatumInput({ url: "https://x.test/", output: "extract", schema: tupleSchema }),
   );
   assert.equal(err.body.error.code, "extract_schema_tuple_unsupported");
+});
+
+test("C7b: object-form items is still recursed (a nested unsupported keyword is caught, not skipped)", () => {
+  // Companion to the tuple case: a walker that special-cased array items but forgot to recurse the
+  // supported object form would let {items:{format:"email"}} reach fetch before the post-transform
+  // validator. Object-form items MUST be walked normally.
+  const schema = { type: "array", items: { type: "string", format: "email" } };
+  assert.equal(findUnsupportedSchemaKeyword(schema)?.kind, "unsupported");
+  const err = captureInputError(() =>
+    normalizeCaptatumInput({ url: "https://x.test/", output: "extract", schema }),
+  );
+  assert.equal(err.body.error.code, "extract_schema_unsupported_keyword");
 });
