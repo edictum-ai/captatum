@@ -179,3 +179,15 @@ test("normal extraction output is unchanged by the linearization", () => {
   assert.ok(extraction.text.includes("Chart label: $5"), "svg <text> data is inlined");
   assert.ok(!extraction.text.includes("SHOULD_NOT_APPEAR"), "display:none class content is stripped");
 });
+
+// REDOS-6 (#160 codex r15): the nesting-aware chrome strip's findMatchingClose must be LINEAR on
+// deeply nested same-tag chrome. The old per-open findCloseTag rescanned the same suffix for each
+// depth level → O(n²) — 13.6s on 51,200 nested <nav> tags. The batch-opens fix makes it O(n).
+test("extractHtml is linear on deeply nested <nav> chrome (REDOS-6)", () => {
+  assertLinear(
+    "extractHtml(nested-nav-flood)",
+    (n) => "<nav>".repeat(n) + "</nav>".repeat(n),
+    (html) => extractHtml({ html, url: "https://nav-flood.test/" }),
+    MULTI_CEILING_MS,
+  );
+});

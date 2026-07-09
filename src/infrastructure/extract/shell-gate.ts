@@ -11,6 +11,15 @@ export function evaluateShellGate(input: {
   text: string;
   structured: StructuredData;
   contentType?: string;
+  /** The HTML scope the `text` was extracted from (a scoped <article> or the chrome-stripped
+   *  no-landmark fallback). hasContent's tag-check runs against THIS, not the full page, so a
+   *  chrome `<h2>`/`<p>` outside the scope can't satisfy it (#160 codex). Defaults to `html`
+   *  (full page) — scriptCount/appRoot still use `html`. */
+  contentHtml?: string;
+  /** True when a main-content landmark (<article>/<main>) was selected as the text scope. A
+   *  selected landmark IS content (even a short/tagless one), so hasContent doesn't require inner
+   *  tags — the scope is the landmark's INNER html (no wrapper tag) (#160 codex r4). */
+  landmarkFound?: boolean;
 }): ShellGateEvidence {
   const wordCount = input.text ? input.text.split(/\s+/).length : 0;
   const evidence = {
@@ -35,7 +44,7 @@ export function evaluateShellGate(input: {
     return { ...evidence, jsRequired: false, reason: "structured-data-found" };
   }
 
-  if (hasContent(input.html, evidence.textLength, evidence.wordCount)) {
+  if (hasContent(input.contentHtml ?? input.html, evidence.textLength, evidence.wordCount, input.landmarkFound)) {
     return { ...evidence, jsRequired: false, reason: "content-present" };
   }
 
@@ -78,9 +87,12 @@ function hasContentBearingAppState(appState: unknown): boolean {
   return keys.some((key) => CONTENT_BEARING_APP_STATE_KEYS.has(key));
 }
 
-function hasContent(html: string, textLength: number, wordCount: number): boolean {
+function hasContent(html: string, textLength: number, wordCount: number, landmarkFound = false): boolean {
   if (textLength >= 80 || wordCount >= 12) return true;
   if (textLength < 20) return false;
+  // A selected <article>/<main> IS content even if short/tagless — the scope is its inner html (no
+  // wrapper tag), so don't require the tag-check for it (#160 codex r4).
+  if (landmarkFound) return true;
   return ["article", "main", "p", "h1", "h2", "h3"].some(
     (tag) => findStartTags(html, tag).length > 0,
   );

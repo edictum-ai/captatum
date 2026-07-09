@@ -36,6 +36,211 @@ test("shell-gate: real body text + empty JSON-LD resolves via content-present, n
   assert.equal(gate.reason, "content-present");
 });
 
+// #144: a no-landmark SPA whose static HTML carries ONLY nav/aside chrome (no <main>/<article>,
+// no real body) must escalate to render, not ship the nav menu as "content". The Jira REST v3
+// repro: 13,630 chars of chrome crossed hasContent's threshold → "content-present" → no render.
+test("shell-gate: a no-landmark SPA whose static HTML is only nav/aside chrome escalates to render (#144)", () => {
+  const html = '<html><head><title>Developer Documentation</title></head><body>'
+    + '<nav><a>Documentation</a><a>Resources</a><a>News and Updates</a><a>Get Support</a><a>Sign in</a></nav>'
+    + '<aside><h2>REST API v3</h2><a>About</a><a>Version</a><a>Authentication</a><a>Endpoints</a></aside>'
+    + '<div id="root"></div></body></html>';
+  const gate = extractHtml({ html, url: "https://jira.test/rest/v3/intro" }).shellGate;
+  assert.equal(gate.jsRequired, true, "chrome-only no-landmark SPA must escalate to render");
+  assert.equal(gate.reason, "empty-spa-shell");
+});
+
+test("shell-gate: a no-landmark page with REAL body content (outside chrome) still resolves, no render (#144)", () => {
+  // stripChrome removes aside/nav/footer but keeps the real body text — a legit no-landmark page
+  // with substantial content must NOT be falsely escalated (regression guard for the #144 fix).
+  const html = '<html><body>'
+    + '<nav><a>Home</a><a>About</a></nav>'
+    + '<div><p>' + "This is the real article body content, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<footer><a>Privacy</a></footer>'
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://x.test/post" }).shellGate;
+  assert.equal(gate.jsRequired, false, "real no-landmark body content must not be escalated");
+});
+
+test("shell-gate: a literal <nav> inside a <script> does not delete the real body (#160 codex)", () => {
+  // stripChrome must run AFTER scripts are stripped — else the script's "<nav>" string pairs with a
+  // later </nav> and deletes the intervening real body → a false shell-gate escalation.
+  const html = '<html><body>'
+    + '<script>const tpl = "<nav>menu</nav>";</script>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://x.test/p" }).shellGate;
+  assert.equal(gate.jsRequired, false, "a script's <nav> string must not delete the real body");
+});
+
+test("shell-gate: a fake <nav> in a comment or <style> does not delete the real body (#160 codex)", () => {
+  // The raw-chrome fallback pre-cleans comments + style BEFORE stripping chrome, so a fake opener
+  // inside <!-- <nav> --> or <style>...</style> can't pair with a later real </nav> (#160 codex r2).
+  const commented = '<html><body>'
+    + '<!-- <nav>commented out</nav> -->'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html: commented, url: "https://x.test/c" }).shellGate.jsRequired, false, "a comment's <nav> must not delete the body");
+  const styled = '<html><head><style>.x::after { content: "<nav>fake</nav>" }</style></head><body>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html: styled, url: "https://x.test/s" }).shellGate.jsRequired, false, "a <style>'s <nav> must not delete the body");
+});
+
+test("shell-gate: a chrome <h2>/<p> outside the text scope doesn't satisfy hasContent (#160 codex r3)", () => {
+  // A no-landmark SPA whose stripped body is a short placeholder (20-79 chars) but whose removed
+  // chrome carries an <h2>: hasContent's tag-check must run on the STRIPPED scope, not the full
+  // page, else the chrome tag satisfies it and the shell skips render (returns only the placeholder).
+  const html = '<html><body>'
+    + '<nav><h2>REST API v3</h2><a>About</a></nav>'
+    + '<div id="root">Loading documentation shell</div>'
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://jira.test/rest" }).shellGate;
+  assert.equal(gate.jsRequired, true, "a chrome h2 outside the scope must not satisfy hasContent");
+});
+
+test("shell-gate: a short legitimate <article> (no inner tags) resolves, not falsely escalated (#160 codex r4)", () => {
+  // A selected landmark IS content even if short + tagless — the scope is the article's INNER html
+  // (no <article> wrapper), so hasContent must not require the tag-check for it.
+  const html = '<html><body><article>Short but legitimate article body.</article></body></html>';
+  const gate = extractHtml({ html, url: "https://x.test/a" }).shellGate;
+  assert.equal(gate.jsRequired, false, "a short selected <article> must not be falsely escalated");
+});
+
+test("shell-gate: a literal <nav> in a <title> doesn't delete the real body (#160 codex r5/r6)", () => {
+  // A malformed-but-tolerated <title>HTML <nav> element guide</title> (RCDATA) — stripChromeFromRaw
+  // extracts <body> (excluding head/title) before chrome so the title's <nav> can't mis-pair with a
+  // later </nav>. Covers BOTH an explicit </head> AND an omitted </head> (valid HTML — the body
+  // extraction pairs on <body>, not </head>) (#160 codex r5/r6).
+  const realBody = '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div><nav><a>Home</a></nav>';
+  const closedHead = '<html><head><title>HTML <nav> element guide</title></head><body>' + realBody + '</body></html>';
+  assert.equal(extractHtml({ html: closedHead, url: "https://x.test/t1" }).shellGate.jsRequired, false, "a title's <nav> (closed head) must not delete the body");
+  const omittedHeadClose = '<html><head><title>HTML <nav> element guide</title><body>' + realBody + '</body></html>';
+  assert.equal(extractHtml({ html: omittedHeadClose, url: "https://x.test/t2" }).shellGate.jsRequired, false, "a title's <nav> (omitted </head>) must not delete the body");
+  // r7: a title with BOTH a fake <body> AND <nav> — inert blocks are stripped BEFORE body extraction
+  // so the fake <body> isn't selected + the fake <nav> can't mis-pair.
+  const fakeBodyInTitle = '<html><head><title>HTML <body> and <nav> element guide</title></head><body>' + realBody + '</body></html>';
+  assert.equal(extractHtml({ html: fakeBodyInTitle, url: "https://x.test/t3" }).shellGate.jsRequired, false, "a title's fake <body>/<nav> must not be selected/mis-paired");
+});
+
+test("shell-gate: an UNTERMINATED <nav> (no close) doesn't satisfy hasContent (#160 codex r8)", () => {
+  // A malformed-but-tolerated <nav> with no </nav> extends to </body> (browser auto-close); its
+  // content is chrome. stripChrome now strips it to end (stripUnterminated), so a JS-only shell
+  // with unterminated nav chrome escalates instead of shipping the nav as content.
+  const html = '<html><body>'
+    + '<nav><h2>REST API v3</h2><a>About</a><a>Authentication</a>'
+    + '<div id="root"></div>'  // the article is JS-only; root is the empty app mount (inside the nav per the browser)
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://jira.test/rest" }).shellGate;
+  assert.equal(gate.jsRequired, true, "an unterminated <nav> must not satisfy hasContent");
+});
+
+test("shell-gate: real content BEFORE an unterminated <nav> is preserved, not dropped (#160 codex r9)", () => {
+  // stripUnterminated must keep the text before the malformed chrome tag — <div><p>real body</p></div><nav>...
+  // (unterminated) resolves (the real body survives), not falsely escalate to render.
+  const html = '<html><body>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a><a>About</a>'  // unterminated — no </nav>
+    + '</body></html>';
+  assert.equal(extractHtml({ html, url: "https://x.test/u" }).shellGate.jsRequired, false, "content before an unterminated <nav> must survive");
+});
+
+test("shell-gate: NESTED chrome (<nav>…<nav>…</nav>…</nav>) doesn't leave leftover chrome (#160 codex r10)", () => {
+  // A non-nesting-aware strip pairs the outer <nav> open with the inner </nav> close, leaving the
+  // outer nav's trailing chrome (>= 80 chars) in the scope → hasContent → no render. The nesting-
+  // aware stripChromeElement pairs the outer open with its MATCHING close (depth-aware) → no leftover.
+  const html = '<html><body>'
+    + '<nav>menu<nav>sub</nav>' + "chrome text ".repeat(10) + '</nav>'  // nested nav; trailing chrome crosses the threshold
+    + '<div id="root"></div>'
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://x.test/n" }).shellGate;
+  assert.equal(gate.jsRequired, true, "nested <nav> must not leave leftover chrome that satisfies hasContent");
+});
+
+test("shell-gate: a comment with <title> doesn't mis-pair + drop the real body (#160 codex r11)", () => {
+  // stripHtmlComments must run BEFORE stripElement("title") — else the comment's <title> pairs with
+  // the real </title>, removing the comment terminator → stripHtmlComments drops the rest → empty.
+  const html = '<html><head><!-- <title> --><title>Real Title</title></head><body>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html, url: "https://x.test/c" }).shellGate.jsRequired, false, "a comment's <title> must not mis-pair + drop the body");
+});
+
+test("shell-gate: a script with legacy <!-- doesn't truncate the real body (#160 codex r12)", () => {
+  // Scripts must be stripped BEFORE comments — a legacy `<!--` inside a <script> (no -->) would
+  // make stripHtmlComments truncate at the marker, dropping the real body.
+  const html = '<html><head><script><!--\nvar x = 1;\n</script></head><body>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html, url: "https://x.test/s" }).shellGate.jsRequired, false, "a script's <!-- must not truncate the body");
+});
+
+test("shell-gate: a comment with <script> doesn't mis-pair + drop the real body (#160 codex r13)", () => {
+  // The context-aware stripInert scanner processes comments + scripts in document order — a
+  // <script> inside a comment is never seen (the comment is stripped first). The 3-phase order
+  // (scripts before comments) would mis-pair the comment's <script> with the real </script>.
+  const html = '<html><head><!-- <script> --></head><body>'
+    + '<script>var x = 1;</script>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html, url: "https://x.test/cs" }).shellGate.jsRequired, false, "a comment's <script> must not mis-pair + drop the body");
+});
+
+test("stripInert: a </script> inside an attribute isn't taken as the close (#160 codex r14a)", () => {
+  // findCloseTag must search from the opener's END (after >), not its START — a </script> inside
+  // an attribute value like data-x="</script>" must not be treated as the block's close.
+  const html = '<html><body>'
+    + '<script data-x="</script>">var x = 1;</script>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '</body></html>';
+  const ext = extractHtml({ html, url: "https://x.test/a" });
+  assert.ok(!ext.text.includes("var x = 1"), "the script body must be stripped (close found after the opener, not in the attribute)");
+  assert.equal(ext.shellGate.jsRequired, false, "the real body survives");
+});
+
+test("stripInert: a space separator is inserted between blocks (#160 codex r14b)", () => {
+  // stripElement/stripHtmlComments inserted a space when splicing — the scanner must too, else
+  // `six<script>...</script>seven` → `sixseven` (word merge + text corruption).
+  const html = '<html><body>six<script>var x;</script>seven</body></html>';
+  const text = extractHtml({ html, url: "https://x.test/s" }).text;
+  assert.ok(text.includes("six seven"), "a space separates text around a stripped block");
+  assert.ok(!text.includes("sixseven"), "no word merge");
+});
+
+test("shell-gate: content inside a <footer> is preserved, not stripped as chrome (#160 CI)", () => {
+  // A static page whose content is in a <footer> (not site chrome) — stripChromeFromRaw must NOT
+  // strip <footer> (only aside/nav), else the content is lost (named-entities fixture regression).
+  const html = '<html><body><footer><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></footer></body></html>';
+  const ext = extractHtml({ html, url: "https://x.test/f" });
+  assert.equal(ext.shellGate.jsRequired, false, "content in a <footer> must not be stripped");
+  assert.ok(ext.text.includes("real article body"), "the footer content survives in the text");
+});
+
+test("shell-gate: a <nav> inside <textarea> RCDATA doesn't mis-pair (#160 codex r16)", () => {
+  // <textarea> is RCDATA — its content is text, not markup. stripInert must strip <textarea> before
+  // stripChrome, else the <nav> inside is treated as a real chrome tag + mis-paired with a real </nav>.
+  const html = '<html><body>'
+    + '<textarea><nav> example</textarea>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html, url: "https://x.test/ta" }).shellGate.jsRequired, false, "a textarea's <nav> must not mis-pair + delete the body");
+});
+
+test("shell-gate: visible <textarea> content is preserved, not discarded (#160 codex r17)", () => {
+  // <textarea> content IS visible text (unlike script/style) — stripInert must keep it (with `<`
+  // escaped so fake tags can't mis-pair), not strip the whole block.
+  const html = '<html><body><textarea>' + "The real article body, substantial and complete. ".repeat(3) + '</textarea></body></html>';
+  const ext = extractHtml({ html, url: "https://x.test/tv" });
+  assert.equal(ext.shellGate.jsRequired, false, "visible textarea content must not be discarded");
+  assert.ok(ext.text.includes("real article body"), "the textarea's visible text survives");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no

@@ -1,6 +1,6 @@
 import { collectHiddenDisplayNoneClasses } from "./hidden-classes.ts";
 import { revealedReactBoundaryIds, stripHiddenSubtrees } from "./hidden.ts";
-import { extractVisibleText, findElements, stripElement, stripHtmlComments } from "./html.ts";
+import { extractBodyHtml, extractVisibleText, findCloseTag, findElements, findStartTags, findTagEnd, stripElement, stripHtmlComments } from "./html.ts";
 
 /**
  * <main> overrides the best <article> only when it is substantially richer. Calibrated against
@@ -34,8 +34,105 @@ export const SKELETON_ARTICLE_MAX_CHARS = 1000;
  * article pick by out-lengthing the real article. Verified no existing fixture places these tags
  * inside <main>, so the strip is fixture-safe. (#108)
  */
+/** Depth-aware matching close for a chrome tag — pairs an outer open with its MATCHING close, not
+ *  the inner's (handles nested same-tag chrome like `<nav>…<nav>…</nav>…</nav>`) (#160 codex r10). */
+function findMatchingClose(lower: string, close: string, opens: readonly { start: number }[], openIdx: number, from: number): number {
+  let depth = 1, search = from, nextOpenIdx = openIdx + 1;
+  for (;;) {
+    const nc = findCloseTag(lower, close, search);
+    if (nc === -1) return -1;
+    // Batch ALL opens before this close (avoids rescanning the same suffix per open — O(n²) on
+    // deeply nested chrome like <nav>×n</nav>×n; #160 codex r15 REDOS-6).
+    while (nextOpenIdx < opens.length && opens[nextOpenIdx].start < nc) { depth++; nextOpenIdx++; }
+    if (--depth === 0) return nc;
+    search = nc + close.length;
+  }
+}
+
+/** Nesting-aware chrome strip: pairs each open with its matching close (depth-aware), and an
+ *  unterminated chrome element (no close) is stripped to end (keep text-before). Replaces the
+ *  non-nesting-aware stripElement for aside/nav/footer so nested menus don't leave leftover chrome. */
+function stripChromeElement(html: string, tagName: string): string {
+  const wanted = tagName.toLowerCase();
+  const lower = html.toLowerCase();
+  const opens = findStartTags(html, wanted);
+  const close = `</${wanted}`;
+  let out = "", cursor = 0;
+  for (let i = 0; i < opens.length; i++) {
+    const tag = opens[i];
+    if (tag.start < cursor) continue;
+    const closeStart = findMatchingClose(lower, close, opens, i, tag.end);
+    if (closeStart === -1) return out + html.slice(cursor, tag.start); // unterminated: keep before, drop opener+remainder
+    out += `${html.slice(cursor, tag.start)} `;
+    cursor = findTagEnd(html, closeStart + 2);
+  }
+  return out + html.slice(cursor);
+}
+
 function stripChrome(html: string): string {
-  return stripElement(stripElement(stripElement(html, "aside"), "nav"), "footer");
+  return stripChromeElement(stripChromeElement(stripChromeElement(html, "aside"), "nav"), "footer");
+}
+
+/** Equivalent to the landmark-selection pre-clean for the no-landmark fallback. Order matters: a
+ *  literal `<body>`/`<nav>` inside a `<title>`/`<script>`/`<style>`/comment is NOT real markup, so
+ *  all inert RCDATA/code blocks (title + script/style/noscript/template + comments) are stripped
+ *  FIRST, THEN the `<body>` is extracted, THEN hidden subtrees + site chrome — so a fake opener in
+ *  any inert context can't be selected by extractBodyHtml or mis-paired by stripChrome (#160 codex).
+ *  Hidden classes are collected from the FULL html before `<style>` is stripped. */
+/** Context-aware inert-strip: removes comments + script/style/noscript/template/title in a SINGLE
+ *  document-order pass. Processing in document order means a `<script>` inside a comment is never
+ *  seen (the comment is stripped first when `<!--` comes first), and a `<!--` inside a script is
+ *  never seen (the script is stripped first when `<script` comes first). Resolves the opposing-
+ *  ordering problem that sequencing stripElement + stripHtmlComments can't (#160 codex r13). */
+function stripInert(html: string): string {
+  const lower = html.toLowerCase();
+  const inertTags = ["script", "style", "noscript", "template", "title", "textarea"];
+  // Collect all inert-block starts (comments + inert tags) in document order. For tags, store the
+  // opener's `end` (after `>`) so findCloseTag searches from there — a `</script>` inside an
+  // attribute like <script data-x="</script>"> must not be taken as the close (#160 codex r14a).
+  const blocks: Array<{ start: number; openEnd?: number; tag?: string }> = [];
+  let ci = 0;
+  for (;;) {
+    const at = html.indexOf("<!--", ci);
+    if (at === -1) break;
+    blocks.push({ start: at });
+    ci = at + 4;
+  }
+  for (const tag of inertTags) for (const open of findStartTags(html, tag)) blocks.push({ start: open.start, openEnd: open.end, tag });
+  blocks.sort((a, b) => a.start - b.start);
+  // Process in order, skipping blocks inside already-stripped blocks. A space separator is inserted
+  // (matching stripElement/stripHtmlComments) so `six<script>...</script>seven` → `six seven`, not
+  // `sixseven` (which would drop the word count + corrupt the text) (#160 codex r14b).
+  let out = "", cursor = 0;
+  for (const b of blocks) {
+    if (b.start < cursor) continue;
+    out += `${html.slice(cursor, b.start)} `;
+    if (b.tag === undefined) {
+      const end = html.indexOf("-->", b.start + 4);
+      cursor = end === -1 ? html.length : end + 3;
+    } else {
+      const close = findCloseTag(lower, `</${b.tag}`, b.openEnd!);
+      const contentEnd = close === -1 ? html.length : close;
+      const blockEnd = close === -1 ? html.length : findTagEnd(html, close + 2 + b.tag.length);
+      // <textarea> is RCDATA — its content IS visible text (unlike script/style). Keep it but
+      // escape `<` so fake tags inside can't mis-pair with stripChrome (#160 r16/r17).
+      if (b.tag === "textarea") out += `${html.slice(b.openEnd!, contentEnd).replace(/</g, "&lt;")} `;
+      cursor = blockEnd;
+    }
+  }
+  return out + html.slice(cursor);
+}
+
+export function stripChromeFromRaw(html: string, revealedIds: Set<string>): string {
+  const hiddenClasses = collectHiddenDisplayNoneClasses(html);
+  const inert = stripInert(html);
+  const body = extractBodyHtml(inert) ?? inert;
+  // Strip aside/nav ONLY (not <footer>) — a static page may carry its real content in a <footer>
+  // (not site chrome in that context); stripping it loses the content (named-entities fixture
+  // regression). The #144 repro (Jira REST v3) was nav/aside sidebar/TOC chrome, not footer.
+  // The landmark path (selectMainContentHtml) still strips footer for scoring.
+  const cleaned = stripHiddenSubtrees(body, hiddenClasses, revealedIds);
+  return stripChromeElement(stripChromeElement(cleaned, "aside"), "nav");
 }
 
 /**
@@ -74,9 +171,7 @@ export function selectMainContentHtml(html: string, revealedIds: Set<string> = r
   // does not under-detect streaming. A React `<div hidden id="S:N">` boundary completed by a
   // `$RC` is real server-streamed content the browser reveals, so the article inside one IS a
   // candidate (a genuinely `display:none`-hidden article is still excluded — #97 safety).
-  const withoutCode = ["script", "style", "noscript", "template"]
-    .reduce((value, tag) => stripElement(value, tag), html);
-  const clean = stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses, revealedIds)));
+  const clean = stripChrome(stripHiddenSubtrees(stripInert(html), hiddenClasses, revealedIds));
 
   // Score every <article> by visible-text length. The FIRST is the page's primary (document
   // order), but a SUBSTANTIALLY richer sibling overrides it — a React loading skeleton is a short

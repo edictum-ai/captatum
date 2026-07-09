@@ -201,12 +201,12 @@ function parseAttributes(rawTag: string): AttributeMap {
   return attrs;
 }
 
-function extractBodyHtml(html: string): string | null {
+export function extractBodyHtml(html: string): string | null {
   const body = findElements(html, "body")[0];
   return body ? body.content : null;
 }
 
-export function stripElement(html: string, tagName: string): string {
+export function stripElement(html: string, tagName: string, stripUnterminated = false): string {
   // Linear: splice each element start→close to a space. The old regex was quadratic
   // on unterminated openers (REDOS-3); closes are monotonic, so the first missing
   // close means none follow — return. Boundary-checked so `</script` ≠ `</scripture>`.
@@ -218,10 +218,10 @@ export function stripElement(html: string, tagName: string): string {
     if (tag.start < cursor) continue;
     const closeStart = findCloseTag(lower, `</${wanted}`, tag.end);
     if (closeStart === -1) {
-      // No close from here: keep text-before + opener + remainder as-is. The later
-      // tag-strip removes the start tag, so an unclosed element's content stays
-      // visible (matches the old regex's no-match behavior).
-      return out + html.slice(cursor);
+      // No close from here. Default: keep text-before + opener + remainder (unclosed content stays
+      // visible — matches the old regex). stripUnterminated: keep text-BEFORE the tag, drop opener +
+      // remainder (browser auto-close — an unterminated flow element extends to </body>, so it's chrome).
+      return stripUnterminated ? out + html.slice(cursor, tag.start) : out + html.slice(cursor);
     }
     out += `${html.slice(cursor, tag.start)} `;
     cursor = findTagEnd(html, closeStart + 2);
@@ -230,7 +230,7 @@ export function stripElement(html: string, tagName: string): string {
 }
 
 /** Find `</name` followed by a tag boundary (`>` `/` whitespace) at/after `from`. */
-function findCloseTag(lower: string, closeOpen: string, from: number): number {
+export function findCloseTag(lower: string, closeOpen: string, from: number): number {
   let search = from;
   for (;;) {
     const at = lower.indexOf(closeOpen, search);

@@ -7,7 +7,7 @@ import type {
 import { isHtmlContentType } from "../http/body.ts";
 import { extractVisibleText } from "./html.ts";
 import { revealedReactBoundaryIds } from "./hidden.ts";
-import { selectMainContentHtml } from "./main-content.ts";
+import { selectMainContentHtml, stripChromeFromRaw } from "./main-content.ts";
 import { extractPageMetadata } from "./metadata.ts";
 import { evaluateShellGate } from "./shell-gate.ts";
 
@@ -34,9 +34,27 @@ export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
   // outside scope), so recomputing it from the fragment would empty the set + strip a React
   // boundary (#118 codex P1). Both selectMainContentHtml and extractVisibleText take it explicitly.
   const revealedIds = revealedReactBoundaryIds(input.html);
-  const text = html ? extractVisibleText(selectMainContentHtml(input.html, revealedIds) ?? input.html, revealedIds) : input.html;
+  // No main-content landmark → fall back to the FULL page MINUS site chrome (aside/nav/footer).
+  // Otherwise an SPA shell whose static HTML carries only nav/TOC chrome (<p>/<h2> in <nav>/<aside>)
+  // satisfies the shell-gate's hasContent threshold and ships the nav menu as "content" instead of
+  // escalating to render (#144 — Jira REST v3: 13,630 chars of chrome, article JS-only).
+  // The visible-text scope: a main-content landmark (<article>/<main>) when present, else the full
+  // page MINUS site chrome (aside/nav/footer, fully pre-cleaned). An SPA shell whose static HTML
+  // carries only nav/TOC chrome then doesn't satisfy the shell-gate + escalates to render (#144).
+  const landmark = html ? selectMainContentHtml(input.html, revealedIds) : null;
+  // No main-content landmark → fall back to the FULL page MINUS site chrome (aside/nav/footer,
+  // fully pre-cleaned). Otherwise an SPA shell whose static HTML carries only nav/TOC chrome
+  // (<p>/<h2> in <nav>/<aside>) satisfies the shell-gate + ships the nav as "content" instead of
+  // escalating to render (#144 — Jira REST v3: 13,630 chars chrome, article JS-only).
+  const scope = landmark ?? (html ? stripChromeFromRaw(input.html, revealedIds) : input.html);
+  const text = html ? extractVisibleText(scope, revealedIds) : input.html;
   const shellGate = evaluateShellGate({
     html: input.html,
+    // hasContent's tag-check runs against the SAME scope the text came from (so a chrome <h2>/<p>
+    // outside the scope can't satisfy it), and a selected landmark counts as content even short
+    // (the scope is the landmark's inner html, no wrapper tag) (#160 codex r3/r4).
+    contentHtml: scope,
+    landmarkFound: landmark !== null,
     text,
     structured: metadata.structured,
     contentType: input.contentType,
