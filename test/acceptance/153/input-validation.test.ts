@@ -242,3 +242,19 @@ test("C7: a schema nested MAX_SCHEMA_DEPTH + 1 (65) levels is rejected as too_de
   );
   assert.equal(err.body.error.code, "extract_schema_too_deep");
 });
+
+// --- C7b: tuple-form items fail-closed. The value validator only ADVISORIES tuple arrays (invalid,
+//     unsupported unset → finalize returns parsed JSON + a schemaIssue), so the walker must
+//     hard-reject the unverifiable form at input (extract_schema_tuple_unsupported). ---
+
+test("C7b: tuple-form items are fail-closed at input (the value validator only advisories tuples)", () => {
+  const tupleSchema = { type: "array", items: [{ type: "string", format: "email" }] };
+  const finding = findUnsupportedSchemaKeyword(tupleSchema);
+  assert.equal(finding?.kind, "tuple_items");
+  assert.equal(finding?.path, "$.items");
+
+  const err = captureInputError(() =>
+    normalizeCaptatumInput({ url: "https://x.test/", output: "extract", schema: tupleSchema }),
+  );
+  assert.equal(err.body.error.code, "extract_schema_tuple_unsupported");
+});

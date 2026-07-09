@@ -11,7 +11,7 @@ The critique's core security posture was confirmed sound (walker is a verified s
 
 1. **(BLOCKER → fixed) Depth cap.** `findUnsupportedSchemaKeyword` now carries an explicit `MAX_SCHEMA_DEPTH = 64` and fails closed (`extract_schema_too_deep`) on exceed. v1's "no cap, matches `validateAt` precedent" was unsound: request-body **size** bounds total nodes, not nesting **depth** (a <1 MB body of nested objects reaches ~150K depth), and — decisively — the walker runs **pre-fetch, free to attack**, whereas `validateAt` is post-fetch/egress-rate-limited. The trust-boundary framing argues *for* a cap, not parity. The cap is also the **chokepoint**: a deep schema is rejected at input, so `validateAt` (same exposure, post-fetch) is protected for every captatum/bulk path. Threat-model wording corrected.
 2. **(P1 → fixed) Test-ripple enumerated.** v1 falsely claimed "verified-clean." Real ripple (all enumerated in §"Test impact"): `finalize.test.ts:10` (`"test"`→valid), `mcp-shape.test.ts:96/105` (drop degrade-only `reason` from a success fixture), `llm-transform.test.ts:264` (`"failed"`→`"transform_failed"`), and **two whole test bodies** `llm-transform.test.ts:163–186` + `188–215` (currently assert a *returned* `extract_schema_invalid` degrade; after the input fail-fast, `execute()` *throws* `extract_schema_unsupported_keyword` — rewrite to `assert.throws`). `format.ts:66` added to the reader sweep.
-3. **(P2 → decided) Walker ⊆ `validateAt` exactly.** v1 recursed into `$defs`/`definitions`, which `validateAt` **never** visits (no `$ref` support ⇒ `$defs` content is dead). Recursing there would *over-reject* schemas finalize accepts. **Dropped**: the walker visits exactly `validateAt`'s applied-subschema set. Tuple-form `items` (array) is **skipped** (`finalize` rejects it; recursing is unrequested machinery).
+3. **(P2 → decided) Walker ⊆ `validateAt` exactly; tuple-form `items` fail-closed.** v1 recursed into `$defs`/`definitions`, which `validateAt` **never** visits (no `$ref` support ⇒ `$defs` content is dead). Recursing there would *over-reject* schemas finalize accepts. **Dropped**: the walker visits exactly `validateAt`'s applied-subschema set. **Tuple-form `items` (array) is fail-closed at input** (codex round-3): the value validator does NOT hard-reject tuples — it returns a non-fatal *advisory* (`invalid`, `unsupported` unset → `finalize` returns parsed JSON + a `schemaIssue`), so a schema like `{type:"array", items:[{format:"email"}]}` would otherwise pass the input keyword check AND surface only an advisory, leaving the nested unsupported keyword unvalidated — a fail-closed-consistency hole. The walker now flags array-form `items` as `{kind:"tuple_items"}` → `extract_schema_tuple_unsupported` at input (consistent: an unverifiable schema *form* fails closed before fetch, like an unsupported keyword). Single-schema `items` (`items:{…}`) is still recursed normally.
 4. **(P2 → decided) 8-value `TransformReason` kept, labeled scope expansion.** Preserves actionable router signal (`no_model_fit` ⇒ retry w/ larger budget; `unconfigured` ⇒ missing key; `unsupported_provider` ⇒ bad provider override). The 8th value (`unsupported_provider`) is a pre-existing literal the free-typed `reason?: string` never enforced — surfaced by the narrowing (re-critic P1). The ripple is inherent to narrowing+rename+fail-fast (all issue-required). Narrows **both** `ModelPick.reason` and `TransformInfo.reason` (no casts; both are genuinely degrade values in production).
 5. **(P2 → fixed) Path segments capped.** v1 capped only the offending key; the **property-name** path segment is also caller-controlled. Both are length-capped now.
 6. **(P2 → fixed) C2 strengthened** to an `execute()`-level assertion (fail-on-call fetcher + adapter) — honest proof of "before any fetch."
@@ -53,12 +53,13 @@ export const SUPPORTED_SCHEMA_KEYS: ReadonlySet<string>;      // moved from json
 export const MAX_SCHEMA_DEPTH = 64;                            // >> any legit schema (~20); << V8 ~10K-frame stack
 export type SchemaKeywordFinding =
   | { kind: "unsupported"; key: string; path: string }
-  | { kind: "too_deep"; path: string };
+  | { kind: "too_deep"; path: string }
+  | { kind: "tuple_items"; path: string };
 export function findUnsupportedSchemaKeyword(schema: unknown): SchemaKeywordFinding | undefined;
 export function messageForUnsupportedKeyword(key: string, path: string): string;
 ```
 
-The walker is **pure + value-free**, checks each node's own keys against `SUPPORTED_SCHEMA_KEYS` (identical check to `validateSupported`), and recurses into **exactly** the applied-subschema locations `validateAt` visits — `properties.*`, `items` (single-schema form only; tuple arrays skipped), `additionalProperties` (when a schema), `allOf`/`anyOf`/`oneOf` (each element), `not`. It does **not** visit `$defs`/`definitions` (dead — no `$ref`). It carries a `depth` counter; `depth > MAX_SCHEMA_DEPTH` ⇒ `{ kind: "too_deep" }` (fail-closed). An object-identity `seen` Set guards cycles (JSON.parse can't cycle; cheap defense). Per-node key order matches `Object.keys` (same as `validateSupported`), so the first offending keyword found agrees with finalize on any schema both visit.
+The walker is **pure + value-free**, checks each node's own keys against `SUPPORTED_SCHEMA_KEYS` (identical check to `validateSupported`), flags array-form `items` as `{kind:"tuple_items"}` (fail-closed — see critique resolution #3), and recurses into **exactly** the applied-subschema locations `validateAt` visits — `properties.*`, `items` (single-schema form `{…}` only), `additionalProperties` (when a schema), `allOf`/`anyOf`/`oneOf` (each element), `not`. It does **not** visit `$defs`/`definitions` (dead — no `$ref`). It carries a `depth` counter; `depth > MAX_SCHEMA_DEPTH` ⇒ `{ kind: "too_deep" }` (fail-closed). An object-identity `seen` Set guards cycles (JSON.parse can't cycle; cheap defense). Per-node key order matches `Object.keys` (same as `validateSupported`), so the first offending keyword found agrees with finalize on any schema both visit.
 
 `normalizeCaptatumInput` (`src/application/use-cases/captatum-input.ts`) runs this **before returning** — before any fetch — and throws `CaptatumInputError` (→ JSON-RPC `InvalidParams` / HTTP `{error:{code,message}}`):
 
@@ -69,6 +70,9 @@ if (parsed.output === "extract" && parsed.schema !== undefined) {
     if (finding.kind === "too_deep")
       throw new CaptatumInputError("extract_schema_too_deep",
         `JSON Schema nesting exceeds the supported depth (>${MAX_SCHEMA_DEPTH}); simplify it.`);
+    if (finding.kind === "tuple_items")
+      throw new CaptatumInputError("extract_schema_tuple_unsupported",
+        `Tuple-form "items" (arrays) are not supported at ${finding.path} — captatum cannot verify tuple validation; use a single schema (items: {…}).`);
     throw new CaptatumInputError("extract_schema_unsupported_keyword",
       messageForUnsupportedKeyword(finding.key, finding.path));
   }
@@ -103,7 +107,7 @@ Issue #153 names 3 (`schema_validation_failed | transform_failed | unconfigured`
 
 ## Contract changes (`docs/contracts.md`) — already landed in v1; v2 adds the too_deep code
 
-v1 landed: typed `TransformReason`; input-time `extract_schema_unsupported_keyword` reject; `outputRequested`; lean-payload `outputRequested`; `captatum_bulk` uniform-schema reject. **v2 adds** the `extract_schema_too_deep` hard-reject code (depth > 64) to the Error-shape input-validation list + the Transform § (alongside `extract_schema_unsupported_keyword`). The status rule (`provider:"none"`⇒`partial`) was already in the contract (code now conforms).
+v1 landed: typed `TransformReason`; input-time `extract_schema_unsupported_keyword` reject; `outputRequested`; lean-payload `outputRequested`; `captatum_bulk` uniform-schema reject. **v2 adds** the `extract_schema_too_deep` hard-reject code (depth > 64). **v3 adds** `extract_schema_tuple_unsupported` (tuple-form `items` fail-closed at input — the value validator only advisories tuples, so the input walker now hard-rejects the unverifiable form). Both join the Error-shape input-validation list + Transform §. The status rule (`provider:"none"`⇒`partial`) was already in the contract (code now conforms).
 
 ## Threat-model note (`docs/threat-model.md`) — corrected in v2
 
@@ -140,6 +144,7 @@ Authored by a **different harness**, frozen (hash-manifest) in PR A, activated i
 - **C5 (outputRequested):** a degraded summary→raw carries `outputRequested:"summary"`, `output:"raw"`; lean `structuredContent` surfaces `outputRequested`.
 - **C6 (typed reason + status):** transform-failed degrade ⇒ `reason:"transform_failed"`, `status:"partial"`; a `provider:"none"` degrade for `no_model_fit` ⇒ `status:"partial"` (conformance fix).
 - **C7 (depth cap):** a schema nested > 64 deep ⇒ `CaptatumInputError("extract_schema_too_deep")` (no fetch); a 64-deep supported schema is accepted.
+- **C7b (tuple-form items):** `findUnsupportedSchemaKeyword({type:"array", items:[{type:"string", format:"email"}]})` ⇒ `{kind:"tuple_items", path:"$.items"}`; `normalizeCaptatumInput` throws `extract_schema_tuple_unsupported`. Single-schema `items:{…}` is still recursed (a nested unsupported keyword there is caught normally).
 - **C8 (finalize defense-in-depth):** `finalize()` called directly with an unsupported-keyword schema throws AND the resulting degrade reason (via the catch) is `schema_validation_failed`.
 - **C9 (outputRequested on success):** a successful summary carries `outputRequested:"summary"` (non-degrade path).
 
