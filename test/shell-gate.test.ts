@@ -137,6 +137,16 @@ test("shell-gate: an UNTERMINATED <nav> (no close) doesn't satisfy hasContent (#
   assert.equal(gate.jsRequired, true, "an unterminated <nav> must not satisfy hasContent");
 });
 
+test("shell-gate: real content BEFORE an unterminated <nav> is preserved, not dropped (#160 codex r9)", () => {
+  // stripUnterminated must keep the text before the malformed chrome tag — <div><p>real body</p></div><nav>...
+  // (unterminated) resolves (the real body survives), not falsely escalate to render.
+  const html = '<html><body>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a><a>About</a>'  // unterminated — no </nav>
+    + '</body></html>';
+  assert.equal(extractHtml({ html, url: "https://x.test/u" }).shellGate.jsRequired, false, "content before an unterminated <nav> must survive");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no

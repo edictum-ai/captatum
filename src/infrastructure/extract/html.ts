@@ -218,10 +218,10 @@ export function stripElement(html: string, tagName: string, stripUnterminated = 
     if (tag.start < cursor) continue;
     const closeStart = findCloseTag(lower, `</${wanted}`, tag.end);
     if (closeStart === -1) {
-      // No close from here. Default: keep text-before + opener + remainder (unclosed content
-      // stays visible — matches the old regex). stripUnterminated: DROP opener + remainder
-      // (browser auto-close — an unterminated flow element extends to </body>, so it's chrome).
-      return stripUnterminated ? out : out + html.slice(cursor);
+      // No close from here. Default: keep text-before + opener + remainder (unclosed content stays
+      // visible — matches the old regex). stripUnterminated: keep text-BEFORE the tag, drop opener +
+      // remainder (browser auto-close — an unterminated flow element extends to </body>, so it's chrome).
+      return stripUnterminated ? out + html.slice(cursor, tag.start) : out + html.slice(cursor);
     }
     out += `${html.slice(cursor, tag.start)} `;
     cursor = findTagEnd(html, closeStart + 2);
