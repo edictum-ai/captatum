@@ -43,8 +43,7 @@ export function findStartTags(html: string, tagName: string, limit = Number.POSI
 }
 
 export function findElements(html: string, tagName: string): HtmlElement[] {
-  // REDOS-5: linear — one advancing cursor finds each close via boundary-checked
-  // findCloseTag; on the first missing close, no later opener has one either, so stop.
+  // REDOS-5: linear — one advancing cursor; on the first missing close, no later opener has one either, so stop.
   const lower = html.toLowerCase();
   const wanted = tagName.toLowerCase();
   const close = `</${wanted}`;
@@ -69,25 +68,17 @@ export function extractVisibleText(html: string, revealedIds: Set<string> = reve
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
   // revealedIds is caller-supplied (from the full page): a scoped fragment loses the $RC call (#118 codex P1).
   const body = extractBodyHtml(html) ?? stripElement(html, "head");
-  // `svg` is NOT stripped here — inlineSvgText (next) preserves its `<text>` chart
-  // data before the wrapper is removed. stripHiddenSubtrees also drops class-based
-  // display:none from `<style>` blocks (the hiddenClasses set).
+  // svg is NOT stripped here — inlineSvgText preserves its <text> data first; stripHiddenSubtrees
+  // also drops class display:none from <style> blocks. Linear O(n) scanners (REDOS-1/2/3);
+  // stripHiddenSubtrees runs BEFORE inlineSvgText so a hidden svg is dropped with its <text>.
   const withoutCode = ["script", "style", "noscript", "template"]
     .reduce((value, tag) => stripElement(value, tag), body);
-  // Linear O(n) scanners (REDOS-1/2/3): old backtracking regexes were quadratic on
-  // `<!--`/bare-`<`/`<script>` floods. stripHiddenSubtrees runs BEFORE inlineSvgText
-  // so a hidden svg (`<svg hidden>`/display:none/hidden class) is dropped together
-  // with its `<text>` instead of leaking the labels into visible text.
   const text = stripHtmlTags(stripHtmlComments(inlineSvgText(stripHiddenSubtrees(withoutCode, hiddenClasses, revealedIds))));
   return normalizeFragmentedNumbers(collapseWhitespace(decodeHtmlEntities(text)));
 }
 
-/**
- * Remove `<!-- ... -->` spans linearly, replacing each with a space (matching the
- * old `<!--[\s\S]*?-->` → " "). An unterminated `<!--` (no `-->`) keeps the text
- * before it and stops — the remainder is malformed and dropping it avoids feeding
- * a bare-`<` flood to stripHtmlTags.
- */
+/** Remove `<!-- ... -->` spans linearly → " ". An unterminated `<!--` (no `-->`) keeps the
+ *  text before it and stops — dropping the malformed remainder avoids feeding bare-`<` to stripHtmlTags. */
 export function stripHtmlComments(html: string): string {
   let out = "";
   let cursor = 0;
@@ -102,18 +93,29 @@ export function stripHtmlComments(html: string): string {
   return out;
 }
 
-/** Remove `<...>` tag spans linearly → " " (old `<[^>]*>` was REDOS-2). A `<` with no
- *  following `>` ends the scan: the rest is literal text, appended once. */
+/** Remove `<...>` tag spans linearly → " ". Quote-aware (#146-C): a `>` inside a quoted attr
+ *  is NOT a terminator. Only a REAL opener (`<` + letter/`!`/`?`/`/`) gets the quote-aware scan;
+ *  a literal `<` and a malformed opener fall back to the legacy first-`>` (byte-identical to pre-fix). */
 export function stripHtmlTags(html: string): string {
-  let out = "";
-  let cursor = 0;
+  let out = "", cursor = 0;
   while (cursor < html.length) {
     const start = html.indexOf("<", cursor);
     if (start === -1) { out += html.slice(cursor); break; }
-    const end = html.indexOf(">", start + 1);
-    if (end === -1) { out += html.slice(cursor); break; }
-    out += `${html.slice(cursor, start)} `;
-    cursor = end + 1;
+    let quote: string | null = null, end = -1;
+    // Real opener → quote-aware; a literal '<' ("a < b", `< "f>g" >`) skips it so a quoted + later-unquoted '>' can't drop content. (#166 P2)
+    if (/[A-Za-z!?\/]/.test(html[start + 1] ?? "")) {
+      for (let i = start + 1; i < html.length; i++) {
+        const c = html[i];
+        if (quote) { if (c === quote) quote = null; continue; }
+        if (c === "\"" || c === "'") quote = c;
+        else if (c === ">") { end = i; break; }
+        else if (c === "<") break; // next tag → opener malformed (no `>`)
+      }
+    }
+    if (end !== -1) { out += html.slice(cursor, start) + " "; cursor = end + 1; continue; }
+    const legacy = html.indexOf(">", start + 1); // literal '<' OR malformed opener → legacy (pre-fix)
+    if (legacy !== -1) { out += html.slice(cursor, start) + " "; cursor = legacy + 1; continue; }
+    out += html.slice(cursor); break; // no `>` anywhere → rest is literal
   }
   return out;
 }
@@ -207,9 +209,7 @@ export function extractBodyHtml(html: string): string | null {
 }
 
 export function stripElement(html: string, tagName: string, stripUnterminated = false): string {
-  // Linear: splice each element start→close to a space. The old regex was quadratic
-  // on unterminated openers (REDOS-3); closes are monotonic, so the first missing
-  // close means none follow — return. Boundary-checked so `</script` ≠ `</scripture>`.
+  // Linear: splice start→close to a space; closes monotonic so the first missing close → return (REDOS-3). Boundary-checked so `</script` ≠ `</scripture>`.
   const wanted = tagName.toLowerCase();
   const lower = html.toLowerCase();
   let out = "";

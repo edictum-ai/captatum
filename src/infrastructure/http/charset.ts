@@ -32,11 +32,23 @@ export function prescanMetaCharset(bytes: Uint8Array): string | undefined {
       cursor = at + 5;
       continue;
     }
-    const close = lower.indexOf(">", at);
-    if (close === -1) return undefined;
+    // Quote-aware meta tag end that records whether it terminated on an UNQUOTED `>`. The
+    // last char being `>` is NOT enough: `<meta charset="utf-8" data="x>` ends inside the open
+    // data= quote (the `>` is in-quote, not a real terminator) — trusting it would decode from
+    // malformed markup. Only a genuine unquoted `>` terminates; else the meta is malformed. (#166 P2)
+    let mq: string | null = null;
+    let close = lower.length;
+    let terminated = false;
+    for (let j = at; j < lower.length; j += 1) {
+      const ch = lower[j];
+      if (mq) { if (ch === mq) mq = null; continue; }
+      if (ch === "\"" || ch === "'") mq = ch;
+      else if (ch === ">") { close = j + 1; terminated = true; break; }
+    }
+    if (!terminated) return undefined;
     const cs = metaCharsetFromTag(lower.slice(at, close));
     if (cs) return cs;
-    cursor = close + 1;
+    cursor = close;
   }
   return undefined;
 }
