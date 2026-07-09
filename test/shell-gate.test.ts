@@ -125,6 +125,18 @@ test("shell-gate: a literal <nav> in a <title> doesn't delete the real body (#16
   assert.equal(extractHtml({ html: fakeBodyInTitle, url: "https://x.test/t3" }).shellGate.jsRequired, false, "a title's fake <body>/<nav> must not be selected/mis-paired");
 });
 
+test("shell-gate: an UNTERMINATED <nav> (no close) doesn't satisfy hasContent (#160 codex r8)", () => {
+  // A malformed-but-tolerated <nav> with no </nav> extends to </body> (browser auto-close); its
+  // content is chrome. stripChrome now strips it to end (stripUnterminated), so a JS-only shell
+  // with unterminated nav chrome escalates instead of shipping the nav as content.
+  const html = '<html><body>'
+    + '<nav><h2>REST API v3</h2><a>About</a><a>Authentication</a>'
+    + '<div id="root"></div>'  // the article is JS-only; root is the empty app mount (inside the nav per the browser)
+    + '</body></html>';
+  const gate = extractHtml({ html, url: "https://jira.test/rest" }).shellGate;
+  assert.equal(gate.jsRequired, true, "an unterminated <nav> must not satisfy hasContent");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no

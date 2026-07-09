@@ -35,7 +35,9 @@ export const SKELETON_ARTICLE_MAX_CHARS = 1000;
  * inside <main>, so the strip is fixture-safe. (#108)
  */
 function stripChrome(html: string): string {
-  return stripElement(stripElement(stripElement(html, "aside"), "nav"), "footer");
+  // stripUnterminated: a malformed-but-tolerated <nav>/<aside>/<footer> with no close tag extends
+  // to </body> (browser auto-close), so its content is chrome — strip it to end, not keep it.
+  return stripElement(stripElement(stripElement(html, "aside", true), "nav", true), "footer", true);
 }
 
 /** Equivalent to the landmark-selection pre-clean for the no-landmark fallback. Order matters: a
