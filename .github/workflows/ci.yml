@@ -44,3 +44,21 @@ jobs:
       - name: Verify Chromium launches (no silent skip)
         run: node --input-type=module -e "const {chromium}=await import('playwright'); const b=await chromium.launch(); await b.close();"
       - run: node --no-warnings --test test/integration/fixtures.test.ts
+
+  # Engineering OS artifact-chain guard (freeze-hash · mixed-diff · stage-artifact).
+  # https://github.com/acartag7/engineering-os — pinned by commit SHA like every other
+  # action here. Own checkout with full history (merge-base needs it). PR-only: on a
+  # push to main there is no base branch to diff against, so the guard would have no
+  # merge-base and error; it only has meaning gating a PR.
+  process-guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - uses: acartag7/engineering-os/process-guard@b483fa418ffa8122588fdfa87c36f40f6908c06f
+        with:
+          base-ref: origin/${{ github.base_ref }}
+          src-paths: src/
+          contract-paths: docs/contracts.md

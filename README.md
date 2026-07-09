@@ -70,7 +70,7 @@ Add it to your MCP client config and you're set (see [Connect your client](#conn
 - **Zero-config:** just call — the default is `raw` (clean content + structured data, no LLM, no key).
 - **Summary by default:** set `OPENROUTER_API_KEY` (free models available) **or** run [Ollama](https://ollama.com) and set `OLLAMA_BASE_URL`; the default then becomes `summary`. You can always pass `output: "summary"`/`"raw"`/`"extract"` explicitly.
 
-_From source (development):_ `corepack pnpm install && node --no-warnings src/interfaces/mcp/stdio-bridge.ts`. Build integrity: `corepack pnpm run check` + `node --test test/*.test.ts`.
+_From source (development):_ `corepack pnpm install && node --no-warnings src/interfaces/mcp/stdio-bridge.ts`. Build integrity: `corepack pnpm run check` + `node --test test/*.test.ts`. This repo is governed by the [Engineering OS](https://github.com/acartag7/engineering-os) — run `git config core.hooksPath .githooks` once to enable the local `process-guard` pre-commit mirror (it no-ops with a warning if no engineering-os checkout is present).
 
 ## Connect your client
 
