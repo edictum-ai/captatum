@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
-import { findElements } from "../src/infrastructure/extract/html.ts";
+import { findElements, stripHtmlTags } from "../src/infrastructure/extract/html.ts";
 import { collectHiddenDisplayNoneClasses } from "../src/infrastructure/extract/hidden-classes.ts";
 import { inlineSvgText } from "../src/infrastructure/extract/svg-text.ts";
 
@@ -190,4 +190,18 @@ test("extractHtml is linear on deeply nested <nav> chrome (REDOS-6)", () => {
     (html) => extractHtml({ html, url: "https://nav-flood.test/" }),
     MULTI_CEILING_MS,
   );
+});
+
+// REDOS-7 (#146): stripHtmlTags is quote-aware; a flood of well-formed tags each carrying a
+// quoted `>` must stay linear (the inline scan is single-pass on well-formed tags; the
+// malformed-path legacy rescan is the only ≤2× case and isn't exercised here). Sibling to
+// the REDOS-5/6 guards — the quote-awareness change must not introduce a new REDOS class.
+test("stripHtmlTags is linear on a quoted-`>` attr flood (REDOS-7)", () => {
+  const out = assertLinear(
+    "stripHtmlTags(quoted-gt-flood)",
+    (n) => `<a title="a>b">x</a>`.repeat(n),
+    (html) => stripHtmlTags(html),
+    DIRECT_CEILING_MS,
+  );
+  assert.match(out.replace(/\s+/g, " ").trim(), /^(x )(x )*x$|^x$/, "all tags stripped, only 'x' tokens remain");
 });
