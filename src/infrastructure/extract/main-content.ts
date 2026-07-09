@@ -79,7 +79,10 @@ function stripChrome(html: string): string {
  *  Hidden classes are collected from the FULL html before `<style>` is stripped. */
 export function stripChromeFromRaw(html: string, revealedIds: Set<string>): string {
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
-  const inert = stripHtmlComments(["title", "script", "style", "noscript", "template"].reduce((v, tag) => stripElement(v, tag), html));
+  // Strip comments BEFORE title/script/etc. — a comment like `<!-- <title> -->` must be neutralized
+  // first, else stripElement("title") pairs the comment's <title> with the real </title>, removing
+  // the comment terminator + dropping the rest (#160 codex r11).
+  const inert = ["title", "script", "style", "noscript", "template"].reduce((v, tag) => stripElement(v, tag), stripHtmlComments(html));
   const body = extractBodyHtml(inert) ?? inert;
   return stripChrome(stripHiddenSubtrees(body, hiddenClasses, revealedIds));
 }

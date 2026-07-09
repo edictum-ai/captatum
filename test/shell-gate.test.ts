@@ -159,6 +159,16 @@ test("shell-gate: NESTED chrome (<nav>…<nav>…</nav>…</nav>) doesn't leave 
   assert.equal(gate.jsRequired, true, "nested <nav> must not leave leftover chrome that satisfies hasContent");
 });
 
+test("shell-gate: a comment with <title> doesn't mis-pair + drop the real body (#160 codex r11)", () => {
+  // stripHtmlComments must run BEFORE stripElement("title") — else the comment's <title> pairs with
+  // the real </title>, removing the comment terminator → stripHtmlComments drops the rest → empty.
+  const html = '<html><head><!-- <title> --><title>Real Title</title></head><body>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html, url: "https://x.test/c" }).shellGate.jsRequired, false, "a comment's <title> must not mis-pair + drop the body");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no
