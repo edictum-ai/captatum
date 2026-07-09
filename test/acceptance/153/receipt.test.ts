@@ -1,18 +1,11 @@
 // FROZEN acceptance suite for #153 — Extract schema validation: receipt enrichment.
-// Authored INDEPENDENTLY of the implementation, purely from the spec + the repo's public
-// source signatures. These tests assert the DESIRED post-implementation behavior for the
-// agent-facing receipt: outputRequested (what the caller asked for vs the actual output),
-// the typed TransformReason union, the provider:"none" ⇒ status "partial" conformance fix,
-// and the retained defense-in-depth throw at the finalize() transform seam.
-// They WILL FAIL against the current code (no outputRequested on Result/lean; reason is a
-// free string; classifyStatus only treats reason "failed"/"unconfigured" as partial) — that
-// is intended. The suite is hash-frozen after authoring; the implementer CANNOT edit these
-// (only activate phase 153).
-//
-// Spec: docs/specs/153-extract-schema-input-validation.md — covers criteria C5, C6, C8, C9.
-//
-// Scope: receipt/enrichment + the transform-seam defense. The input-boundary fail-fast
-// criteria (C1/C2/C3/C4/C7) live in input-validation.test.ts.
+// Authored INDEPENDENTLY of the implementation, purely from the spec + public source signatures.
+// Asserts the DESIRED post-implementation agent-facing receipt: outputRequested (requested vs
+// actual output), the typed TransformReason union, the provider:"none" ⇒ status "partial"
+// conformance fix, and the retained defense-in-depth throw at the finalize() transform seam.
+// These WILL FAIL against current code — intended. Hash-frozen after authoring; activate phase 153.
+// Spec: docs/specs/153-extract-schema-input-validation.md — criteria C5, C6, C8, C9.
+// Input-boundary fail-fast criteria (C1-C4/C7) live in input-validation.test.ts.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -25,6 +18,7 @@ import { createCaptatumUseCase } from "../../../src/application/use-cases/captat
 import type { FetcherPort, FetcherResult } from "../../../src/application/ports/fetcher.ts";
 import { PlatformAdapterRegistry } from "../../../src/application/ports/platform-adapter.ts";
 import type { HtmlExtraction, HtmlExtractionInput } from "../../../src/application/use-cases/tier1-extract.ts";
+import { bulkSeedStatus } from "../../../src/application/use-cases/bulk-seed.ts";
 
 /** A complete, realistic Tier-1 Result with `overrides` applied. buildStructuredContent
  *  reads many fields (classifyStatus/Access/ContentType, redactSignedQueryParams, snippet),
@@ -66,6 +60,36 @@ test("C5: a degraded summary→raw surfaces outputRequested:'summary' in the lea
   assert.equal(lean.outputRequested, "summary", "lean surfaces what the caller REQUESTED");
   assert.equal(lean.output, "raw", "output reflects the ACTUAL post-degrade mode");
   assert.equal(lean.status, "partial", "a provider:none degrade is partial");
+});
+
+// --- C5 (execute): the existing C5 pre-populates `outputRequested` in the fixture, so it only
+//     proves buildStructuredContent FORWARDS the field. This drives a summary→raw degrade through
+//     execute() and asserts applyOutputMode STAMPS outputRequested itself. ---
+
+test("C5 (execute): a summary→raw degrade stamps outputRequested on the result (not just forwarded by shape)", async () => {
+  const text = "Some real page content for the no-transformer degrade path.";
+  const b = new TextEncoder().encode(`<main>${text}</main>`);
+  const fetcher: FetcherPort = {
+    async fetchGuarded(): Promise<FetcherResult> {
+      return {
+        status: 200, finalUrl: "https://x.test/", redirects: [],
+        bodyStream: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(b); c.close(); } }),
+        contentType: "text/html; charset=utf-8", bytes: b.byteLength,
+      };
+    },
+  };
+  const extractHtml = (_input: HtmlExtractionInput): HtmlExtraction => ({
+    text, structured: {},
+    shellGate: { jsRequired: false, reason: "content-present", textLength: text.length,
+      wordCount: text.split(/\s+/).length, scriptCount: 0, appRootFound: false, structuredDataFound: false },
+    errors: [],
+  });
+  // NO transformer ⇒ a summary request degrades to raw (provider:"none", reason:"unconfigured").
+  const useCase = createCaptatumUseCase({ fetcher, extractHtml, adapters: new PlatformAdapterRegistry([]), clock: { nowMs: () => 0 } });
+  const result = await useCase.execute({ url: "https://x.test/", output: "summary" });
+  assert.equal(result.outputRequested, "summary", "applyOutputMode stamps outputRequested");
+  assert.equal(result.output, "raw", "the summary degrade returns raw");
+  assert.equal(result.transform?.provider, "none");
 });
 
 // --- C9: outputRequested on a SUCCESS (non-degrade path). A completed summary carries
@@ -114,19 +138,26 @@ test("C6: a real (non-none) transform ⇒ status pass", () => {
   assert.equal(buildStructuredContent(result, false).status, "pass");
 });
 
-// --- C8: finalize() defense-in-depth. The input-boundary check (normalizeCaptatumInput /
-//  normalizeBulkInput) rejects unsupported keywords BEFORE any fetch, so the unsupported-keyword
-//  branch in finalize() is DEAD in the production call graph (the only TransformPort caller is
-//  captatum.ts). It is RETAINED for a hypothetical direct-TransformPort caller and must still
-//  FAIL CLOSED. This test exercises that seam directly.
-//
-//  What it throws: TransformError(code:"extract_schema_invalid", ...). The degrade REASON
-//  "schema_validation_failed" is NOT set by finalize() itself — it is set by captatum.ts's
-//  applyOutputMode() catch, which maps the thrown code via
-//  `transformErrorCode(error) === "extract_schema_invalid"` → reason "schema_validation_failed"
-//  (else "transform_failed"). That mapping is unreachable through execute() (normalize throws
-//  first), so it cannot be asserted end-to-end here; this test pins the FAIL-CLOSED throw that
-//  feeds it. See spec Design (3b) + "Defense-in-depth retained". ---
+// --- C6 (bulk): the same provider:"none" ⇒ "partial" contract change applies to the bulk seed
+//     classifier `bulkSeedStatus` (the sibling in src/application/use-cases/bulk-seed.ts). Pre-fix
+//     it used the brittle reason allowlist ("failed"/"unconfigured") and mislabeled every router
+//     sub-reason as "pass"; the conformance fix simplifies it to provider:"none" ⇒ partial. ---
+
+test("C6 (bulk): bulkSeedStatus classifies any provider:none degrade as partial (the bulk-seed sibling conformance fix)", () => {
+  // A router sub-reason (not just "failed"/"unconfigured") must classify partial.
+  assert.equal(bulkSeedStatus(baseResult({ output: "raw", transform: { provider: "none", reason: "no_model_fit" } })), "partial");
+  // The renamed degrade reason ("failed" → "transform_failed") must also classify partial.
+  assert.equal(bulkSeedStatus(baseResult({ output: "raw", transform: { provider: "none", reason: "transform_failed" } })), "partial");
+  // A clean (non-none) transform stays a pass.
+  assert.equal(bulkSeedStatus(baseResult({ output: "summary", transform: { provider: "openrouter", model: "m" } })), "pass");
+});
+
+// --- C8: finalize() defense-in-depth. The input-boundary check rejects unsupported keywords
+//  BEFORE any fetch, so this unsupported-keyword branch is DEAD in the production call graph
+//  (only TransformPort caller is captatum.ts). It is RETAINED for a hypothetical direct-TransformPort
+//  caller and must still FAIL CLOSED. It throws TransformError(code:"extract_schema_invalid"); the
+//  degrade REASON "schema_validation_failed" is set by captatum.ts's applyOutputMode() catch (which
+//  maps that code), unreachable through execute() (normalize throws first) — pinned by the test below. ---
 
 test("C8: finalize() fails closed (throws) on an unsupported-keyword schema", () => {
   const fakeRouter: ModelRouterPort = {
@@ -151,13 +182,11 @@ test("C8: finalize() fails closed (throws) on an unsupported-keyword schema", ()
   );
 });
 
-// --- C8 (execute-level reason mapping): the captatum.ts applyOutputMode() catch maps a thrown
-//  extract_schema_invalid TransformError code → degrade reason "schema_validation_failed" (any
-//  other thrown code → "transform_failed"). This pins that mapping at the execute() seam: a VALID
-//  extract schema (so normalizeCaptatumInput does NOT throw) + a fake fetcher returning a minimal
-//  200 (fetch satisfied) + a transformer whose transform() rejects with
-//  TransformError("extract_schema_invalid", ...). Against the CURRENT code this fails — the catch
-//  hardcodes reason "failed"; the desired post-#153 behavior maps the code to schema_validation_failed. ---
+// --- C8 (execute-level reason mapping): pins at the execute() seam that captatum.ts's
+//  applyOutputMode() catch maps a thrown extract_schema_invalid code → degrade reason
+//  "schema_validation_failed" (any other thrown code → "transform_failed"). A VALID extract schema
+//  (so normalize does NOT throw) + a fake fetcher 200 + a transformer whose transform() rejects
+//  with TransformError("extract_schema_invalid"). Fails on CURRENT code (catch hardcodes "failed"). ---
 
 test("C8 (execute): an extract_schema_invalid TransformError degrades to raw with reason schema_validation_failed", async () => {
   const text = "Some real page content that satisfies the extract path so the transform seam is reached.";
