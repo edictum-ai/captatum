@@ -45,6 +45,22 @@ function summaryResult(over: Partial<Result> = {}): Result {
   } as Result;
 }
 
+test("resultToMcpText envelope surfaces contentQuality (#145/#150)", () => {
+  assert.match(resultToMcpText(summaryResult({ contentQuality: "app_error" }), false), /contentQuality: app_error/);
+  assert.match(resultToMcpText(summaryResult({ contentQuality: "low_value" }), false), /contentQuality: low_value/);
+  // Absent for normal content.
+  assert.doesNotMatch(resultToMcpText(summaryResult(), false), /contentQuality:/);
+});
+
+test("resultToMcpText provenance carries contentQuality= for a low_value RAW result (#159 codex)", () => {
+  // A low_value result returned as output:raw skips the envelope header (where contentQuality: lives),
+  // so the verdict must ALSO ride the provenance comment — else a text-forward/raw client sees only
+  // `tier=3 status=200` + "Careers" with no "HTTP success ≠ usable content" signal.
+  assert.match(resultToMcpText(summaryResult({ contentQuality: "low_value", output: "raw", result: "Careers" }), false), /contentQuality=low_value/);
+  // Absent for normal raw content.
+  assert.doesNotMatch(resultToMcpText(summaryResult({ output: "raw", result: "real content" }), false), /contentQuality=/);
+});
+
 test("resultToMcpText provenance carries truncated= for a mid-read transport truncation, every output mode (#149)", () => {
   // The provenance comment is the most reliable model-visible channel — present for EVERY output
   // mode incl. raw (where there is no envelope header). A text-forward client that renders only

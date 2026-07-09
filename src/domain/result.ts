@@ -96,6 +96,11 @@ export interface Result {
   /** Anti-bot challenge wall detected (cloudflare/akamai/perimeterx/…). When set,
    *  the fetched bytes are a bot-protection interstitial, not page content (#41 Half A). */
   challengeProvider?: string;
+  /** Content-quality verdict for a successful fetch whose bytes aren't real/usable content:
+   *  "app_error" = a client-app error-boundary screen (e.g. "Something went wrong") promoted as
+   *  content — demoted to tier:error (#145); "low_value" = HTTP success but near-empty useful
+   *  content (thin extraction) — a non-fatal warning, status partial (#150). Absent = normal. */
+  contentQuality?: "app_error" | "low_value";
   /** Real NETWORK egress for the fetch. For Tier-1/Tier-2 this is the fetched
    *  document bytes (== `bytes`). For a Tier-3 render it is the render's total
    *  network egress (`essentialBytes + bytesFulfilled` — every subresource the

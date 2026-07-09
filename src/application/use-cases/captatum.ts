@@ -15,6 +15,7 @@ import {
 } from "./tier1-extract.ts";
 import { maybeRender } from "./render.ts";
 import { stampAntibotChallenge } from "../antibot.ts";
+import { stampContentQuality } from "../content-quality.ts";
 import { resolveAshbyEmbedUrl } from "../../infrastructure/ashby/embed-resolver.ts";
 import { errorMessage, fallbackExcerpt, transformErrorCode } from "./result-excerpt.ts";
 import { stripAdTrackerUrlsForLlm, transformContent } from "./transform-content.ts";
@@ -119,6 +120,10 @@ export class CaptatumUseCase {
         clock: this.clock,
         ...(context.signal ? { signal: context.signal } : {}),
       });
+    // #145/#150: detect a successful fetch whose bytes aren't real/usable content — a client-app
+    // error-boundary screen (demote to tier:error) or near-empty low-value content (warn). Runs
+    // post-render so it covers both Tier-1 and Tier-3 crash screens / thin extractions.
+    stampContentQuality(resolved);
     return await this.applyOutputMode(resolved, request, startMs, fetchMs);
   }
 
@@ -128,8 +133,8 @@ export class CaptatumUseCase {
     startMs: number,
     fetchMs: number,
   ): Promise<Result> {
-    // #41 Half A + 4xx/5xx: a challenge interstitial OR an error page is returned raw, not summarized.
-    if (base.challengeProvider || request.requestedOutput === "raw" || Number(base.code) >= 400) {
+    // Returned raw (never summarized): a challenge (#41), 4xx/5xx error page, or a demoted app-error screen (tier:error — #145; a crash screen through the LLM would overwrite the crash text).
+    if (base.challengeProvider || request.requestedOutput === "raw" || Number(base.code) >= 400 || base.tier === "error") {
       base.output = "raw";
       stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);
       return base;

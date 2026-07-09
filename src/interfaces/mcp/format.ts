@@ -91,6 +91,7 @@ function envelopeHeader(result: Result): string {
     result.title ? `title: ${clip(sanitizePrintable(result.title), 140)}` : null,
     `finalUrl: ${redactSignedQueryParams(result.finalUrl)}`,
     `access: ${access.gated ? `gated (${access.gateReason}${access.challengeProvider ? `: ${access.challengeProvider}` : ""})` : "public"}`,
+    result.contentQuality ? `contentQuality: ${result.contentQuality}` : null,
     `images: ${images.length}${images[0] ? ` (e.g. ${images[0]})` : ""}`,
     result.transform?.model ? `transformModel: ${result.transform.model}` : null,
   ];
@@ -111,6 +112,10 @@ function provenanceLine(result: Result): string {
     ["status", String(result.code)],
     ["bytes", String(result.bytes)],
     ...(truncationCode ? [["truncated", truncationCode] as [string, string]] : []),
+    // contentQuality rides the provenance comment (not just the envelope header) so a low_value
+    // result returned as output:raw still signals "HTTP success ≠ usable content" to a text-forward
+    // client reading only content[0].text (#159 codex). Absent for normal content.
+    ...(result.contentQuality ? [["contentQuality", result.contentQuality] as [string, string]] : []),
     ["finalUrl", redactSignedQueryParams(result.finalUrl)],
     ["platform", result.platform.adapterId],
     ["jsRequired", String(result.jsRequired)],
