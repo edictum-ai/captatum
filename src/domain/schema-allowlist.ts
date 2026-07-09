@@ -33,7 +33,8 @@ export const MAX_SCHEMA_DEPTH = 64;
 
 export type SchemaKeywordFinding =
   | { kind: "unsupported"; key: string; path: string }
-  | { kind: "too_deep"; path: string };
+  | { kind: "too_deep"; path: string }
+  | { kind: "tuple_items"; path: string };
 
 /** Length-cap an untrusted caller string (an offending keyword or a property name) before it
  *  enters an error message — a hostile multi-KB value must not bloat the JSON-RPC error /
@@ -56,12 +57,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Recursively walk a caller-supplied extract schema and return the first keyword not in
- * `SUPPORTED_SCHEMA_KEYS` (with its path), or `undefined` when every applied subschema uses only
- * supported keywords. Pure + value-free. The recursion set EXACTLY mirrors the applied-subschema
+ * Recursively walk a caller-supplied extract schema and return the first unsupported keyword
+ * (with its path), a too-deep signal, or a tuple-form-`items` signal — or `undefined` when the
+ * schema is fully supported. Pure + value-free. The recursion set mirrors the applied-subschema
  * locations the value validator (`validateAt`) visits — `properties.*`, `items` (single-schema
- * form only; tuple arrays are skipped — the value validator rejects them separately),
- * `additionalProperties` (when it is a schema), `allOf`/`anyOf`/`oneOf` (each element), `not`.
+ * form only; tuple arrays are flagged as `{kind:"tuple_items"}` since the value validator only
+ * advisories them), `additionalProperties` (when it is a schema), `allOf`/`anyOf`/`oneOf` (each
+ * element), `not`.
  * It does NOT visit `$defs`/`definitions`: those are reference containers never applied to the
  * value (captatum has no `$ref` support), so visiting them would over-reject schemas the value
  * validator accepts. Per-node key order matches `Object.keys` (same as the value validator's
@@ -86,6 +88,9 @@ function walk(
   for (const key of Object.keys(schema)) {
     if (!SUPPORTED_SCHEMA_KEYS.has(key)) return { kind: "unsupported", key, path };
   }
+  // Tuple-form items (an array) is an unverifiable form: the value validator only advisories it
+  // (invalid, not unsupported), so fail closed at the input boundary like an unsupported keyword.
+  if (Array.isArray(schema.items)) return { kind: "tuple_items", path: `${path}.items` };
   for (const [child, childPath] of children(schema, path)) {
     const found = walk(child, childPath, depth + 1, seen);
     if (found) return found;

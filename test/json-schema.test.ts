@@ -101,11 +101,18 @@ test("#153: findUnsupportedSchemaKeyword does not visit $defs/definitions (no $r
   assert.equal(findUnsupportedSchemaKeyword(schema), undefined);
 });
 
-test("#153: findUnsupportedSchemaKeyword skips tuple-form items (rejected separately by the value validator)", () => {
-  // `items` as an array (tuple) is a value-validation error, not a keyword issue; the walker must
-  // not recurse into tuple elements (unrequested machinery) nor flag `items` itself (it is supported).
+test("#153: findUnsupportedSchemaKeyword flags tuple-form items as a fail-closed unverifiable form", () => {
+  // `items` as an array (tuple) can only be advisory-checked by the value validator (invalid,
+  // unsupported unset), so the walker hard-rejects the unverifiable form at the input boundary.
   const schema = { type: "array", items: [{ type: "string", format: "email" }] };
-  assert.equal(findUnsupportedSchemaKeyword(schema), undefined, "items is supported; tuple elements are not walked");
+  const finding = findUnsupportedSchemaKeyword(schema);
+  assert.equal(finding?.kind, "tuple_items");
+  assert.equal(finding?.path, "$.items");
+  // single-schema items is still recursed (a nested unsupported keyword there is caught normally)
+  assert.equal(
+    findUnsupportedSchemaKeyword({ type: "array", items: { type: "string", format: "email" } })?.kind,
+    "unsupported",
+  );
 });
 
 test("#153: findUnsupportedSchemaKeyword reports a root unsupported keyword + a nested one with its path", () => {

@@ -115,6 +115,12 @@ export function assertExtractSchemaSupported(output: unknown, schema: unknown): 
       `JSON Schema nesting exceeds the supported depth (>${MAX_SCHEMA_DEPTH}); simplify it.`,
     );
   }
+  if (finding.kind === "tuple_items") {
+    throw new CaptatumInputError(
+      "extract_schema_tuple_unsupported",
+      `Tuple-form "items" (arrays) are not supported at ${finding.path} — captatum cannot verify tuple validation; use a single schema (items: {…}).`,
+    );
+  }
   throw new CaptatumInputError("extract_schema_unsupported_keyword", messageForUnsupportedKeyword(finding.key, finding.path));
 }
 
