@@ -191,6 +191,27 @@ test("shell-gate: a comment with <script> doesn't mis-pair + drop the real body 
   assert.equal(extractHtml({ html, url: "https://x.test/cs" }).shellGate.jsRequired, false, "a comment's <script> must not mis-pair + drop the body");
 });
 
+test("stripInert: a </script> inside an attribute isn't taken as the close (#160 codex r14a)", () => {
+  // findCloseTag must search from the opener's END (after >), not its START — a </script> inside
+  // an attribute value like data-x="</script>" must not be treated as the block's close.
+  const html = '<html><body>'
+    + '<script data-x="</script>">var x = 1;</script>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '</body></html>';
+  const ext = extractHtml({ html, url: "https://x.test/a" });
+  assert.ok(!ext.text.includes("var x = 1"), "the script body must be stripped (close found after the opener, not in the attribute)");
+  assert.equal(ext.shellGate.jsRequired, false, "the real body survives");
+});
+
+test("stripInert: a space separator is inserted between blocks (#160 codex r14b)", () => {
+  // stripElement/stripHtmlComments inserted a space when splicing — the scanner must too, else
+  // `six<script>...</script>seven` → `sixseven` (word merge + text corruption).
+  const html = '<html><body>six<script>var x;</script>seven</body></html>';
+  const text = extractHtml({ html, url: "https://x.test/s" }).text;
+  assert.ok(text.includes("six seven"), "a space separates text around a stripped block");
+  assert.ok(!text.includes("sixseven"), "no word merge");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no

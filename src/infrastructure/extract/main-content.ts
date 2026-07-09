@@ -85,8 +85,10 @@ function stripChrome(html: string): string {
 function stripInert(html: string): string {
   const lower = html.toLowerCase();
   const inertTags = ["script", "style", "noscript", "template", "title"];
-  // Collect all inert-block starts (comments + inert tags) in document order.
-  const blocks: Array<{ start: number; tag?: string }> = [];
+  // Collect all inert-block starts (comments + inert tags) in document order. For tags, store the
+  // opener's `end` (after `>`) so findCloseTag searches from there — a `</script>` inside an
+  // attribute like <script data-x="</script>"> must not be taken as the close (#160 codex r14a).
+  const blocks: Array<{ start: number; openEnd?: number; tag?: string }> = [];
   let ci = 0;
   for (;;) {
     const at = html.indexOf("<!--", ci);
@@ -94,18 +96,20 @@ function stripInert(html: string): string {
     blocks.push({ start: at });
     ci = at + 4;
   }
-  for (const tag of inertTags) for (const open of findStartTags(html, tag)) blocks.push({ start: open.start, tag });
+  for (const tag of inertTags) for (const open of findStartTags(html, tag)) blocks.push({ start: open.start, openEnd: open.end, tag });
   blocks.sort((a, b) => a.start - b.start);
-  // Process in order, skipping blocks inside already-stripped blocks.
+  // Process in order, skipping blocks inside already-stripped blocks. A space separator is inserted
+  // (matching stripElement/stripHtmlComments) so `six<script>...</script>seven` → `six seven`, not
+  // `sixseven` (which would drop the word count + corrupt the text) (#160 codex r14b).
   let out = "", cursor = 0;
   for (const b of blocks) {
     if (b.start < cursor) continue;
-    out += html.slice(cursor, b.start);
+    out += `${html.slice(cursor, b.start)} `;
     if (b.tag === undefined) {
       const end = html.indexOf("-->", b.start + 4);
       cursor = end === -1 ? html.length : end + 3;
     } else {
-      const close = findCloseTag(lower, `</${b.tag}`, b.start);
+      const close = findCloseTag(lower, `</${b.tag}`, b.openEnd!);
       cursor = close === -1 ? html.length : findTagEnd(html, close + 2 + b.tag.length);
     }
   }
