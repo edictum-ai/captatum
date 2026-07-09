@@ -86,7 +86,7 @@ function stripChrome(html: string): string {
  *  ordering problem that sequencing stripElement + stripHtmlComments can't (#160 codex r13). */
 function stripInert(html: string): string {
   const lower = html.toLowerCase();
-  const inertTags = ["script", "style", "noscript", "template", "title"];
+  const inertTags = ["script", "style", "noscript", "template", "title", "textarea"];
   // Collect all inert-block starts (comments + inert tags) in document order. For tags, store the
   // opener's `end` (after `>`) so findCloseTag searches from there — a `</script>` inside an
   // attribute like <script data-x="</script>"> must not be taken as the close (#160 codex r14a).

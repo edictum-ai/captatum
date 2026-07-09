@@ -221,6 +221,17 @@ test("shell-gate: content inside a <footer> is preserved, not stripped as chrome
   assert.ok(ext.text.includes("real article body"), "the footer content survives in the text");
 });
 
+test("shell-gate: a <nav> inside <textarea> RCDATA doesn't mis-pair (#160 codex r16)", () => {
+  // <textarea> is RCDATA — its content is text, not markup. stripInert must strip <textarea> before
+  // stripChrome, else the <nav> inside is treated as a real chrome tag + mis-paired with a real </nav>.
+  const html = '<html><body>'
+    + '<textarea><nav> example</textarea>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html, url: "https://x.test/ta" }).shellGate.jsRequired, false, "a textarea's <nav> must not mis-pair + delete the body");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no
