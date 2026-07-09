@@ -107,6 +107,23 @@ test("C3: an unsupported keyword nested in properties.email is reported at $.pro
   assert.match(err.body.error.message, /\$\.properties\.email/, "the nested path is rendered");
 });
 
+test("C3: unsupported keywords in EVERY applied-subschema location are caught at input (full walker contract)", () => {
+  // The walker must recurse every applied-subschema site validateAt visits — not just properties/items
+  // (C3 above). An impl that only walked properties would pass C3 but let these reach egress.
+  const cases: Array<{ name: string; schema: unknown }> = [
+    { name: "additionalProperties", schema: { type: "object", additionalProperties: { type: "string", format: "email" } } },
+    { name: "allOf", schema: { allOf: [{ type: "string", format: "email" }] } },
+    { name: "anyOf", schema: { anyOf: [{ type: "string", format: "email" }] } },
+    { name: "oneOf", schema: { oneOf: [{ type: "string", format: "email" }] } },
+    { name: "not", schema: { not: { type: "string", format: "email" } } },
+  ];
+  for (const { name, schema } of cases) {
+    assert.equal(findUnsupportedSchemaKeyword(schema)?.kind, "unsupported", `${name}: walker reaches the nested keyword`);
+    const err = captureInputError(() => normalizeCaptatumInput({ url: "https://x.test/", output: "extract", schema }));
+    assert.equal(err.body.error.code, "extract_schema_unsupported_keyword", `${name}: rejected at the input boundary`);
+  }
+});
+
 // --- C2: input fail-fast at the execute() boundary — ZERO fetcher invocations. ---
 
 test("C2 (unit): normalizeCaptatumInput throws extract_schema_unsupported_keyword before any fetch", () => {
