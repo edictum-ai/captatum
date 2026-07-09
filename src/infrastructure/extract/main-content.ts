@@ -41,9 +41,11 @@ function findMatchingClose(lower: string, close: string, opens: readonly { start
   for (;;) {
     const nc = findCloseTag(lower, close, search);
     if (nc === -1) return -1;
-    const no = nextOpenIdx < opens.length ? opens[nextOpenIdx].start : -1;
-    if (no !== -1 && no < nc) { depth++; nextOpenIdx++; search = no + 1; }
-    else { if (--depth === 0) return nc; search = nc + close.length; }
+    // Batch ALL opens before this close (avoids rescanning the same suffix per open — O(n²) on
+    // deeply nested chrome like <nav>×n</nav>×n; #160 codex r15 REDOS-6).
+    while (nextOpenIdx < opens.length && opens[nextOpenIdx].start < nc) { depth++; nextOpenIdx++; }
+    if (--depth === 0) return nc;
+    search = nc + close.length;
   }
 }
 
