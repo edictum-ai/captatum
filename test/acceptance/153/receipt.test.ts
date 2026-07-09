@@ -48,25 +48,12 @@ function baseResult(overrides: Partial<Result>): Result {
 }
 
 // --- C5: outputRequested on a degrade. A summary requested but degraded to raw carries
-//     outputRequested:"summary" + output:"raw", surfaced in the lean receipt. ---
+//     outputRequested:"summary" + output:"raw", surfaced in the lean receipt. Drives a
+//     summary→raw degrade through execute() (NO transformer) so the cited line proves BOTH that
+//     applyOutputMode STAMPS outputRequested on the result itself AND buildStructuredContent
+//     FORWARDS it into the lean receipt — not one or the other (no fixture pre-population). ---
 
-test("C5: a degraded summary→raw surfaces outputRequested:'summary' in the lean receipt", () => {
-  const result = baseResult({
-    output: "raw",
-    outputRequested: "summary",
-    transform: { provider: "none", reason: "unconfigured" },
-  });
-  const lean = buildStructuredContent(result, false);
-  assert.equal(lean.outputRequested, "summary", "lean surfaces what the caller REQUESTED");
-  assert.equal(lean.output, "raw", "output reflects the ACTUAL post-degrade mode");
-  assert.equal(lean.status, "partial", "a provider:none degrade is partial");
-});
-
-// --- C5 (execute): the existing C5 pre-populates `outputRequested` in the fixture, so it only
-//     proves buildStructuredContent FORWARDS the field. This drives a summary→raw degrade through
-//     execute() and asserts applyOutputMode STAMPS outputRequested itself. ---
-
-test("C5 (execute): a summary→raw degrade stamps outputRequested on the result (not just forwarded by shape)", async () => {
+test("C5: a summary→raw degrade stamps outputRequested on the result AND surfaces it in the lean receipt", async () => {
   const text = "Some real page content for the no-transformer degrade path.";
   const b = new TextEncoder().encode(`<main>${text}</main>`);
   const fetcher: FetcherPort = {
@@ -87,9 +74,12 @@ test("C5 (execute): a summary→raw degrade stamps outputRequested on the result
   // NO transformer ⇒ a summary request degrades to raw (provider:"none", reason:"unconfigured").
   const useCase = createCaptatumUseCase({ fetcher, extractHtml, adapters: new PlatformAdapterRegistry([]), clock: { nowMs: () => 0 } });
   const result = await useCase.execute({ url: "https://x.test/", output: "summary" });
+  // STAMPING: applyOutputMode stamps outputRequested on the result itself.
   assert.equal(result.outputRequested, "summary", "applyOutputMode stamps outputRequested");
   assert.equal(result.output, "raw", "the summary degrade returns raw");
   assert.equal(result.transform?.provider, "none");
+  // LEAN FORWARDING: buildStructuredContent surfaces outputRequested in the lean receipt.
+  assert.equal(buildStructuredContent(result, false).outputRequested, "summary", "the lean receipt forwards outputRequested");
 });
 
 // --- C9: outputRequested on a SUCCESS (non-degrade path). A completed summary carries
@@ -110,46 +100,37 @@ test("C9: a successful summary carries outputRequested:'summary'", () => {
 //     (the old brittle reason allowlist — "failed" || "unconfigured" — under-reported router
 //     sub-reasons and would break under the "failed"→"transform_failed" rename). ---
 
-test("C6: transform_failed + provider:none ⇒ status partial", () => {
-  // The renamed degrade reason ("failed" → "transform_failed") must still classify as partial.
+test("C6: transform_failed + provider:none ⇒ status partial (single-fetch receipt AND bulk seed classifier)", () => {
+  // The renamed degrade reason ("failed" → "transform_failed") must still classify as partial —
+  // for BOTH the single-fetch receipt (buildStructuredContent) and the bulk seed classifier.
   const result = baseResult({
     output: "raw",
     transform: { provider: "none", reason: "transform_failed" },
   });
   assert.equal(buildStructuredContent(result, false).status, "partial");
+  assert.equal(bulkSeedStatus(result), "partial");
 });
 
-test("C6 (conformance): no_model_fit + provider:none ⇒ status partial", () => {
+test("C6 (conformance): no_model_fit + provider:none ⇒ status partial (single-fetch receipt AND bulk seed classifier)", () => {
   // Pre-fix classifyStatus only treated reason "failed"/"unconfigured" as partial, so a router
   // sub-reason like no_model_fit mislabeled status "pass". The fix: provider:"none" ⇒ partial
-  // for ANY reason. This case fails against the current reason allowlist — that is the point.
+  // for ANY reason, in BOTH the single-fetch receipt and the bulk seed classifier. This case
+  // fails against the current reason allowlist — that is the point.
   const result = baseResult({
     output: "raw",
     transform: { provider: "none", reason: "no_model_fit" },
   });
   assert.equal(buildStructuredContent(result, false).status, "partial");
+  assert.equal(bulkSeedStatus(result), "partial");
 });
 
-test("C6: a real (non-none) transform ⇒ status pass", () => {
+test("C6: a real (non-none) transform ⇒ status pass (single-fetch receipt AND bulk seed classifier)", () => {
   const result = baseResult({
     output: "summary",
     transform: { provider: "openrouter", model: "m" },
   });
   assert.equal(buildStructuredContent(result, false).status, "pass");
-});
-
-// --- C6 (bulk): the same provider:"none" ⇒ "partial" contract change applies to the bulk seed
-//     classifier `bulkSeedStatus` (the sibling in src/application/use-cases/bulk-seed.ts). Pre-fix
-//     it used the brittle reason allowlist ("failed"/"unconfigured") and mislabeled every router
-//     sub-reason as "pass"; the conformance fix simplifies it to provider:"none" ⇒ partial. ---
-
-test("C6 (bulk): bulkSeedStatus classifies any provider:none degrade as partial (the bulk-seed sibling conformance fix)", () => {
-  // A router sub-reason (not just "failed"/"unconfigured") must classify partial.
-  assert.equal(bulkSeedStatus(baseResult({ output: "raw", transform: { provider: "none", reason: "no_model_fit" } })), "partial");
-  // The renamed degrade reason ("failed" → "transform_failed") must also classify partial.
-  assert.equal(bulkSeedStatus(baseResult({ output: "raw", transform: { provider: "none", reason: "transform_failed" } })), "partial");
-  // A clean (non-none) transform stays a pass.
-  assert.equal(bulkSeedStatus(baseResult({ output: "summary", transform: { provider: "openrouter", model: "m" } })), "pass");
+  assert.equal(bulkSeedStatus(result), "pass");
 });
 
 // --- C8: finalize() defense-in-depth. The input-boundary check rejects unsupported keywords
