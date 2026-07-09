@@ -77,14 +77,44 @@ function stripChrome(html: string): string {
  *  FIRST, THEN the `<body>` is extracted, THEN hidden subtrees + site chrome — so a fake opener in
  *  any inert context can't be selected by extractBodyHtml or mis-paired by stripChrome (#160 codex).
  *  Hidden classes are collected from the FULL html before `<style>` is stripped. */
+/** Context-aware inert-strip: removes comments + script/style/noscript/template/title in a SINGLE
+ *  document-order pass. Processing in document order means a `<script>` inside a comment is never
+ *  seen (the comment is stripped first when `<!--` comes first), and a `<!--` inside a script is
+ *  never seen (the script is stripped first when `<script` comes first). Resolves the opposing-
+ *  ordering problem that sequencing stripElement + stripHtmlComments can't (#160 codex r13). */
+function stripInert(html: string): string {
+  const lower = html.toLowerCase();
+  const inertTags = ["script", "style", "noscript", "template", "title"];
+  // Collect all inert-block starts (comments + inert tags) in document order.
+  const blocks: Array<{ start: number; tag?: string }> = [];
+  let ci = 0;
+  for (;;) {
+    const at = html.indexOf("<!--", ci);
+    if (at === -1) break;
+    blocks.push({ start: at });
+    ci = at + 4;
+  }
+  for (const tag of inertTags) for (const open of findStartTags(html, tag)) blocks.push({ start: open.start, tag });
+  blocks.sort((a, b) => a.start - b.start);
+  // Process in order, skipping blocks inside already-stripped blocks.
+  let out = "", cursor = 0;
+  for (const b of blocks) {
+    if (b.start < cursor) continue;
+    out += html.slice(cursor, b.start);
+    if (b.tag === undefined) {
+      const end = html.indexOf("-->", b.start + 4);
+      cursor = end === -1 ? html.length : end + 3;
+    } else {
+      const close = findCloseTag(lower, `</${b.tag}`, b.start);
+      cursor = close === -1 ? html.length : findTagEnd(html, close + 2 + b.tag.length);
+    }
+  }
+  return out + html.slice(cursor);
+}
+
 export function stripChromeFromRaw(html: string, revealedIds: Set<string>): string {
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
-  // 3-phase inert strip (order matters): (1) script/style/noscript/template FIRST — they can
-  // contain `<!--` (legacy JS) that stripHtmlComments would mis-pair (#160 codex r12); (2) comments
-  // SECOND — they can contain `<title>` that stripElement("title") would mis-pair (#160 codex r11);
-  // (3) title LAST — the real <title> RCDATA. This mirrors extractVisibleText's pre-clean order.
-  const withoutCode = ["script", "style", "noscript", "template"].reduce((v, tag) => stripElement(v, tag), html);
-  const inert = stripElement(stripHtmlComments(withoutCode), "title");
+  const inert = stripInert(html);
   const body = extractBodyHtml(inert) ?? inert;
   return stripChrome(stripHiddenSubtrees(body, hiddenClasses, revealedIds));
 }
@@ -125,9 +155,7 @@ export function selectMainContentHtml(html: string, revealedIds: Set<string> = r
   // does not under-detect streaming. A React `<div hidden id="S:N">` boundary completed by a
   // `$RC` is real server-streamed content the browser reveals, so the article inside one IS a
   // candidate (a genuinely `display:none`-hidden article is still excluded — #97 safety).
-  const withoutCode = ["script", "style", "noscript", "template"]
-    .reduce((value, tag) => stripElement(value, tag), html);
-  const clean = stripChrome(stripHtmlComments(stripHiddenSubtrees(withoutCode, hiddenClasses, revealedIds)));
+  const clean = stripChrome(stripHiddenSubtrees(stripInert(html), hiddenClasses, revealedIds));
 
   // Score every <article> by visible-text length. The FIRST is the page's primary (document
   // order), but a SUBSTANTIALLY richer sibling overrides it — a React loading skeleton is a short

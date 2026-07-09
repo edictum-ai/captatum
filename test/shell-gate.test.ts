@@ -179,6 +179,18 @@ test("shell-gate: a script with legacy <!-- doesn't truncate the real body (#160
   assert.equal(extractHtml({ html, url: "https://x.test/s" }).shellGate.jsRequired, false, "a script's <!-- must not truncate the body");
 });
 
+test("shell-gate: a comment with <script> doesn't mis-pair + drop the real body (#160 codex r13)", () => {
+  // The context-aware stripInert scanner processes comments + scripts in document order — a
+  // <script> inside a comment is never seen (the comment is stripped first). The 3-phase order
+  // (scripts before comments) would mis-pair the comment's <script> with the real </script>.
+  const html = '<html><head><!-- <script> --></head><body>'
+    + '<script>var x = 1;</script>'
+    + '<div><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></div>'
+    + '<nav><a>Home</a></nav>'
+    + '</body></html>';
+  assert.equal(extractHtml({ html, url: "https://x.test/cs" }).shellGate.jsRequired, false, "a comment's <script> must not mis-pair + drop the body");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no
