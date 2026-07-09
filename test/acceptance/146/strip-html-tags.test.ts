@@ -140,9 +140,11 @@ test("#146 REDOS: a flood of malformed unterminated quotes (legacy path) stays l
   assert.ok(large / Math.max(small, 1) < 12, `200k/50k ratio ${(large / small).toFixed(1)} — likely quadratic`);
 });
 
-// --- Cross-caller integration (criteria 10/11/13): the directive JS must not reach the
-//     visible-text feed an agent trusts. extractVisibleText is the real consumer of
-//     stripHtmlTags; this is the issue's motivating repro at the pipeline level. ---
+// --- extractVisibleText integration (criterion 13): the directive JS must not reach the
+//     visible-text feed an agent trusts. extractVisibleText is the primary consumer of
+//     stripHtmlTags; this is the issue's motivating repro at the pipeline level. The other
+//     stripHtmlTags callers (tier1-payload, metadata, svg-text — criteria 10/11) are pinned
+//     in cross-callers.test.ts. ---
 
 test("#146 integration: extractVisibleText drops an Alpine directive, keeps the prose", () => {
   const html = `<html><body>` +

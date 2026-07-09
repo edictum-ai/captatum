@@ -23,6 +23,10 @@ const phasesPath = path.join(accDir, "phases.json");
 
 const phases = JSON.parse(readFileSync(phasesPath, "utf8")) as Record<string, boolean>;
 const files: string[] = [];
+// Fail closed: an activated phase whose dir is missing / not a directory / has no .test.ts
+// must error, not silently skip — otherwise the CI acceptance step goes green while no
+// activated suite actually ran, defeating the gate. (#164 codex P2)
+let missing = false;
 for (const [phase, active] of Object.entries(phases)) {
   if (!active) continue;
   const dir = path.join(accDir, phase);
@@ -30,14 +34,24 @@ for (const [phase, active] of Object.entries(phases)) {
   try {
     st = statSync(dir);
   } catch {
-    console.error(`acceptance: phase "${phase}" activated but dir ${dir} missing — skipping`);
+    console.error(`acceptance: phase "${phase}" is activated but its dir ${dir} is missing`);
+    missing = true;
     continue;
   }
-  if (!st.isDirectory()) continue;
-  for (const f of readdirSync(dir)) {
-    if (f.endsWith(".test.ts")) files.push(path.join(dir, f));
+  if (!st.isDirectory()) {
+    console.error(`acceptance: phase "${phase}" is activated but ${dir} is not a directory`);
+    missing = true;
+    continue;
   }
+  const phaseFiles = readdirSync(dir).filter((f) => f.endsWith(".test.ts"));
+  if (phaseFiles.length === 0) {
+    console.error(`acceptance: phase "${phase}" is activated but has no .test.ts in ${dir}`);
+    missing = true;
+    continue;
+  }
+  for (const f of phaseFiles) files.push(path.join(dir, f));
 }
+if (missing) process.exit(1);
 
 if (files.length === 0) {
   console.log("acceptance: no activated phases (test/acceptance/phases.json) — nothing to run");
