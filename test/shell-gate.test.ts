@@ -232,6 +232,15 @@ test("shell-gate: a <nav> inside <textarea> RCDATA doesn't mis-pair (#160 codex 
   assert.equal(extractHtml({ html, url: "https://x.test/ta" }).shellGate.jsRequired, false, "a textarea's <nav> must not mis-pair + delete the body");
 });
 
+test("shell-gate: visible <textarea> content is preserved, not discarded (#160 codex r17)", () => {
+  // <textarea> content IS visible text (unlike script/style) — stripInert must keep it (with `<`
+  // escaped so fake tags can't mis-pair), not strip the whole block.
+  const html = '<html><body><textarea>' + "The real article body, substantial and complete. ".repeat(3) + '</textarea></body></html>';
+  const ext = extractHtml({ html, url: "https://x.test/tv" });
+  assert.equal(ext.shellGate.jsRequired, false, "visible textarea content must not be discarded");
+  assert.ok(ext.text.includes("real article body"), "the textarea's visible text survives");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no

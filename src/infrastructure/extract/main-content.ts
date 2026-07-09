@@ -112,7 +112,12 @@ function stripInert(html: string): string {
       cursor = end === -1 ? html.length : end + 3;
     } else {
       const close = findCloseTag(lower, `</${b.tag}`, b.openEnd!);
-      cursor = close === -1 ? html.length : findTagEnd(html, close + 2 + b.tag.length);
+      const contentEnd = close === -1 ? html.length : close;
+      const blockEnd = close === -1 ? html.length : findTagEnd(html, close + 2 + b.tag.length);
+      // <textarea> is RCDATA — its content IS visible text (unlike script/style). Keep it but
+      // escape `<` so fake tags inside can't mis-pair with stripChrome (#160 r16/r17).
+      if (b.tag === "textarea") out += `${html.slice(b.openEnd!, contentEnd).replace(/</g, "&lt;")} `;
+      cursor = blockEnd;
     }
   }
   return out + html.slice(cursor);
