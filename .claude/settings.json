@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(test/acceptance/**)",
+      "Write(test/acceptance/**)",
+      "MultiEdit(test/acceptance/**)",
+      "Bash(git push origin main:*)",
+      "Bash(git push origin HEAD:main:*)",
+      "Bash(git push --force origin main:*)",
+      "Bash(git push -f origin main:*)"
+    ]
+  }
+}

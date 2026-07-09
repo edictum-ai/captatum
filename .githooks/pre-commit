@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Engineering OS process-guard — local mirror of the CI artifact-chain check.
+#
+# Source of truth is engineering-os/process-guard/scripts/check.mjs; this hook only
+# runs it early so a freeze-hash / mixed-diff violation is caught before push. The
+# real wall is the required `process-guard` CI check + branch protection on main.
+#
+# It NEVER hard-blocks a commit on missing tooling: if no engineering-os checkout is
+# found it prints a warning and exits 0. A genuine guard *violation* does block —
+# that is the point of a local mirror.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+# Locate an engineering-os checkout: explicit env var wins, else common sibling paths.
+candidates=(
+  "${ENGINEERING_OS_DIR:-}"
+  "$repo_root/../engineering-os"
+  "$HOME/project/engineering-os"
+)
+
+check=""
+for dir in "${candidates[@]}"; do
+  [ -n "$dir" ] || continue
+  if [ -f "$dir/process-guard/scripts/check.mjs" ]; then
+    check="$dir/process-guard/scripts/check.mjs"
+    break
+  fi
+done
+
+if [ -z "$check" ]; then
+  echo "⚠ process-guard (local): no engineering-os checkout found — set ENGINEERING_OS_DIR" >&2
+  echo "  or clone https://github.com/acartag7/engineering-os as a sibling. Skipping local check." >&2
+  exit 0
+fi
+
+PG_BASE_REF="${PG_BASE_REF:-origin/main}" \
+PG_SRC_PATHS="src/" \
+PG_CONTRACT_PATHS="docs/contracts.md" \
+  node "$check"
