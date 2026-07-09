@@ -12,6 +12,22 @@ test("normalizeBulkInput: defaults output=raw, allowRender=false, timeoutMs=8000
   assert.deepEqual(out.invalid, []);
 });
 
+test("normalizeBulkInput: output:extract with an unsupported schema keyword is rejected at the input boundary (#153 sibling)", () => {
+  // Same trust-boundary decision as single-fetch captatum: a schema captatum cannot verify is
+  // rejected before any per-seed fetch/transform (a tool-level error, not a per-seed failure).
+  assert.throws(
+    () => normalizeBulkInput({ urls: ["https://a.test/x"], output: "extract", schema: { type: "object", format: "csv" } }),
+    (error) => {
+      assert.equal(error instanceof CaptatumInputError, true);
+      assert.equal((error as CaptatumInputError).body.error.code, "invalid_schema");
+      return true;
+    },
+  );
+  // A valid extract schema passes the input boundary (the per-seed work happens later).
+  const out = normalizeBulkInput({ urls: ["https://a.test/x"], output: "extract", schema: { type: "object", properties: { a: { type: "string" } } } });
+  assert.equal(out.request.requestedOutput, "extract");
+});
+
 test("normalizeBulkInput: allowRender:true is accepted (render-on-bulk, PR 3) + defaults false", () => {
   const out = normalizeBulkInput({ urls: ["https://a.test/x"], allowRender: true });
   assert.equal(out.request.allowRender, true, "allowRender:true flows through (no longer rejected)");

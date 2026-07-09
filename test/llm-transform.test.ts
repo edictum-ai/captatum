@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { ClockPort } from "../src/application/ports/clock.ts";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
 import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts";
+import { CaptatumInputError } from "../src/application/use-cases/captatum-input.ts";
 import type { HtmlExtraction, HtmlExtractionInput } from "../src/application/use-cases/tier1-extract.ts";
 import { TransformError } from "../src/application/ports/transformer.ts";
 import { validateJsonSchema } from "../src/infrastructure/llm/json-schema.ts";
@@ -158,14 +159,19 @@ test("output extract keeps parsed JSON on minLength schema mismatch and surfaces
   assert.equal(result.output, "extract");
   assert.equal(result.result, JSON.stringify({ title: "Hi" }, null, 2));
   assert.deepEqual(result.errors, [{ code: "extract_schema_invalid", message: "$.title length must be at least 10" }]);
+  // #153: a SUPPORTED-keyword value mismatch is advisory (data still returned) and now carries
+  // a typed transform.reason so the caller can tell WHY the data is suspect (machine-readable).
+  assert.equal(result.transform?.reason, "schema_validation_failed");
+  assert.equal(result.transform?.schemaIssue, "$.title length must be at least 10");
 });
 
-test("output extract fails closed for an unsupported schema keyword (cannot be verified)", async () => {
+test("output extract fails closed at the INPUT boundary for an unsupported schema keyword (#153)", async () => {
   const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), {
     text: '{"title":"Hi"}',
   });
-  // `format` is a keyword this validator does not support, so the value cannot
-  // be checked — the contract requires failing closed rather than accepting it.
+  // `format` is a keyword this validator cannot check, so the schema is rejected at the input
+  // boundary — before any fetch/LLM — and the message LEADS WITH THE OFFENDING KEY (the old
+  // "$.title schema keyword \"format\" is not supported" visually merged `$.title` + `schema`).
   const schema = { type: "object", properties: { title: { type: "string", format: "email" } } };
   const transformer = new LlmTransformer({
     router: new ModelRouter(provider.candidates()),
@@ -173,44 +179,57 @@ test("output extract fails closed for an unsupported schema keyword (cannot be v
     clock: new FakeClock([10, 15]),
   });
 
-  const result = await createCaptatumUseCase({
-    fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
-    extractHtml: new FakeExtractor(extraction({ text: "Original unsupported source" })).extract,
-    transformer,
-    clock: new FakeClock([0, 4, 5, 5, 8, 8]),
-  }).execute({ url: "https://extract.test/unsupported", output: "extract", schema });
-
-  assert.equal(result.output, "raw");
-  assert.equal(result.result, "Original unsupported source");
-  assert.deepEqual(result.errors, [{ code: "extract_schema_invalid", message: "$.title schema keyword \"format\" is not supported" }]);
+  await assert.rejects(
+    createCaptatumUseCase({
+      fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
+      extractHtml: new FakeExtractor(extraction({ text: "Original unsupported source" })).extract,
+      transformer,
+      clock: new FakeClock([0, 4, 5, 5, 8, 8]),
+    }).execute({ url: "https://extract.test/unsupported", output: "extract", schema }),
+    (error) => {
+      assert.equal(error instanceof CaptatumInputError, true);
+      const body = (error as CaptatumInputError).body.error;
+      assert.equal(body.code, "invalid_schema");
+      assert.equal(body.message, 'Unsupported JSON Schema keyword "format" at $.properties.title — captatum cannot verify it; remove it.');
+      return true;
+    },
+  );
+  // Fail-fast: a schema captatum cannot verify never reaches the provider.
+  assert.equal(provider.calls.length, 0);
 });
 
-test("output extract fails closed for an unsupported keyword nested in anyOf/oneOf/not", async () => {
-  // The unsupported flag must propagate out of composites (which collapse nested
-  // results to a boolean), not just direct properties/items/allOf.
-  for (const schema of [
-    { anyOf: [{ type: "string" }, { type: "number", format: "email" }] },
-    { oneOf: [{ type: "string" }, { type: "number", format: "email" }] },
-    { not: { type: "string", format: "email" } },
-  ]) {
-    const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), {
-      text: '{"x":5}',
-    });
+test("output extract fails closed at the INPUT boundary for an unsupported keyword nested in anyOf/oneOf/not (#153)", async () => {
+  // The recursive input scan must descend composites (a flat top-level check would miss the
+  // nested `format`) and name the offending key + its path. Previously this propagated as a
+  // late value-validator `extract_schema_invalid`; it now rejects at the input boundary.
+  const cases: Array<{ schema: unknown; path: string }> = [
+    { schema: { anyOf: [{ type: "string" }, { type: "number", format: "email" }] }, path: "$.anyOf[1]" },
+    { schema: { oneOf: [{ type: "string" }, { type: "number", format: "email" }] }, path: "$.oneOf[1]" },
+    { schema: { not: { type: "string", format: "email" } }, path: "$.not" },
+  ];
+  for (const { schema, path } of cases) {
+    const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), { text: '{"x":5}' });
     const transformer = new LlmTransformer({
       router: new ModelRouter(provider.candidates()),
       providers: { openrouter: provider },
       clock: new FakeClock([10, 15]),
     });
-    const result = await createCaptatumUseCase({
-      fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
-      extractHtml: new FakeExtractor(extraction({ text: "Original composite source" })).extract,
-      transformer,
-      clock: new FakeClock([0, 4, 5, 5, 8, 8]),
-    }).execute({ url: "https://extract.test/composite", output: "extract", schema });
-
-    assert.equal(result.output, "raw", `composite ${JSON.stringify(schema)} should fail closed, got output=${result.output}`);
-    assert.equal(result.errors[0]?.code, "extract_schema_invalid");
-    assert.ok(result.errors[0]?.message.includes("format"), `expected format in message: ${result.errors[0]?.message}`);
+    await assert.rejects(
+      createCaptatumUseCase({
+        fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
+        extractHtml: new FakeExtractor(extraction({ text: "Original composite source" })).extract,
+        transformer,
+        clock: new FakeClock([0, 4, 5, 5, 8, 8]),
+      }).execute({ url: "https://extract.test/composite", output: "extract", schema }),
+      (error) => {
+        assert.equal(error instanceof CaptatumInputError, true, `composite ${JSON.stringify(schema)} should reject at input`);
+        const body = (error as CaptatumInputError).body.error;
+        assert.equal(body.code, "invalid_schema");
+        assert.equal(body.message, `Unsupported JSON Schema keyword "format" at ${path} — captatum cannot verify it; remove it.`);
+        return true;
+      },
+    );
+    assert.equal(provider.calls.length, 0, `composite ${JSON.stringify(schema)} must not call the provider`);
   }
 });
 
@@ -261,7 +280,7 @@ test("output extract invalid JSON returns structured error and keeps fetch prove
 
   assert.equal(result.output, "raw");
   assert.equal(result.result, "Original clean content");
-  assert.deepEqual(result.transform, { provider: "none", reason: "failed", latencyMs: 4 });
+  assert.deepEqual(result.transform, { provider: "none", reason: "transform_failed", latencyMs: 4 });
   assert.equal(result.finalUrl, "https://extract.test/final");
   assert.deepEqual(result.redirects, redirects);
   assert.deepEqual(result.attempts.map((attempt) => attempt.reason), ["content-present"]);

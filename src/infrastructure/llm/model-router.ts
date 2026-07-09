@@ -211,7 +211,7 @@ export class LlmTransformer implements TransformPort {
           outTokens: finalized.outTokens,
           latencyMs,
           costUsd: accumulatedCostUsd,
-          ...(finalized.schemaIssue ? { schemaIssue: finalized.schemaIssue } : {}),
+          ...(finalized.schemaIssue ? { schemaIssue: finalized.schemaIssue, reason: "schema_validation_failed" } : {}), // #153: typed reason for the advisory mismatch
           ...(tried.length > 0 ? { fallbackFrom: tried.join(", ") } : {}),
         },
       };

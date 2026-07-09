@@ -1,17 +1,10 @@
 import { deepEqual, finiteNumber, hasDuplicate, invalid, isMultipleOf, isRecord, matchesType, nonNegativeInteger, objectMap, ok, stringArray, stripJsonFence, unsupported, toRegExp, type SchemaValidationResult } from "./json-schema-utils.ts";
 import { validateComposites } from "./json-schema-composites.ts";
+import { MAX_SCHEMA_DEPTH, SUPPORTED_KEYS, unsupportedKeywordMessage } from "./schema-keywords.ts";
 
 export type { SchemaValidationResult } from "./json-schema-utils.ts";
 
 const JSON_TYPES = new Set(["array", "boolean", "integer", "null", "number", "object", "string"]);
-const SUPPORTED_KEYS = new Set([
-  "$comment", "$defs", "$id", "$schema", "additionalProperties", "allOf", "anyOf", "const",
-  "default", "deprecated", "description", "enum", "examples", "exclusiveMaximum",
-  "exclusiveMinimum", "items", "maxItems", "maxLength", "maxProperties", "maximum",
-  "minItems", "minLength", "minProperties", "minimum", "multipleOf", "not", "oneOf",
-  "pattern", "properties", "readOnly", "required", "title", "type", "uniqueItems",
-  "writeOnly", "definitions",
-]);
 
 export function parseJsonResult(text: string): unknown {
   const trimmed = stripJsonFence(text.trim());
@@ -32,6 +25,11 @@ function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Re
   if (stack.has(schema)) return ok();
   stack.add(schema);
   try {
+    // Defense-in-depth (#153): the input scan depth-caps caller schemas, but if a path ever
+    // bypasses that scan a pathologically deep schema would recurse unboundedly here.
+    // stack.size == the current recursion depth; fail closed (unsupported → finalize throws →
+    // raw fallback) past the cap instead of stack-overflowing after a billed LLM call.
+    if (stack.size > MAX_SCHEMA_DEPTH) return unsupported(`${path} schema nesting exceeds the ${MAX_SCHEMA_DEPTH}-level validation depth — simplify it`);
     for (const result of [
       validateSupported(schema, path),
       validateComposites(value, schema, path, stack, validateAt),
@@ -52,7 +50,10 @@ function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Re
 
 function validateSupported(schema: Record<string, unknown>, path: string): SchemaValidationResult {
   const unsupportedKey = Object.keys(schema).find((key) => !SUPPORTED_KEYS.has(key));
-  return unsupportedKey ? unsupported(`${path} schema keyword "${unsupportedKey}" is not supported`) : ok();
+  // Defense-in-depth backstop (#153): unsupported keywords are now rejected at the input
+  // boundary, so this fires only on paths that bypass that check (e.g. captatum_bulk). Same
+  // key-leading message as the input reject.
+  return unsupportedKey ? unsupported(unsupportedKeywordMessage(unsupportedKey, path)) : ok();
 }
 
 function validateEnum(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {

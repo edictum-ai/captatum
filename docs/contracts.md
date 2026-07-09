@@ -423,7 +423,8 @@ Result {
   schemaVersion: 1,
   finalUrl, redirects: [{ url, status }],
   tier: 1 | 2 | 3 | "none" | "error" | "render-unavailable" | "render-blocked",
-  output: "summary" | "raw" | "extract",
+  output: "summary" | "raw" | "extract",            // the output actually DELIVERED (raw after a summary/extract fallback)
+  outputRequested: "summary" | "raw" | "extract",   // the output the caller ASKED for; == output unless summary/extract fell back to raw (#153). Set by the use case on every result (absent only on hand-built records).
   platform: { adapterId, label, detectedFrom },   // adapterId: "generic" (Tier-1) or a platform id e.g. "greenhouse"/"lever"/"ashby" (Tier-2)
   jsRequired: boolean,
   resolvedVia: string,                            // e.g. "tier1-jsonld", "tier1-json", "tier1-text", "tier3-playwright"
@@ -431,7 +432,7 @@ Result {
   contentType,
   title,                                          // when derivable
   structured: { canonicalUrl?, jsonLd?, og?, meta?, appState?, images? }, // parsed from raw HTML (present when found); images = bounded absolute http(s) image URLs (og:image*, JSON-LD image/ImageObject, <img>/<source srcset>); private/localhost hosts stripped, never fetched by this service
-  transform: { provider, model?, free?, inTokens?, outTokens?, latencyMs?, costUsd?, reason?, schemaIssue?, fallbackFrom?, truncated? }, // present on summary/extract or fallback; schemaIssue = non-fatal extract-schema advisory; truncated = the summary was cut at the model's output ceiling after escalation (#125)
+  transform: { provider, model?, free?, inTokens?, outTokens?, latencyMs?, costUsd?, reason?, schemaIssue?, fallbackFrom?, truncated? }, // present on summary/extract or fallback. reason = a typed fallback/outcome vocabulary (#153): "unconfigured" (no provider) | "transform_failed" (a configured provider threw — was "failed") | "schema_validation_failed" (extract returned parseable JSON that violated a SUPPORTED schema keyword — advisory; rides with schemaIssue), OR a router pick reason ("no_model_fit"/"sensitive_content_no_local_provider"/"provider_unconfigured"/"model_unavailable"/"unsupported_provider"). schemaIssue = non-fatal extract-schema advisory message; truncated = the summary was cut at the model's output ceiling after escalation (#125)
   timings: { totalMs, fetchMs, renderMs?, transformMs? },
   errors: [{ code, message }],
 }
@@ -464,6 +465,7 @@ Default (lean) `structuredContent`:
   ok: boolean,                         // status !== "fail"
   status: "pass" | "partial" | "fail",
   url, finalUrl, title, output,
+  outputRequested,                     // the output the caller asked for; present when it differs from (or is richer than) the delivered output — distinguishes "you got raw because extract/summary fell back" from a real raw request (#153)
   contentType: "article" | "job" | "json" | "pin" | "product" | "spa" | "unknown",   // classified from the raw HTTP content-type (json), JSON-LD @type / og:type / host / jsRequired
   result,                              // summary text | raw content | extracted JSON (string)
   tier, code, codeText, bytes,         // kept for existing consumers
@@ -493,9 +495,10 @@ including JSON-LD `description`/`articleBody`, `redirects`, `durationMs`,
 with `latencyMs`/`costUsd`/`schemaIssue`) and replaces the lean `transform` with
 the full one. The lean payload never carries the full `structured` blob, so
 JSON-LD `description`/`articleBody` no longer duplicate the `result` text by
-default. The lean `transform` keeps `reason` (the small fallback signal that
-distinguishes a real summary from a silent raw fallback); only `latencyMs`/
-`costUsd`/`schemaIssue` are debug-gated.
+default. The lean `transform` keeps `reason` (the small fallback/outcome signal:
+`unconfigured`/`transform_failed`/`schema_validation_failed` distinguish a real
+summary from a silent raw fallback, or flag a non-fatal extract-schema mismatch
+— #153); only `latencyMs`/`costUsd`/`schemaIssue` are debug-gated.
 
 **v0 wire-shape evolution (noted breaking changes vs the previous default
 `structuredContent`):** under v0 (fields may be added freely; removals/renames
@@ -574,7 +577,9 @@ The Transform stage handles `output: summary`/`extract`: resolved content is tur
 
 Modes: `summarize` (default — concise answer to `prompt`, optionally to a token `budget`) and `extract` (structured JSON per `schema`). `output: raw` skips the LLM and returns clean resolved content.
 
-`extract` validates the provider's JSON before returning it. The validator enforces the supported JSON Schema subset used by this tool (`type`, `required`, `properties`, `additionalProperties`, `items`, `enum`/`const`, string length/pattern, numeric bounds, array/property counts, uniqueness, and `allOf`/`anyOf`/`oneOf`/`not`) and fails closed with `extract_schema_invalid` for unsupported validation keywords instead of accepting schema-invalid output. For **supported** keywords, a value mismatch (wrong type, `minLength`, etc.) is **advisory**: the parsed JSON is still returned (imperfect structured data > raw fallback) but the mismatch is surfaced as a non-fatal `extract_schema_invalid` error so the caller is not silently handed schema-violating data.
+**Input-boundary schema check (#153).** The caller-supplied `schema` for `output: "extract"` is untrusted input, validated at the **input boundary** — before any fetch or LLM call — by an **allowlist** of supported JSON Schema keywords (the same `SUPPORTED_KEYS` the value-validator uses; never a blocklist). The scan recurses into `properties`/`items`/`additionalProperties`/`allOf`/`anyOf`/`oneOf`/`not`/`$defs`/`definitions`, is iterative with a visited-set, a node cap (`MAX_SCHEMA_NODES`), AND a nesting-depth cap (`MAX_SCHEMA_DEPTH`) — the depth cap also bounds the recursive value-validator, so a pathologically deep all-supported schema cannot pass the node cap and then stack-overflow `finalize` after a billed LLM call. It fail-closes five ways, each throwing a `CaptatumInputError` (`code: "invalid_schema"`) that surfaces as a JSON-RPC `InvalidParams` error with no fetch/transform performed: (a) a **payload too large** — total serialized size over `MAX_SCHEMA_BYTES` (a one-node schema with a multi-MB `description`/`enum`/`examples` would otherwise pass the structural caps and get `JSON.stringify`'d into the transform prompt); (b) an **unsupported keyword** — message leads with the offending key and its path, e.g. `Unsupported JSON Schema keyword "budget" at $ — captatum cannot verify it; remove it.` (rephrased from the old `$ schema keyword "budget" is not supported`, which visually merged `$` + `schema` into `$schema` and hid that `budget` — not `$schema` — was the offender); (c) an **unsupported value-form** of a supported key — tuple/array-valued `items`, or a scalar/wrong-type schema-valued keyword (`items`/`additionalProperties`/`not` not object-or-boolean; `properties`/`$defs` not an object; `allOf`/`anyOf`/`oneOf` not an array); (d) a **malformed schema** (not an object or boolean — e.g. a number/string/array); (e) a schema **too large/complex or too deeply nested** structurally (over the node or depth cap). `$ref`/`format`/`contentEncoding` and other keywords this validator cannot check are unsupported by design — captatum refuses to accept structured data it cannot verify rather than best-effort parsing. Fine-grained value checks (regex-pattern backtracking, supported-keyword value mismatches) remain at `finalize`, where they hard- or soft-fail honestly.
+
+`extract` validates the provider's JSON before returning it. The validator enforces the supported JSON Schema subset used by this tool (`type`, `required`, `properties`, `additionalProperties`, `items`, `enum`/`const`, string length/pattern, numeric bounds, array/property counts, uniqueness, and `allOf`/`anyOf`/`oneOf`/`not`). Unsupported keywords are now rejected at the **input boundary** (above), so they reach this value-validator only as a defense-in-depth backstop (e.g. the bulk path) — where it still fails closed with `extract_schema_invalid` using the same key-leading message. For **supported** keywords, a value mismatch (wrong type, `minLength`, etc.) is **advisory**: the parsed JSON is still returned (imperfect structured data > raw fallback) with `transform.reason: "schema_validation_failed"` + the mismatch surfaced as a non-fatal `extract_schema_invalid` error so the caller is not silently handed schema-violating data.
 
 Provider-configurable via `transform`: **OpenRouter** (default; OpenAI-compatible `chat/completions` over plain `node:https`, key from config) or **local Ollama** (zero egress only when `OLLAMA_BASE_URL` is loopback; a remote HTTPS Ollama is classified as a hosted provider and bypassed for sensitive content). Every provider call carries a bounded `max_tokens`/`num_predict` — the server default when `budget` is omitted, **clamped to the chosen model's max output (#125: deepseek-v4-flash 16 384, qwen3.6-flash 65 536, default 8 000 — replacing the old global 4 000 ceiling that silently truncated heavy doc pages)** — so a missing `budget` cannot trigger unbounded paid generation. If a completion still returns `finish_reason=length`, the router **escalates the budget** (doubling up to the model's max, then falling to a higher-cap candidate) and only if it still truncates surfaces a non-fatal `transform_truncated` advisory — the caller is never silently handed a cut-off answer. The model router enforces a policy hosted routers won't: free-first (`pricing.prompt=="0"`), per-request fit (context length, text modality — filter out audio/coding/image models, JSON-schema support for `extract`), with deterministic **sticky per-model health** (a hard failure — throw / empty / non-2xx / invalid JSON / unsupported schema keyword — pushes into a 5-attempt window; ≥3 hard failures demote one rank, recovering after 2 consecutive successes; soft/garbage output does NOT demote) and a fallback chain: best free → cheap paid (Flash/Haiku) → local Ollama. Provenance records `{provider, model, free, inTokens, outTokens, latencyMs}`. On failure, fall back to raw content + a provenance flag.
 
@@ -687,7 +692,10 @@ Admission overload is a distinct, **retryable** JSON-RPC error, separate from `I
 
 Stable `code` values; `message` may change. Auth failure sets `WWW-Authenticate` to an RFC 6750 `Bearer` challenge — `Bearer realm="captatum", error="<invalid_token|insufficient_scope>", error_description="<the same actionable text as the JSON-RPC message>"` — so a non-OAuth Streamable HTTP client can read programmatically why its request was rejected. Per RFC 6750 §3 the `error`/`error_description` attributes appear **only when credentials were presented** (a Bearer token that failed verification → `invalid_token`, or a verified token that failed a scope check → `insufficient_scope`); a request with no authentication information (missing or non-Bearer `Authorization`) gets a realm-only challenge, with the actionable remedy carried in the JSON-RPC `message`. Codes outside the RFC 6750 §3.1 set (e.g. `access_denied` at `/oauth/*`) emit realm only. (#104)
 Tool input validation failures use the same HTTP error wrapper and include
-`invalid_input` for malformed tool payloads before any outbound work begins.
+`invalid_input` for malformed tool payloads, and `invalid_schema` for an
+`output: "extract"` schema that is malformed or uses an unsupported JSON Schema
+keyword (rejected at the input boundary before any fetch/LLM — #153),
+each before any outbound work begins.
 Guarded fetch reject codes include `unsupported_scheme`, `invalid_url`,
 `crlf_url`, `userinfo_url`, `private_address`, `dns_error`, `dns_empty`,
 `redirect_limit`, `max_bytes`, `timeout`, `unsupported_encoding`,

@@ -27,6 +27,7 @@ export function buildStructuredContent(result: Result, debug: boolean): Record<s
     finalUrl: redactSignedQueryParams(result.finalUrl),
     title: result.title,
     output: result.output,
+    ...(result.outputRequested !== undefined && result.outputRequested !== result.output ? { outputRequested: result.outputRequested } : {}), // #153: present only when the delivered output differs from the request (extract/summary fell back to raw)
     contentType,
     result: snippet(result.result),
     tier: result.tier,
@@ -73,7 +74,7 @@ function classifyStatus(result: Result, warnings: ProvenanceError[]): Status {
   if (warnings.length > 0) return "partial";
   // Summary/extract requested but the transform fell back to raw — degraded.
   const t = result.transform;
-  if (t && t.provider === "none" && (t.reason === "failed" || t.reason === "unconfigured")) {
+  if (t && t.provider === "none" && (t.reason === "transform_failed" || t.reason === "unconfigured")) {
     return "partial";
   }
   return "pass";
@@ -87,8 +88,8 @@ function leanTransform(transform: TransformInfo | undefined): Record<string, unk
   if (transform.free !== undefined) lean.free = transform.free;
   if (transform.inTokens !== undefined) lean.inTokens = transform.inTokens;
   if (transform.outTokens !== undefined) lean.outTokens = transform.outTokens;
-  // reason is small and load-bearing: "failed"/"unconfigured" distinguishes a
-  // silent raw fallback from a real summary without inspecting `status`.
+  // reason is small and load-bearing: "transform_failed"/"unconfigured"/"schema_validation_failed"
+  // distinguishes a silent raw fallback (or a non-fatal extract mismatch) from a real summary.
   if (transform.reason !== undefined) lean.reason = transform.reason;
   return lean;
 }

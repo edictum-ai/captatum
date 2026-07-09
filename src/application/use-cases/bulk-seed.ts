@@ -28,11 +28,11 @@ export function hostOf(url: string): string {
 
 /** Per-seed pass/partial/fail. Mirrors the MCP shape's classifyStatus: fail on tier:error,
  *  4xx/5xx, or empty body; partial on a non-fatal advisory or a transform that fell back
- *  to raw (provider none, failed/unconfigured); else pass. */
+ *  to raw (provider none, transform_failed/unconfigured); else pass. */
 export function bulkSeedStatus(r: Result): BulkStatus {
   if (r.tier === "error" || Number(r.code) >= 400 || !hasContent(r)) return "fail";
   const t = r.transform;
-  if (t && t.provider === "none" && (t.reason === "failed" || t.reason === "unconfigured")) return "partial";
+  if (t && t.provider === "none" && (t.reason === "transform_failed" || t.reason === "unconfigured")) return "partial";
   if (r.errors.length > 0) return "partial";
   return "pass";
 }

@@ -110,6 +110,29 @@ the contract reference; this file is the security reasoning.
   `max_tokens`/`num_predict` — the server default (`TRANSFORM_MAX_OUTPUT_TOKENS`,
   2000) when `budget` is omitted, clamped to a 4000 hard cap — so a missing budget
   cannot trigger unbounded paid generation (cost/latency DoS).
+- **Extract schema is untrusted input, validated at the input boundary by an
+  allowlist** (#153): the caller-supplied `schema` for `output: "extract"` is
+  attacker-controlled, so it is rejected fail-closed in `normalizeCaptatumInput`
+  (and the bulk sibling `normalizeBulkInput`) — before any fetch or LLM — when its total
+  serialized size exceeds `MAX_SCHEMA_BYTES` (a one-node schema with a multi-MB
+  `description`/`enum`/`examples` would otherwise pass the structural caps and inflate the
+  transform prompt), it is malformed (not an object/boolean), too large/complex to scan,
+  too deeply nested, uses a JSON Schema keyword outside the supported allowlist
+  (`SUPPORTED_KEYS`), or uses an unsupported VALUE-FORM of a supported key (tuple/array
+  `items`, or a scalar/wrong-type schema-valued keyword). The decision
+  is an **allowlist, never a blocklist**: captatum refuses structured data it cannot
+  verify (`$ref`/`format`/`contentEncoding`/…) rather than best-effort parsing it. The
+  scan is iterative (no recursion → no stack overflow), tracks visited object references
+  (cycle-safe), caps total nodes (`MAX_SCHEMA_NODES`) AND nesting depth
+  (`MAX_SCHEMA_DEPTH`), and the recursive value-validator in `finalize` is bounded by the
+  SAME depth cap — so a pathologically deep all-supported schema (which passes the node
+  cap) can neither waste a fetch+LLM then stack-overflow the validator, nor stall the
+  scan. It is pure key-membership + structural value-form checks (no regex on attacker
+  input → no ReDoS); fine-grained value checks (regex-pattern backtracking, supported-
+  keyword value mismatches) remain at finalize, where they hard- or soft-fail honestly.
+  The keyword is named in the message but the schema is treated as data, never a
+  directive. The value-time validator's unsupported-keyword branch is retained only as a
+  defense-in-depth backstop for paths that bypass the input scan.
 - Logging: metadata-only allow-list (tier, finalUrl, platform, status, bytes,
   timing, blockReason); never body, never `Set-Cookie`/`Authorization`; canonicalize
   logged URLs to scheme+host when host is private.

@@ -133,6 +133,7 @@ export class CaptatumUseCase {
     startMs: number,
     fetchMs: number,
   ): Promise<Result> {
+    base.outputRequested = request.requestedOutput; // #153: the output the caller asked for (delivered `output` may be raw after a fallback)
     // Returned raw (never summarized): a challenge (#41), 4xx/5xx error page, or a demoted app-error screen (tier:error — #145; a crash screen through the LLM would overwrite the crash text).
     if (base.challengeProvider || request.requestedOutput === "raw" || Number(base.code) >= 400 || base.tier === "error") {
       base.output = "raw";
@@ -171,7 +172,7 @@ export class CaptatumUseCase {
     } catch (error) {
       transformMs = elapsed(transformStartMs, this.clock.nowMs());
       base.output = "raw";
-      base.transform = { provider: "none", reason: "failed", latencyMs: transformMs, ...(error instanceof TransformError && error.costUsd ? { costUsd: error.costUsd } : {}) };
+      base.transform = { provider: "none", reason: "transform_failed", latencyMs: transformMs, ...(error instanceof TransformError && error.costUsd ? { costUsd: error.costUsd } : {}) };
       base.timings.transformMs = transformMs;
       base.errors.push({ code: transformErrorCode(error), message: errorMessage(error, "Transform failed") });
       // A Tier-2 result is a structured roster (contentType application/json); a failed/absent
@@ -184,11 +185,9 @@ export class CaptatumUseCase {
     base.result = transformed.result;
     base.output = transformed.info.provider === "none" ? "raw" : request.requestedOutput;
     base.transform = transformed.info;
-    // (#82) A successful model fallback is SILENT in the user-facing receipt — no warning, so
-    // status stays `pass` and the caller is not told a model failed. The failed-primary list rides
-    // on `transform.fallbackFrom`, visible via `debug:true` and the audit log (transformFallbackFrom)
-    // for the operator. An all-models-fail still surfaces honestly via the catch above
-    // (provider:"none", reason:"failed").
+    // (#82) A successful model fallback is SILENT — no warning, status stays `pass`. The failed-primary
+    // list rides on `transform.fallbackFrom` (debug + audit only). An all-models-fail still surfaces
+    // honestly via the catch above (provider:"none", reason:"transform_failed").
     // No summary was produced. For a Tier-2 roster, restore the parseable JSON roster (transformed.result
     // is the preambled LLM input, not valid JSON); for pages, bound the fallback to a token-safe excerpt.
     if (transformed.info.provider === "none") {
@@ -229,6 +228,7 @@ function rejectResult(
     finalUrl: request.url,
     tier: "error",
     output: request.requestedOutput,
+    outputRequested: request.requestedOutput, // #153
     platform: GENERIC_PLATFORM,
     jsRequired: false,
     resolvedVia: "guarded-fetch",

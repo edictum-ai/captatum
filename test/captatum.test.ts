@@ -137,6 +137,166 @@ test("invalid input is rejected before fetch, extraction, transform, or render",
   assert.equal(renderer.calls.length, 0);
 });
 
+test("output:extract rejects an unsupported schema keyword at the input boundary before fetch (#153)", async () => {
+  // Exact repro from #153: a schema carrying `$schema` (supported) AND `budget` (unsupported).
+  // The error must name `budget` — leading with the key — not visually merge `$` + `schema`
+  // into `$schema` as the old "$ schema keyword \"budget\" is not supported" message did.
+  const fetcher = new FakeFetcher(fetchResult({ html: "<main>unused</main>" }));
+  const extractor = new FakeExtractor(extraction({ text: "unused" }));
+  const transformer = new FakeTransform();
+  const renderer = new FakeRenderer();
+
+  await assert.rejects(
+    createCaptatumUseCase({
+      fetcher,
+      extractHtml: extractor.extract,
+      transformer,
+      renderer,
+      clock: new FakeClock([0, 0]),
+    }).execute({
+      url: "https://extract.test/repro",
+      output: "extract",
+      schema: { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", properties: { a: { type: "string" } }, budget: 8000 },
+    }),
+    (error) => {
+      assert.equal(error instanceof CaptatumInputError, true);
+      const body = (error as CaptatumInputError).body.error;
+      assert.equal(body.code, "invalid_schema");
+      assert.equal(body.message, 'Unsupported JSON Schema keyword "budget" at $ — captatum cannot verify it; remove it.');
+      assert.doesNotMatch(body.message, /\$schema/, "message must not visually merge `$` + `schema` into `$schema`");
+      return true;
+    },
+  );
+  // Fail-fast: a schema captatum cannot verify does no outbound work.
+  assert.equal(fetcher.calls.length, 0);
+  assert.equal(extractor.calls.length, 0);
+  assert.equal(transformer.calls.length, 0);
+  assert.equal(renderer.calls.length, 0);
+});
+
+test("output:extract rejects a malformed (non-object) schema at the input boundary (#153)", async () => {
+  const transformer = new FakeTransform();
+  await assert.rejects(
+    createCaptatumUseCase({
+      fetcher: new FakeFetcher(fetchResult({ html: "<main>unused</main>" })),
+      extractHtml: new FakeExtractor(extraction({ text: "unused" })).extract,
+      transformer,
+      clock: new FakeClock([0, 0]),
+    }).execute({ url: "https://extract.test/malformed", output: "extract", schema: 42 }),
+    (error) => {
+      assert.equal(error instanceof CaptatumInputError, true);
+      const body = (error as CaptatumInputError).body.error;
+      assert.equal(body.code, "invalid_schema");
+      assert.match(body.message, /must be a JSON Schema object or boolean \(received number at \$\)/);
+      return true;
+    },
+  );
+  assert.equal(transformer.calls.length, 0);
+});
+
+test("output:extract rejects a pathologically DEEP schema at the input boundary — no fetch, no LLM, no finalize stack overflow (#153 P1)", async () => {
+  // A deep all-SUPPORTED-keyword schema passes the node cap but would stack-overflow the recursive
+  // value validator after a billed LLM call. The depth cap rejects it fail-fast at the boundary.
+  let deep: Record<string, unknown> = { type: "object" };
+  for (let i = 0; i < 500; i += 1) deep = { allOf: [deep] };
+  const fetcher = new FakeFetcher(fetchResult({ html: "<main>unused</main>" }));
+  const transformer = new FakeTransform();
+  await assert.rejects(
+    createCaptatumUseCase({
+      fetcher,
+      extractHtml: new FakeExtractor(extraction({ text: "unused" })).extract,
+      transformer,
+      clock: new FakeClock([0, 0]),
+    }).execute({ url: "https://extract.test/deep", output: "extract", schema: deep }),
+    (error) => {
+      assert.equal(error instanceof CaptatumInputError, true);
+      assert.equal((error as CaptatumInputError).body.error.code, "invalid_schema");
+      return true;
+    },
+  );
+  assert.equal(fetcher.calls.length, 0);
+  assert.equal(transformer.calls.length, 0);
+});
+
+test("output:extract rejects a tuple (array-valued) items schema at the input boundary (#153)", async () => {
+  // `items` is a supported key, but a tuple value can't be positionally validated — reject
+  // fail-fast instead of accepting then advisory-after-LLM (scan and value-validator agree).
+  const transformer = new FakeTransform();
+  await assert.rejects(
+    createCaptatumUseCase({
+      fetcher: new FakeFetcher(fetchResult({ html: "<main>unused</main>" })),
+      extractHtml: new FakeExtractor(extraction({ text: "unused" })).extract,
+      transformer,
+      clock: new FakeClock([0, 0]),
+    }).execute({ url: "https://extract.test/tuple", output: "extract", schema: { type: "array", items: [{ type: "string" }, { type: "number" }] } }),
+    (error) => {
+      assert.equal(error instanceof CaptatumInputError, true);
+      assert.equal((error as CaptatumInputError).body.error.code, "invalid_schema");
+      assert.match((error as CaptatumInputError).body.error.message, /"items".*tuple\/array/);
+      return true;
+    },
+  );
+  assert.equal(transformer.calls.length, 0);
+});
+
+test("output:extract rejects a scalar (non-boolean/non-object) items schema at the input boundary (#153 codex P2)", async () => {
+  // {type:"array", items:42} is neither a tuple nor a valid schema — it must fail closed at the
+  // boundary (codex: previously slipped through, fetched+LLM'd, and was accepted for an empty array).
+  const transformer = new FakeTransform();
+  await assert.rejects(
+    createCaptatumUseCase({
+      fetcher: new FakeFetcher(fetchResult({ html: "<main>unused</main>" })),
+      extractHtml: new FakeExtractor(extraction({ text: "unused" })).extract,
+      transformer,
+      clock: new FakeClock([0, 0]),
+    }).execute({ url: "https://extract.test/scalar-items", output: "extract", schema: { type: "array", items: 42 } }),
+    (error) => {
+      assert.equal(error instanceof CaptatumInputError, true);
+      assert.equal((error as CaptatumInputError).body.error.code, "invalid_schema");
+      return true;
+    },
+  );
+  assert.equal(transformer.calls.length, 0);
+});
+
+test("output:extract rejects an oversized schema (huge terminal value) at the input boundary, before fetch (#153 codex P2)", async () => {
+  // One node, depth 1, all-supported keywords — passes the node/depth caps — but a multi-MB
+  // `description` would be JSON.stringify'd into the transform prompt. The byte cap rejects it
+  // fail-fast before any fetch/LLM.
+  const fetcher = new FakeFetcher(fetchResult({ html: "<main>unused</main>" }));
+  const transformer = new FakeTransform();
+  await assert.rejects(
+    createCaptatumUseCase({
+      fetcher,
+      extractHtml: new FakeExtractor(extraction({ text: "unused" })).extract,
+      transformer,
+      clock: new FakeClock([0, 0]),
+    }).execute({ url: "https://extract.test/huge", output: "extract", schema: { type: "object", description: "x".repeat(70 * 1024) } }),
+    (error) => {
+      assert.equal(error instanceof CaptatumInputError, true);
+      assert.equal((error as CaptatumInputError).body.error.code, "invalid_schema");
+      return true;
+    },
+  );
+  assert.equal(fetcher.calls.length, 0);
+  assert.equal(transformer.calls.length, 0);
+});
+
+test("a valid extract schema passes the input boundary and reaches the transform (#153)", async () => {
+  const transformer = new FakeTransform({ result: '{"title":"x"}', info: { provider: "openrouter", model: "test", free: true } });
+  const result = await createCaptatumUseCase({
+    fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
+    extractHtml: new FakeExtractor(extraction({ text: "page" })).extract,
+    transformer,
+    clock: new FakeClock([0, 0, 3, 4, 4]),
+  }).execute({ url: "https://extract.test/ok", output: "extract", schema: { type: "object", properties: { title: { type: "string" } } } });
+
+  assert.equal(result.output, "extract");
+  assert.equal(result.outputRequested, "extract");
+  assert.equal(transformer.calls.length, 1);
+  assert.equal(result.result, '{"title":"x"}');
+});
+
 test("output raw returns clean content without transform", async () => {
   const transformer = new FakeTransform();
   const result = await createCaptatumUseCase({

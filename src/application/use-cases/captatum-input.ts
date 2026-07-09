@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Output } from "../../domain/tier.ts";
 import type { TransformOverride } from "../ports/transformer.ts";
+import { findUnsupportedSchemaKeyword, MAX_SCHEMA_BYTES, MAX_SCHEMA_DEPTH, MAX_SCHEMA_NODES, schemaByteSize, unsupportedKeywordMessage } from "../../infrastructure/llm/schema-keywords.ts";
 
 const CRLF = /[\r\n]|%0d|%0a/i;
 const DEFAULT_PROMPT = "Provide a concise summary of the page.";
@@ -103,10 +104,12 @@ export function normalizeCaptatumInput(
 ): NormalizedCaptatumInput {
   const parsed = parseInput(value);
   const url = normalizeContractUrl(parsed.url);
+  const requestedOutput = parsed.output ?? defaults.defaultOutput;
+  assertExtractSchemaSupported(requestedOutput, parsed.schema); // #153: fail-closed at the input boundary
   return {
     url,
     prompt: parsed.prompt ?? defaults.prompt,
-    requestedOutput: parsed.output ?? defaults.defaultOutput,
+    requestedOutput,
     schema: parsed.schema,
     budget: parsed.budget,
     transform: parsed.transform as TransformOverride | undefined,
@@ -127,6 +130,38 @@ function parseInput(value: unknown): CaptatumInput {
     throw new CaptatumInputError("invalid_url", "URL is required");
   }
   throw new CaptatumInputError("invalid_input", "captatum input is invalid");
+}
+
+/**
+ * Fail-closed input-boundary check for `output: "extract"` (#153): the caller `schema` is
+ * untrusted, so reject it — before any fetch/LLM — when it is malformed (not object/boolean),
+ * too large/complex to scan, or uses a JSON Schema keyword captatum cannot verify. The
+ * decision is an ALLOWLIST (SUPPORTED_KEYS), never a blocklist. Exported so captatum_bulk's
+ * normalizer applies the same trust-boundary decision (sibling sweep). */
+export function assertExtractSchemaSupported(requestedOutput: Output, schema: unknown): void {
+  if (requestedOutput !== "extract" || schema === undefined) return;
+  // Payload cap FIRST: the node/depth caps below bound STRUCTURE, not a multi-MB terminal value
+  // (description/enum/examples) that would be JSON.stringify'd into the transform prompt. The
+  // boundary rejects it before any fetch/LLM (#153).
+  if (schemaByteSize(schema, MAX_SCHEMA_BYTES) > MAX_SCHEMA_BYTES) {
+    throw new CaptatumInputError("invalid_schema", `extract schema is too large — captatum serializes it into the transform prompt; simplify it to under ${MAX_SCHEMA_BYTES} bytes.`);
+  }
+  const scan = findUnsupportedSchemaKeyword(schema);
+  if (scan.ok) return;
+  const message = scan.kind === "unsupported"
+    ? unsupportedKeywordMessage(scan.key, scan.path)
+    : scan.kind === "unsupported_value"
+      ? `JSON Schema keyword "${scan.key}" at ${scan.path} uses an unsupported value form (tuple/array-valued items) — captatum cannot validate it; use a single item schema.`
+      : scan.kind === "malformed"
+        ? `extract schema must be a JSON Schema object or boolean (received ${typeName(schema)} at ${scan.path}).`
+        : `extract schema is too large or complex to validate — simplify it (over ${MAX_SCHEMA_NODES} nodes or ${MAX_SCHEMA_DEPTH} nesting levels at ${scan.path}).`;
+  throw new CaptatumInputError("invalid_schema", message);
+}
+
+function typeName(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
 }
 
 /** Exported for captatum_bulk's per-entry URL validation (same scheme upgrade,

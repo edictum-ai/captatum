@@ -25,6 +25,14 @@ export interface TransformInfo {
   outTokens?: number;
   latencyMs?: number;
   costUsd?: number;
+  /**
+   * Typed fallback/outcome vocabulary (#153). Use-case-set values: `"unconfigured"` (no
+   * provider), `"transform_failed"` (a configured provider threw — was `"failed"`), or
+   * `"schema_validation_failed"` (extract returned parseable JSON that violated a SUPPORTED
+   * schema keyword — advisory; rides with `schemaIssue`). May also carry a router pick
+   * reason (`no_model_fit` / `sensitive_content_no_local_provider` / `provider_unconfigured`
+   * / `model_unavailable` / `unsupported_provider`) when no model could be picked.
+   */
   reason?: string;
   /**
    * Non-fatal extract-schema mismatch message. When `output: extract` returns
@@ -76,7 +84,13 @@ export interface Result {
   finalUrl: string;
   redirects: Redirect[];
   tier: Tier;
+  /** The output actually DELIVERED. Equals `outputRequested` unless a `summary`/`extract`
+   *  request fell back to `raw` (no provider / transform failed). */
   output: Output;
+  /** The output the caller ASKED for (#153). Set by the use case on every result; absent on
+   *  hand-built records. Distinguishes "you got raw because extract fell back" from a real
+   *  raw request. Surfaced in the lean receipt when it differs from `output`. */
+  outputRequested?: Output;
   platform: Platform;
   jsRequired: boolean;
   resolvedVia: string;

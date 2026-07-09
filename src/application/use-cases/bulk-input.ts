@@ -14,6 +14,7 @@ import type { Output } from "../../domain/tier.ts";
 import type { TransformOverride } from "../ports/transformer.ts";
 import type { ValidatedSeed } from "../../domain/bulk-policy.ts";
 import {
+  assertExtractSchemaSupported,
   CaptatumInputError,
   DEFAULT_CAPTATUM_DEFAULTS,
   normalizeContractUrl,
@@ -86,7 +87,8 @@ export interface NormalizedBulkInput {
 /**
  * Parse + validate a captatum_bulk input. Throws CaptatumInputError (→ tool-level
  * InvalidParams) ONLY for whole-call schema failures (`invalid_input` /
- * `too_many_urls`). `allowRender:true` is ALLOWED (render-on-bulk, PR 3). Per-entry
+ * `too_many_urls` / `invalid_schema` — an extract schema rejected at the input
+ * boundary, #153). `allowRender:true` is ALLOWED (render-on-bulk, PR 3). Per-entry
  * URL failures are collected into `invalid` and the call proceeds with the valid
  * seeds (partial is the normal bulk outcome).
  */
@@ -105,6 +107,7 @@ export function normalizeBulkInput(value: unknown): NormalizedBulkInput {
     ...(parsed.maxTransformCostUsd !== undefined ? { maxTransformCostUsd: parsed.maxTransformCostUsd } : {}),
     ...(parsed.perSeedTransformCostUsd !== undefined ? { perSeedTransformCostUsd: parsed.perSeedTransformCostUsd } : {}),
   };
+  assertExtractSchemaSupported(request.requestedOutput, request.schema); // #153: fail-closed at the input boundary (sibling of captatum)
   const invalid: BulkInputFailure[] = [];
   const seeds: ValidatedSeed[] = [];
   for (const raw of parsed.urls) {
