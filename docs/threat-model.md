@@ -106,6 +106,21 @@ the contract reference; this file is the security reasoning.
   was the same class of quote-blind bug (a `>` in a meta attr could hide the charset → mojibake)
   and is fixed the same way. Residual: the extract layer remains hand-rolled (house rule prefers
   a proven library); a wholesale replacement is a separate change.
+- **`output:"extract"` schema is untrusted input, validated at the input boundary (#153).**
+  The caller-supplied JSON Schema is parsed as DATA (never a directive) and checked against the
+  supported-keyword allowlist (`findUnsupportedSchemaKeyword`, the same `SUPPORTED_KEYS` set the
+  value validator enforces) **before any fetch/LLM** — fail-closed
+  (`extract_schema_unsupported_keyword`, JSON-RPC `InvalidParams`) so a schema using a keyword
+  captatum cannot verify (e.g. `format`, `contentEncoding`, or a misplaced tool knob like
+  `budget`) neither burns a round-trip nor accepts unvalidated structured data. Allowlist, not
+  blocklist (house rule). The key name is length-capped before it enters the error message and
+  **no schema value is ever echoed** (the schema is untrusted data). The same check runs on
+  `captatum_bulk`'s uniform schema as a whole-call reject. A defense-in-depth copy remains at the
+  transform seam (`finalize`) for any path bypassing input normalization. Residual: the recursive
+  schema walk has no explicit depth cap, **matching the pre-existing `validateAt` precedent**
+  (which recurses over the same untrusted schema without one); practical depth is bounded by the
+  request-body size limit + `JSON.parse`. An iterative walk + depth cap is noted as future
+  hardening if profiling shows need — not introduced by this change.
 - Bounded transform generation: every provider call carries a bounded
   `max_tokens`/`num_predict` — the server default (`TRANSFORM_MAX_OUTPUT_TOKENS`,
   2000) when `budget` is omitted, clamped to a 4000 hard cap — so a missing budget
