@@ -26,6 +26,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check      # syntax + 250-line limit + typecheck
       - run: pnpm test           # node --test test/*.test.ts (unit suite; no browser)
+      - run: pnpm run test:acceptance  # frozen acceptance suite (activated phases only; no-op until a phase is activated)
 
   fixtures:
     runs-on: ubuntu-latest
