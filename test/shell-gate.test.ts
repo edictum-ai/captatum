@@ -212,6 +212,15 @@ test("stripInert: a space separator is inserted between blocks (#160 codex r14b)
   assert.ok(!text.includes("sixseven"), "no word merge");
 });
 
+test("shell-gate: content inside a <footer> is preserved, not stripped as chrome (#160 CI)", () => {
+  // A static page whose content is in a <footer> (not site chrome) — stripChromeFromRaw must NOT
+  // strip <footer> (only aside/nav), else the content is lost (named-entities fixture regression).
+  const html = '<html><body><footer><p>' + "The real article body, substantial and complete. ".repeat(3) + '</p></footer></body></html>';
+  const ext = extractHtml({ html, url: "https://x.test/f" });
+  assert.equal(ext.shellGate.jsRequired, false, "content in a <footer> must not be stripped");
+  assert.ok(ext.text.includes("real article body"), "the footer content survives in the text");
+});
+
 // #109 (dual of #81): a SCAFFOLDING JSON-LD node — WebPage/WebSite/… page metadata with an EMPTY
 // description — must NOT satisfy the shell-gate. JetBrains/Writerside ship these as routing metadata
 // on client-rendered shells; treating them as content let the shell stop at Tier-1 and return no

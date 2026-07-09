@@ -122,7 +122,12 @@ export function stripChromeFromRaw(html: string, revealedIds: Set<string>): stri
   const hiddenClasses = collectHiddenDisplayNoneClasses(html);
   const inert = stripInert(html);
   const body = extractBodyHtml(inert) ?? inert;
-  return stripChrome(stripHiddenSubtrees(body, hiddenClasses, revealedIds));
+  // Strip aside/nav ONLY (not <footer>) — a static page may carry its real content in a <footer>
+  // (not site chrome in that context); stripping it loses the content (named-entities fixture
+  // regression). The #144 repro (Jira REST v3) was nav/aside sidebar/TOC chrome, not footer.
+  // The landmark path (selectMainContentHtml) still strips footer for scoring.
+  const cleaned = stripHiddenSubtrees(body, hiddenClasses, revealedIds);
+  return stripChromeElement(stripChromeElement(cleaned, "aside"), "nav");
 }
 
 /**
