@@ -339,9 +339,10 @@ incl. render subresource hosts once `allowRender:true`),
 `bulk_deadline_exceeded` (wall deadline — remaining seeds marked failed),
 `bulk_budget_exceeded` (egress-bytes or transform-cost cap bit — reason names
 which). Per-seed WARNING (the seed still runs, degraded):
-`bulk_render_cap_exceeded` (`maxRenderedSeeds` reached — the seed is downgraded
-to `allowRender:false`; a JS shell comes back render-blocked, a content page is
-unaffected), `bulk_retried_429` (the seed retried once after a 429/503).
+`bulk_render_cap_exceeded` (the seed is downgraded to `allowRender:false` because
+EITHER the `maxRenderedSeeds` count cap OR the per-call render byte budget was
+reached — the warning message names which; a JS shell comes back render-blocked, a
+content page is unaffected), `bulk_retried_429` (the seed retried once after a 429/503).
 Tool-level error (whole call): input-validation (`invalid_input` /
 `too_many_urls`), auth (insufficient scope, `-32003`), admission
 `OverloadedError` (`-32050`), `bulk_quota_exceeded` (per-tenant seed-window

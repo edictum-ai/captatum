@@ -525,6 +525,42 @@ test("bulk maxRenderedSeeds: allowRender:true beyond the cap is downgraded (warn
   assert.ok(rendered >= 2, `at least maxRenderedSeeds rendered; got ${rendered}`);
   const downgraded = res.results.filter((r) => r.warnings.some((w) => w.code === "bulk_render_cap_exceeded"));
   assert.ok(downgraded.length >= 1, "at least one allowRender seed was downgraded + warned");
+  // The count-cap path names maxRenderedSeeds (a byte-pool refusal would name the byte budget —
+  // the two causes must not be conflated in the message; chatgpt feedback flagged the old message
+  // blaming the count cap regardless of cause).
+  assert.ok(
+    downgraded.every((r) => r.warnings.some((w) => w.code === "bulk_render_cap_exceeded" && /maxRenderedSeeds/.test(w.message))),
+    "count-cap downgrades name maxRenderedSeeds in the warning message",
+  );
+});
+
+test("bulk bulk_render_cap_exceeded names the BYTE POOL when reserveRender refuses — not maxRenderedSeeds (#177)", async () => {
+  // #177's actual scenario: a render whose byte footprint won't fit the per-call render byte budget
+  // (budget.reserveRender()===false) WHILE renderedCount < maxRenderedSeeds — so the count cap is NOT
+  // the cause. The warning must name the byte pool, not blame the count cap (the pre-fix conflation).
+  // Reaching the byte path deterministically: maxConcurrency:1 makes seed 1 render + settle a large
+  // egress footprint (consuming the pool) BEFORE seed 2 reserves. seed 2's render then can't fit
+  // (settled 50MB + reserved 5MB + render-pool 75MB > the 100MB global cap) → renderRefusedBy="bytes".
+  // (The byte path is NOT reachable via a tight maxGlobalEgressBytes — that knob isn't operator-tunable;
+  // it's reached via cumulative settled egress / render reservations, as here.)
+  const exec = new FakeExecutor();
+  const u1 = "https://a.test/1", u2 = "https://b.test/2";
+  exec.results.set(u1, renderResult(u1, { egressBytes: 50 * 1024 * 1024 }));
+  exec.results.set(u2, renderResult(u2));
+  exec.execute = async (input: unknown) => { // honor allowRender: a downgraded seed comes back tier-1
+    const allow = (input as { allowRender?: boolean }).allowRender;
+    const url = (input as { url: string }).url;
+    const r = exec.results.get(url)!;
+    return allow ? { ...r } : { ...r, tier: 1 as const, jsRequired: false, resolvedVia: "tier1-text", egressBytes: undefined, renderEgressHosts: undefined };
+  };
+  const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1, maxPerHostInflight: 50 }).execute({ urls: [u1, u2], allowRender: true });
+  const seed2 = res.results.find((r) => r.url === u2)!;
+  const warn = seed2.warnings.find((w) => w.code === "bulk_render_cap_exceeded");
+  assert.ok(warn, "seed 2 was render-downgraded because the byte pool refused its render");
+  assert.match(warn!.message, /render byte budget/, `byte-pool refusal names the byte budget: ${warn!.message}`);
+  assert.doesNotMatch(warn!.message, /maxRenderedSeeds/, `byte-pool refusal must NOT blame the count cap (#177): ${warn!.message}`);
+  const seed1 = res.results.find((r) => r.url === u1)!;
+  assert.ok(!seed1.warnings.some((w) => w.code === "bulk_render_cap_exceeded"), "seed 1 rendered fine (count cap not reached, byte pool fit)");
 });
 
 test("bulk render-on-bulk: allowRender:true is threaded into the executor (the seed may render)", async () => {
