@@ -17,6 +17,7 @@
     "redirects": [],
     "tier": "render-blocked",
     "output": "raw",
+    "outputRequested": "raw",
     "platform": {
       "adapterId": "generic",
       "label": "Generic HTML",

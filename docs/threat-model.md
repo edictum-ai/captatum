@@ -106,6 +106,28 @@ the contract reference; this file is the security reasoning.
   was the same class of quote-blind bug (a `>` in a meta attr could hide the charset → mojibake)
   and is fixed the same way. Residual: the extract layer remains hand-rolled (house rule prefers
   a proven library); a wholesale replacement is a separate change.
+- **`output:"extract"` schema is untrusted input, validated at the input boundary (#153).**
+  The caller-supplied JSON Schema is parsed as DATA (never a directive) and checked against the
+  supported-keyword allowlist (`findUnsupportedSchemaKeyword`, the same `SUPPORTED_SCHEMA_KEYS`
+  set the value validator enforces) **before any fetch/LLM** — fail-closed
+  (`extract_schema_unsupported_keyword`, JSON-RPC `InvalidParams`) so a schema using a keyword
+  captatum cannot verify (e.g. `format`, `contentEncoding`, or a misplaced tool knob like
+  `budget`) neither burns a round-trip nor accepts unvalidated structured data. Allowlist, not
+  blocklist (house rule). The offending key AND each property-name path segment are length-capped
+  before they enter the error message, and **no schema value is ever echoed** (the schema is
+  untrusted data). The same check runs on `captatum_bulk`'s uniform schema as a whole-call reject.
+  A defense-in-depth copy remains at the transform seam (`finalize`) — dead in the production call
+  graph (normalize always runs first), retained only for a hypothetical direct-`TransformPort`
+  caller. **Depth:** the recursive walk carries an explicit `MAX_SCHEMA_DEPTH = 64` and fails
+  closed (`extract_schema_too_deep`) on exceed. This is required because the walker is the **more
+  exposed** path — it runs **pre-fetch, free to attack** (no egress/LLM cost), unlike `validateAt`
+  which is post-fetch/egress-rate-limited; request-body *size* bounds total nodes, not nesting
+  *depth* (a <1 MB body of nested objects reaches ~150K depth, overflowing V8's stack). The cap is
+  also the chokepoint: a deep schema is rejected at input, so `validateAt` (same exposure) is
+  protected for every captatum/bulk path. The implicit bound absent the cap would be V8's
+  `JSON.parse` recursion limit (~thousands of levels — a deep body throws `RangeError` at parse);
+  a `RangeError` from either path is caught by `callCaptatum`/`callBulk` → `toMcpError` →
+  `InternalError` (no crash vector), but the explicit cap removes the free-reachable error.
 - Bounded transform generation: every provider call carries a bounded
   `max_tokens`/`num_predict` — the server default (`TRANSFORM_MAX_OUTPUT_TOKENS`,
   2000) when `budget` is omitted, clamped to a 4000 hard cap — so a missing budget

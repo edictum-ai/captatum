@@ -1,17 +1,10 @@
 import { deepEqual, finiteNumber, hasDuplicate, invalid, isMultipleOf, isRecord, matchesType, nonNegativeInteger, objectMap, ok, stringArray, stripJsonFence, unsupported, toRegExp, type SchemaValidationResult } from "./json-schema-utils.ts";
 import { validateComposites } from "./json-schema-composites.ts";
+import { SUPPORTED_SCHEMA_KEYS, messageForUnsupportedKeyword } from "../../domain/schema-allowlist.ts";
 
 export type { SchemaValidationResult } from "./json-schema-utils.ts";
 
 const JSON_TYPES = new Set(["array", "boolean", "integer", "null", "number", "object", "string"]);
-const SUPPORTED_KEYS = new Set([
-  "$comment", "$defs", "$id", "$schema", "additionalProperties", "allOf", "anyOf", "const",
-  "default", "deprecated", "description", "enum", "examples", "exclusiveMaximum",
-  "exclusiveMinimum", "items", "maxItems", "maxLength", "maxProperties", "maximum",
-  "minItems", "minLength", "minProperties", "minimum", "multipleOf", "not", "oneOf",
-  "pattern", "properties", "readOnly", "required", "title", "type", "uniqueItems",
-  "writeOnly", "definitions",
-]);
 
 export function parseJsonResult(text: string): unknown {
   const trimmed = stripJsonFence(text.trim());
@@ -51,8 +44,8 @@ function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Re
 }
 
 function validateSupported(schema: Record<string, unknown>, path: string): SchemaValidationResult {
-  const unsupportedKey = Object.keys(schema).find((key) => !SUPPORTED_KEYS.has(key));
-  return unsupportedKey ? unsupported(`${path} schema keyword "${unsupportedKey}" is not supported`) : ok();
+  const unsupportedKey = Object.keys(schema).find((key) => !SUPPORTED_SCHEMA_KEYS.has(key));
+  return unsupportedKey ? unsupported(messageForUnsupportedKeyword(unsupportedKey, path)) : ok();
 }
 
 function validateEnum(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {
