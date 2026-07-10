@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { challengeProvider, detectAntibotBlock, stampAntibotChallenge } from "../src/application/antibot.ts";
+import { computeAntiBotEvidence } from "../src/infrastructure/http/antibot-evidence.ts";
 import { classifyAccess } from "../src/application/classify.ts";
 import type { Result } from "../src/domain/result.ts";
 import type { AntiBotEvidence, FetcherResult } from "../src/application/ports/fetcher.ts";
@@ -135,4 +136,22 @@ test("#151: a DataDome challenge-body wall stamps challengeProvider=datadome →
   assert.equal(base.challengeProvider, "datadome");
   assert.equal(base.botVerification, undefined);
   assert.equal(classifyAccess(base).gateReason, "captcha");
+});
+
+test("#151: a verification phrase buried DEEP under a large <head> (Vercel/HashiCorp repro) still → bot_verification", () => {
+  // The real wall (Vercel Security Checkpoint) is ~31KB with ~28KB of <head> JS before the phrase.
+  // The status-gated phrase scans the FULL body, so a deep phrase is still caught end-to-end
+  // (computeAntiBotEvidence → stampAntibotChallenge → classifyAccess). Found by the live prod check
+  // on 0.15.0, missed by the shallow synthetic fixture.
+  const body = new TextEncoder().encode("x".repeat(30000) + " We are verifying your browser. Please wait.");
+  const ev = computeAntiBotEvidence({ "content-type": "text/html" }, body, 429);
+  const fetched: FetcherResult = {
+    status: 429, finalUrl: "https://x.test/", redirects: [],
+    bodyStream: new ReadableStream({ start(c) { c.close(); } }),
+    contentType: "text/html", bytes: body.byteLength, antibot: ev,
+  };
+  const base = { ...bareResult(), code: 429, codeText: "429" };
+  assert.equal(stampAntibotChallenge(base, fetched), true);
+  assert.equal(base.botVerification, true);
+  assert.equal(classifyAccess(base).gateReason, "bot_verification");
 });
