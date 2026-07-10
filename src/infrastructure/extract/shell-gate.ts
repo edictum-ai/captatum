@@ -3,6 +3,7 @@ import type { StructuredData } from "../../domain/platform.ts";
 import { isHtmlContentType } from "../http/body.ts";
 import { findStartTags } from "./html.ts";
 import { hasContentBearingJsonLd } from "../../domain/content-bearing.ts";
+import { isPinDetailPage } from "../../domain/pin-url.ts";
 
 const APP_ROOT_IDS = new Set(["__next", "app", "gatsby-focus-wrapper", "root", "svelte"]);
 
@@ -20,14 +21,18 @@ export function evaluateShellGate(input: {
    *  selected landmark IS content (even a short/tagless one), so hasContent doesn't require inner
    *  tags — the scope is the landmark's INNER html (no wrapper tag) (#160 codex r4). */
   landmarkFound?: boolean;
+  /** The fetched URL — used to scope SocialMediaPosting gate-satisfaction to pin-detail pages
+   *  (#152). Absent ⇒ not a pin page (SocialMediaPosting does not satisfy). */
+  url?: string;
 }): ShellGateEvidence {
   const wordCount = input.text ? input.text.split(/\s+/).length : 0;
+  const isPinDetail = input.url ? isPinDetailPage(input.url) : false;
   const evidence = {
     textLength: input.text.length,
     wordCount,
     scriptCount: findStartTags(input.html, "script").length,
     appRootFound: hasAppRoot(input.html),
-    structuredDataFound: hasUsableStructuredData(input.structured),
+    structuredDataFound: hasUsableStructuredData(input.structured, isPinDetail),
   };
 
   // A non-HTML body (text/plain, application/json, XML, image, …) is the COMPLETE intended
@@ -61,8 +66,8 @@ export function evaluateShellGate(input: {
  * JSON script would do the same). Generic JSON scripts are still harvested into
  * appState for debug/structured access — they just don't satisfy the gate.
  */
-export function hasUsableStructuredData(structured: StructuredData): boolean {
-  if (hasContentBearingJsonLd(structured.jsonLd)) return true;
+export function hasUsableStructuredData(structured: StructuredData, isPinDetail = false): boolean {
+  if (hasContentBearingJsonLd(structured.jsonLd, isPinDetail)) return true;
   return hasContentBearingAppState(structured.appState);
 }
 

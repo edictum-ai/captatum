@@ -482,7 +482,23 @@ and a caller who fetches a presigned SOURCE url is still blocked at the source c
 - Tier-3 is **shell-gated**, not unconditional: `allowRender` defaults **true**
   (single-fetch) / **false** (bulk), but a render fires only when Tier-1 extraction
   finds an empty JS shell (`jsRequired`) — a normal content-bearing page never
-  spawns a browser. Set `allowRender:false` to opt out (`render-blocked`).
+  spawns a browser. Set `allowRender:false` to opt out (`render-blocked`). The
+  JSON-LD that satisfies the shell-gate is restricted to a **data-`@type`
+  allowlist** (`CONTENT_TYPES` — `JobPosting`/`Article`/`Product`/`HowTo`/`FAQPage`/…;
+  #152, next step — and partial reversal — of #109), not any JSON-LD node: an
+  allowlist, not blocklist, at the trust boundary (house rule), so untrusted
+  metadata JSON-LD (org/breadcrumb/`WebPage` tagline, a `VideoObject` embed)
+  cannot pin a JS-rendered listing page (e.g. a job board) at an empty Tier-1.
+  The match is a `Set` lookup on the `shortSchemaType`-normalized `@type` (no
+  regex → no ReDoS); the `@graph` + nested-entity recursion is depth-capped
+  (`MAX_NESTED_DEPTH = 4`) and object-identity cycle-guarded. The same predicate
+  backs the `low_value` exclusion (`content-quality.ts`), tightened consistently.
+  The widened Tier-1 harvester reads more untrusted JSON-LD fields per type
+  (`step[]`, `mainEntity[]`, `reviewBody`, `recipeInstructions`, …) into
+  `result.text`; each pull is length-capped (~4 KiB) and array fields are
+  count-capped (first N), values are DATA (string-coerced, linear HTML-stripped,
+  never a directive) over the already-prototype-pollution-safe `JSON.parse`
+  reviver — bounded untrusted-input extraction, ReDoS-safe.
   `captatum_bulk` allows `allowRender:true` as of PR 3 — the render's subresource
   hosts feed the per-host union count gate (`renderEgressHosts`, BULK-3),
   `maxRenderedSeeds` bounds render attempts, and deep `egressBytes` (BULK-5) counts

@@ -110,12 +110,13 @@ test("classifyContentQuality: an Event/Recipe page is NOT low_value (content-bea
   })), undefined);
 });
 
-test("classifyContentQuality: a SoftwareApplication page is NOT low_value (shared CONTENT_TITLE_TYPES, no drift)", () => {
-  // #159 codex: the local allowlist must stay in sync with the extractor's set (softwareapplication,
-  // musicrecording, …) — now imported from tier1-payload.ts as the single source of truth.
+test("classifyContentQuality: a SoftwareApplication page is NOT low_value (shared CONTENT_TYPES, no drift)", () => {
+  // #159/#152: the content-bearing predicate is the single source of truth (CONTENT_TYPES). A
+  // SoftwareApplication with a description is content-bearing → not low_value. (#152 requires a
+  // content field — `description`, not just `name` — so the fixture carries one.)
   assert.equal(classifyContentQuality(result({
     result: "App", bytes: 250_000, title: "Home",
-    structured: { jsonLd: { "@type": "SoftwareApplication", name: "Acme App" } },
+    structured: { jsonLd: { "@type": "SoftwareApplication", name: "Acme App", description: "Acme App — a thing an agent can read about." } },
   })), undefined);
 });
 

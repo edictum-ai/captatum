@@ -1,42 +1,17 @@
 import type { Output } from "../../domain/tier.ts";
 import type { StructuredData } from "../../domain/platform.ts";
 import { stripHtmlTags } from "../../infrastructure/extract/html.ts";
-import { isPinDetailPage } from "../classify.ts";
+import { shortTypes, CONTENT_TYPES } from "../../domain/content-types.ts";
+import { firstContentHarvest } from "../../domain/content-bearing.ts";
+import { isPinDetailPage } from "../../domain/pin-url.ts";
 
-/**
- * JSON-LD schema.org types whose `name`/`headline`/`title` reliably IS the page's
- * subject (job/article/product). For these the structured-data title is more
- * specific than `<title>` — e.g. an Ashby iframe reports `<title>Careers — E2B
- * </title>` while its JobPosting JSON-LD carries the real title. Organization/
- * WebSite are excluded so a homepage `<title>` beats a generic org name.
- * SocialMediaPosting is intentionally NOT here: a social post is frequently an
- * embed on an unrelated page, not the subject — surfacing a pin's caption is
- * handled separately in leadDescription (pass 2) so it can never steal the title.
- */
-const CONTENT_TITLE_TYPES = new Set([
-  "jobposting", "article", "newsarticle", "blogposting", "techarticle",
-  "scholarlyarticle", "report", "product", "event", "recipe", "course",
-  "review", "webapplication", "softwareapplication", "videoobject",
-  "musicrecording", "book",
-]);
-
-/** Normalize a schema.org @type to its short lowercase form (e.g. "jobposting"). */
-function shortSchemaType(value: string): string {
-  const lower = value.toLowerCase().replace(/^https?:\/\/schema\.org\//, "");
-  return lower.includes("/") ? lower.slice(lower.lastIndexOf("/") + 1) : lower;
-}
-
-/** Short lowercase schema.org @types on a node (short, full-IRI, and array forms). */
-function shortTypes(node: Record<string, unknown> | null): string[] {
-  if (!node) return [];
-  const type = node["@type"];
-  const types = Array.isArray(type) ? type.map(String) : type === undefined ? [] : [String(type)];
-  return types.map(shortSchemaType);
-}
-
-/** A node whose @type is a page-subject type (job/article/product/pin/...). */
+/** A node whose @type is a content type — the shared CONTENT_TYPES set (the gate set == the
+ *  harvester set == the classifier superset; #152), EXCEPT socialmediaposting: an embedded post
+ *  is frequently NOT the page's title subject (it's pin-caption content, handled by Pass 2), so
+ *  title derivation skips it (matches the old CONTENT_TITLE_TYPES that intentionally excluded it).
+ *  Used for the title-derivation walk + the Pass-2 "higher content" suppression. */
 export function isContentNode(node: Record<string, unknown> | null): boolean {
-  return shortTypes(node).some((t) => CONTENT_TITLE_TYPES.has(t));
+  return shortTypes(node).some((t) => t !== "socialmediaposting" && CONTENT_TYPES.has(t));
 }
 
 /** Treat a value as an array (undefined → [], non-array → [value]). */
@@ -88,13 +63,14 @@ export function candidateNodes(jsonLd: unknown): Record<string, unknown>[] {
  */
 function leadDescription(structured: StructuredData, url: string): string | undefined {
   if (!structured.jsonLd) return undefined;
+  // Pass 1: the first content node's harvestable text (#152 widens this per-type — Review.reviewBody,
+  // FAQPage Q&As, HowTo steps, JobPosting.title, Article.articleBody/headline, … — and skips field-less
+  // content nodes). firstContentHarvest mirrors the shell-gate's walk (incl. nested mainEntity/about/
+  // itemListElement) so gate-satisfied ⇒ a non-empty lead. SocialMediaPosting is skipped here (Pass 2
+  // owns the pin-caption harvest).
+  const lead = firstContentHarvest(structured.jsonLd);
+  if (lead) return stripHtml(lead);
   const nodes = candidateNodes(structured.jsonLd);
-  // Pass 1: a real description lead from any content node (concise, non-dominating).
-  for (const node of nodes) {
-    if (!isContentNode(node)) continue;
-    const desc = node?.description;
-    if (typeof desc === "string" && desc.length > 50) return stripHtml(desc);
-  }
   // Pass 2: a pin's caption, only on an actual pin detail page whose only content
   // node is the post itself. A higher-priority content node suppresses the fallback
   // — but a co-typed post (e.g. @type ["SocialMediaPosting","Article"]) is the pin,

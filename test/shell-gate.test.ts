@@ -255,19 +255,26 @@ test("shell-gate: scaffolding WebPage JSON-LD with an empty description does not
   assert.equal(gate.reason, "empty-spa-shell");
 });
 
-test("shell-gate: WebPage JSON-LD WITH a real description still resolves at Tier-1 (#109 regression guard)", () => {
+test("shell-gate: WebPage JSON-LD WITH a real description no longer satisfies the gate (#152 reverses #109)", () => {
+  // #152: a scaffolding WebPage + a (non-empty) description no longer satisfies the shell-gate —
+  // scaffolding types are not CONTENT_TYPES, so a JS-rendered page whose static HTML carries only
+  // metadata JSON-LD escalates to render instead of stopping at an empty Tier-1. This REVERSES
+  // #109's positive guard (WebPage+description used to satisfy); #109's negative half (empty
+  // description does not satisfy) still holds — see the scaffolding-only test below.
   const html = '<html><body><div id="root"></div>'
     + '<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","description":"A real page summary an agent can use without rendering."}</script>'
     + '</body></html>';
   const gate = extractHtml({ html, url: "https://x.test/p" }).shellGate;
-  assert.equal(gate.jsRequired, false);
-  assert.equal(gate.reason, "structured-data-found");
+  assert.equal(gate.jsRequired, true, "WebPage+description now escalates to render (#152 reversal of #109)");
+  assert.equal(gate.reason, "empty-spa-shell");
 });
 
 test("hasUsableStructuredData: scaffolding-only nodes need a non-empty content property (#109)", () => {
   const notUsable: unknown[] = [
     { "@type": "WebPage", name: "X", description: "" },
+    { "@type": "WebPage", description: "Real summary." }, // #152: scaffolding+description no longer satisfies (reverses #109)
     { "@type": "https://schema.org/WebPage", name: "X", description: "" }, // full-IRI form (codex P2)
+    { "@type": "https://schema.org/WebPage", description: "Real summary." }, // #152 reversal (full-IRI)
     { "@type": "https://schema.org/WebPage/", name: "X", description: "" }, // trailing-slash IRI (codex P2 #2)
     { "@type": "WebSite", name: "X Help", url: "https://x.test/" },
     { "@type": "BreadcrumbList", itemListElement: [{ "@type": "ListItem", name: "Home" }] },
@@ -278,9 +285,7 @@ test("hasUsableStructuredData: scaffolding-only nodes need a non-empty content p
     assert.equal(hasUsableStructuredData({ jsonLd } as StructuredData), false, `scaffolding not usable: ${JSON.stringify(jsonLd)}`);
   }
   const usable: unknown[] = [
-    { "@type": "WebPage", description: "Real summary." },
-    { "@type": "https://schema.org/WebPage", description: "Real summary." }, // full-IRI WITH content
-    { "@type": ["WebPage", "Article"], headline: "x" },
+    { "@type": ["WebPage", "Article"], headline: "x" }, // Article (data type) + headline satisfies
     { "@type": "JobPosting", title: "Eng" },
     { "@type": "WebPage", mainEntity: { "@type": "Article", articleBody: "real content" } }, // nested (codex P2 #3)
     { "@type": "WebPage", about: { "@type": "JobPosting", title: "Eng" } }, // nested via 'about'
@@ -321,13 +326,13 @@ test("shell-gate: scaffolding WebPage as a trailing-slash IRI with empty descrip
 });
 
 test("hasUsableStructuredData: content-bearing JSON-LD predicate edge cases (#81)", () => {
-  const notUsable: unknown[] = [null, [], {}, { "@context": "https://schema.org" }, [{ "@context": "x" }], { "@graph": [] }];
+  const notUsable: unknown[] = [null, [], {}, { "@context": "https://schema.org" }, [{ "@context": "x" }], { "@graph": [] }, [{ "@type": "Product" }]]; // last: #152 bare data type, no content field
   for (const jsonLd of notUsable) {
     assert.equal(hasUsableStructuredData({ jsonLd } as StructuredData), false, `not usable: ${JSON.stringify(jsonLd)}`);
   }
   const usable: unknown[] = [
     { "@type": "Article", headline: "x" },
-    [{ "@type": "Product" }],
+    [{ "@type": "Product", description: "A widget." }], // #152: a data type needs a content field
     { "@context": "x", "@graph": [{ "@type": "Article", headline: "y" }] },
   ];
   for (const jsonLd of usable) {
