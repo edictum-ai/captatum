@@ -27,6 +27,11 @@ export const CHALLENGE_BODY_MARKERS = new RegExp([CF_AKAMAI_PX_MARKERS.source, D
  *  non-JSON in `computeAntiBotEvidence` so a 200 page or a JSON API error is NOT gated (#151). */
 export const VERIFICATION_PHRASES = /verifying your browser|checking your browser|verify you are a human/i;
 
+/** Bytes of the body scanned for the VENDOR markers on every fetch. Markers live in `<head>`/early
+ *  body, so a bounded window is plenty + keeps the per-fetch cost low (the phrase scan is separate).
+ *  ReDoS-safe at any size (literal alternations); raised 4096 → 64KB for head-room (#151). */
+const MARKER_SCAN_BYTES = 65_536;
+
 /** application-local mirror of classify.ts isJsonContentType (no app-layer import). */
 function isJsonContentType(contentType: string | undefined): boolean {
   if (!contentType) return false;
@@ -51,7 +56,14 @@ export function computeAntiBotEvidence(
               : "none";
   const setCookie = headers["set-cookie"];
   const cookies = Array.isArray(setCookie) ? setCookie.join("\n") : (setCookie ? String(setCookie) : "");
-  const bodyHead = new TextDecoder("utf8", { fatal: false }).decode(body.subarray(0, 4096));
+  const isJson = isJsonContentType(headerValue(headers, "content-type"));
+  const gatedStatus = status === 429 || status === 503;
+  // Markers live in <head>/early body — scan a bounded 64KB window (runs on EVERY fetch). The phrase
+  // can sit DEEP under a large <head> (Vercel's checkpoint buries "verifying your browser" ~28KB in,
+  // past the old 4096 cap), so it scans the FULL body — but ONLY on 429/503 (status-gated via &&),
+  // so the common 200 path short-circuits before the full-body decode. Both sets are literal
+  // alternations (ReDoS-safe at any size). #151.
+  const bodyHead = new TextDecoder("utf8", { fatal: false }).decode(body.subarray(0, MARKER_SCAN_BYTES));
   const hasDataDomeBody = DATADOME_CHALLENGE.test(bodyHead);
   const hasImpervaBody = IMPERVA_BLOCK.test(bodyHead);
   return {
@@ -64,8 +76,6 @@ export function computeAntiBotEvidence(
     hasDataDomeBody,
     hasImpervaBody,
     hasVerificationPhrase:
-      (status === 429 || status === 503)
-      && !isJsonContentType(headerValue(headers, "content-type"))
-      && VERIFICATION_PHRASES.test(bodyHead),
+      gatedStatus && !isJson && VERIFICATION_PHRASES.test(new TextDecoder("utf8", { fatal: false }).decode(body)),
   };
 }

@@ -475,7 +475,12 @@ test("#151: verification phrase fires ONLY at 429/503 AND non-JSON (the two FP c
   assert.equal(ev(429, `{"detail":"verifying your browser"}`, { "content-type": "application/vnd.api+json" }).hasVerificationPhrase, false);
 });
 
-test("#151: a marker past the 4096-byte bodyHead cap is not detected", () => {
-  assert.equal(ev(403, "x".repeat(4096) + "captcha-delivery").hasChallengeBody, false);
-  assert.equal(ev(429, "x".repeat(4096) + "verifying your browser").hasVerificationPhrase, false);
+test("#151: markers scan a 64KB window; the phrase scans the FULL body (deep phrases ARE caught)", () => {
+  // Markers are bounded to a 64KB window (they live in <head>/early body, every fetch).
+  assert.equal(ev(403, "x".repeat(65536) + "captcha-delivery").hasChallengeBody, false, "marker past 64KB not seen");
+  assert.equal(ev(403, "x".repeat(60000) + "captcha-delivery").hasChallengeBody, true, "marker within 64KB seen");
+  // The phrase scans the FULL body (status-gated), so a phrase buried deep IS caught — the
+  // Vercel/HashiCorp repro buries "verifying your browser" ~28KB in under a large <head>.
+  assert.equal(ev(429, "x".repeat(30000) + "verifying your browser").hasVerificationPhrase, true, "deep phrase (30KB in) caught");
+  assert.equal(ev(200, "x".repeat(30000) + "verifying your browser").hasVerificationPhrase, false, "status gate holds at 200");
 });
