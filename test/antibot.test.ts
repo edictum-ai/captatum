@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detectAntibotBlock, stampAntibotChallenge } from "../src/application/antibot.ts";
+import { challengeProvider, detectAntibotBlock, stampAntibotChallenge } from "../src/application/antibot.ts";
 import { classifyAccess } from "../src/application/classify.ts";
 import type { Result } from "../src/domain/result.ts";
 import type { AntiBotEvidence, FetcherResult } from "../src/application/ports/fetcher.ts";
@@ -31,6 +31,9 @@ function result(status: number, e: Partial<AntiBotEvidence> = {}): FetcherResult
       hasCfRay: false,
       hasChallengeCookie: false,
       hasChallengeBody: false,
+      hasDataDomeBody: false,
+      hasImpervaBody: false,
+      hasVerificationPhrase: false,
       ...e,
     },
   };
@@ -87,4 +90,49 @@ test("Half A: a non-challenge fetch is not stamped", () => {
   assert.equal(stampAntibotChallenge(base, fetched), false);
   assert.equal(base.challengeProvider, undefined);
   assert.equal(classifyAccess(base).gated, false);
+});
+
+// --- #151: DataDome / Imperva vendor attribution + the bot_verification phrase path ---
+
+test("#151: detectAntibotBlock returns verification-phrase for a generic phrase wall", () => {
+  assert.equal(detectAntibotBlock(result(429, { hasVerificationPhrase: true }))?.signal, "verification-phrase");
+  assert.equal(detectAntibotBlock(result(503, { hasVerificationPhrase: true }))?.signal, "verification-phrase");
+});
+
+test("#151: a vendor challenge-body marker co-occurring with a phrase classifies as challenge-body (vendor wins)", () => {
+  // detectAntibotBlock checks hasChallengeBody BEFORE hasVerificationPhrase, so a DataDome/Imperva
+  // wall that also carries a phrase is vendor-attributed (captcha), not bot_verification.
+  assert.equal(
+    detectAntibotBlock(result(429, { hasChallengeBody: true, hasVerificationPhrase: true }))?.signal,
+    "challenge-body",
+  );
+});
+
+test("#151: challengeProvider attributes datadome/imperva from the body-marker booleans", () => {
+  assert.equal(challengeProvider({ status: 403, serverVendor: "none", hasCfMitigated: false, hasCfRay: false, hasChallengeCookie: false, hasChallengeBody: true, hasDataDomeBody: true, hasImpervaBody: false, hasVerificationPhrase: false }), "datadome");
+  assert.equal(challengeProvider({ status: 403, serverVendor: "none", hasCfMitigated: false, hasCfRay: false, hasChallengeCookie: false, hasChallengeBody: true, hasDataDomeBody: false, hasImpervaBody: true, hasVerificationPhrase: false }), "imperva");
+});
+
+test("#151: a verification-phrase wall stamps botVerification (NOT challengeProvider) → gateReason bot_verification, not http_error", () => {
+  const fetched = result(429, { hasVerificationPhrase: true }); // HashiCorp-class repro
+  const base = { ...bareResult(), code: 429, codeText: "429" };
+  assert.equal(stampAntibotChallenge(base, fetched), true);
+  assert.equal(base.botVerification, true);
+  assert.equal(base.challengeProvider, undefined, "vendor not attributable for a generic phrase");
+  assert.ok(base.errors.some((e) => e.code === "antibot_challenge"));
+  assert.ok(!/undefined/.test(base.errors.find((e) => e.code === "antibot_challenge")!.message), "no 'undefined' provider in the message");
+  // classifyAccess: bot_verification MUST win over the code>=400 http_error branch (the 429 is ≥400).
+  const access = classifyAccess(base);
+  assert.equal(access.gated, true);
+  assert.equal(access.gateReason, "bot_verification");
+  assert.equal(access.challengeProvider, undefined);
+});
+
+test("#151: a DataDome challenge-body wall stamps challengeProvider=datadome → gateReason captcha", () => {
+  const fetched = result(403, { hasChallengeBody: true, hasDataDomeBody: true });
+  const base = { ...bareResult(), code: 403, codeText: "403" };
+  assert.equal(stampAntibotChallenge(base, fetched), true);
+  assert.equal(base.challengeProvider, "datadome");
+  assert.equal(base.botVerification, undefined);
+  assert.equal(classifyAccess(base).gateReason, "captcha");
 });

@@ -116,8 +116,15 @@ export interface Result {
   /** sha256 over the stable JSON of the provenance envelope — attests how the result was produced. */
   provenanceHash?: string;
   /** Anti-bot challenge wall detected (cloudflare/akamai/perimeterx/…). When set,
-   *  the fetched bytes are a bot-protection interstitial, not page content (#41 Half A). */
+   *  the fetched bytes are a bot-protection interstitial, not page content (#41 Half A);
+   *  `classifyAccess` maps it to `gateReason:"captcha"`. */
   challengeProvider?: string;
+  /** A generic browser-verification interstitial was detected (a 429/503 "verifying your
+   *  browser"-style wall with no attributable vendor). When set, `classifyAccess` maps it to
+   *  `gateReason:"bot_verification"` (vendor not attributable, so `challengeProvider` is left
+   *  unset). Mutually exclusive with `challengeProvider` — `detectAntibotBlock` returns one
+   *  signal. #151. */
+  botVerification?: boolean;
   /** Content-quality verdict for a successful fetch whose bytes aren't real/usable content:
    *  "app_error" = a client-app error-boundary screen (e.g. "Something went wrong") promoted as
    *  content — demoted to tier:error (#145); "low_value" = HTTP success but near-empty useful

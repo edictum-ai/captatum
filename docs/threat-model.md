@@ -106,6 +106,31 @@ the contract reference; this file is the security reasoning.
   was the same class of quote-blind bug (a `>` in a meta attr could hide the charset → mojibake)
   and is fixed the same way. Residual: the extract layer remains hand-rolled (house rule prefers
   a proven library); a wholesale replacement is a separate change.
+- **Anti-bot challenge classification (#41, #151) is a narrow curated deny-list of literal
+  challenge signatures over an already-fetched body** — it issues NO new request and adds NO
+  egress/SSRF surface (it inspects only response headers/body already pulled through the sole
+  `guardedFetch` egress). `computeAntiBotEvidence` (`src/infrastructure/http/antibot-evidence.ts`)
+  reads the first 4096 bytes of the body + selected headers and emits booleans/enums ONLY (never
+  raw attacker-controlled strings) to the application layer. Two detections, both ReDoS-safe
+  literal alternations (no quantifiers, so worst case is linear in the scan window):
+  (1) **vendor challenge-only body markers** (`cdn-cgi/challenge-platform`, `__cf_chl`,
+  `_abck`, `px-captcha`, DataDome's `captcha-delivery` CDN, Imperva's
+  `incapsula incident id`/`powered by incapsula`) + the `cf-mitigated` header → `gateReason:"captcha"`
+  with the vendor in `challengeProvider`. These are **challenge-only signatures, not vendor names**:
+  the bare DataDome SDK tag (`js.datadome.co/tags.js`) and the Imperva inline `/_Incapsula_Resource`
+  sensor are deliberately EXCLUDED — both ship on every *protected* page, so matching them would
+  gate legitimate 200 content (silent content loss — the #44-class FP). Status-INDEPENDENT (a
+  challenge interstitial can be served at 200); precision comes from the marker, not the status.
+  (2) **a status-gated generic verification-phrase detector** → `gateReason:"bot_verification"`
+  (vendor not attributable, `challengeProvider` absent): the phrase set
+  (`verifying your browser|checking your browser|verify you are a human`) fires ONLY at status 429/503
+  AND when the content type is not JSON, so a legitimate 429/503 content page or a JSON API error is
+  not mis-gated (a 200 page with these phrases — e.g. an article about bot-detection — is not gated).
+  `captcha`/`bot_verification` take precedence over `http_error` in `classifyAccess` so a 429/503
+  wall is named as such. The body/phrase scans are bounded by the 4096-byte `bodyHead` cap; the
+  `CHALLENGE_COOKIE` regex (a single `\s*` quantifier, linear) is bounded instead by the requester's
+  HTTP max-header-size, and a cookie alone never gates (`detectAntibotBlock` ignores
+  `hasChallengeCookie`). No bypass is attempted — the wall is labeled, not entered.
 - **`output:"extract"` schema is untrusted input, validated at the input boundary (#153).**
   The caller-supplied JSON Schema is parsed as DATA (never a directive) and checked against the
   supported-keyword allowlist (`findUnsupportedSchemaKeyword`, the same `SUPPORTED_SCHEMA_KEYS`

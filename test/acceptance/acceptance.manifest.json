@@ -4,6 +4,8 @@
     "146/charset.test.ts": "748b5b0b8134599e20f9c102b54c4d9ee82557fa2ee948345df2b1e87c42bd00",
     "146/cross-callers.test.ts": "a32eaf941ba3f04bf569e047e7aa7c3f7b368d65954f86a23dab212350beb2ca",
     "146/strip-html-tags.test.ts": "c23178ec2f1e8c00ac16ba74d5f40475fcca44e6c4dec16e7209982dd8b2405e",
+    "151/classification.test.ts": "55d29828ee2fb2043f8fb72382c92903ee026ac1348eea8ef958db720879c821",
+    "151/redos.test.ts": "d599e34ac9f3cc44866f112e31b63da37f047e4e600d4335d8abaae439b0017a",
     "153/execute-paths.test.ts": "ef18cd92f4e149e1eb63b99534737c53f00cb9e505c6d05b9dee0e75502fd3f9",
     "153/input-validation.test.ts": "9553ab409a79dc95b854e57a4ea35d17753f6d6c6a55780bba2f662c91927d49",
     "153/receipt.test.ts": "725c65253a9e0137a75c8d47be83a7b272351c17793e947d2097c932c138bc82"

@@ -134,8 +134,8 @@ export class CaptatumUseCase {
     fetchMs: number,
   ): Promise<Result> {
     base.outputRequested = request.requestedOutput; // #153: requested vs actual (output below may flip to raw)
-    // Returned raw (never summarized): a challenge (#41), 4xx/5xx error page, or a demoted app-error screen (tier:error — #145; a crash screen through the LLM would overwrite the crash text).
-    if (base.challengeProvider || request.requestedOutput === "raw" || Number(base.code) >= 400 || base.tier === "error") {
+    // Returned raw (never summarized): a challenge (#41/#151), 4xx/5xx error page, or a demoted app-error screen (tier:error — #145).
+    if (base.challengeProvider || base.botVerification || request.requestedOutput === "raw" || Number(base.code) >= 400 || base.tier === "error") {
       base.output = "raw";
       stampTotals(base, elapsed(startMs, this.clock.nowMs()), fetchMs);
       return base;

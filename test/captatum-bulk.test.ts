@@ -573,6 +573,27 @@ test("bulk retry: a 429 with NO retryAfterMs is NOT retried (single attempt, no 
   assert.ok(!res.results[0].warnings.some((w) => w.code === "bulk_retried_429"), "no retry warning");
 });
 
+test("bulk retry: a bot-verification wall (429 + Retry-After) is NOT retried (#151 — won't clear on retry)", async () => {
+  // A bot-protection wall is a deliberate challenge, not transient rate-limiting: an immediate retry
+  // returns identical bytes, so retrying only burns a fetch + a Retry-After wait (up to 30s of the
+  // bulk wall). isRetriable short-circuits on botVerification/challengeProvider.
+  for (const wall of [
+    { botVerification: true },
+    { challengeProvider: "cloudflare" },
+  ]) {
+    const exec = new FakeExecutor();
+    let calls = 0;
+    exec.execute = async (input: unknown) => {
+      calls++;
+      const url = (input as { url: string }).url;
+      return { ...rejectResult(url, "http_429", "Bot wall"), code: 429, retryAfterMs: 50, ...wall };
+    };
+    const res = await makeBulk(exec, fakeClock(), { maxConcurrency: 1 }).execute({ urls: ["https://a.test/x"] });
+    assert.equal(calls, 1, `a ${"botVerification" in wall ? "bot_verification" : "captcha"} wall is not retried`);
+    assert.ok(!res.results[0].warnings.some((w) => w.code === "bulk_retried_429"), "no retry warning for a bot wall");
+  }
+});
+
 test("bulk retry: Retry-After:0 ENABLES the retry (codex P3 — truthiness dropped 0)", async () => {
   // Retry-After:0 (or a past HTTP-date → 0) is a valid "retry now" signal. The parse must keep it
   // (was: `parseRetryAfter(...) ?` dropped 0 → no retryAfterMs → retry skipped exactly when asked to retry now).

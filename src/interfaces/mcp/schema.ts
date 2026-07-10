@@ -19,7 +19,7 @@ export const CAPTATUM_TOOL_DESCRIPTION = [
  */
 export const CAPTATUM_SERVER_INSTRUCTIONS = [
   "Captatum is a provenance-aware web-fetch tool. The single tool `captatum` fetches a URL and returns token-efficient content plus a receipt describing how the result was produced.",
-  "Use it whenever you need to read a web page — docs, articles, job postings, product pages, JS-rendered SPAs. Prefer it over a raw HTTP GET: it extracts structured data (JSON-LD / Open Graph / meta), renders JS only when a page has no static content, and reports how each result was produced. Note: it does NOT bypass anti-bot challenge walls (Cloudflare/Akamai/PerimeterX) — those are detected and reported as gated (`gateReason: captcha`) rather than fetched.",
+  "Use it whenever you need to read a web page — docs, articles, job postings, product pages, JS-rendered SPAs. Prefer it over a raw HTTP GET: it extracts structured data (JSON-LD / Open Graph / meta), renders JS only when a page has no static content, and reports how each result was produced. Note: it does NOT bypass anti-bot challenge walls (Cloudflare/Akamai/PerimeterX) — those are detected and reported as gated (`gateReason: captcha` for a vendor-attributed wall, or `bot_verification` for a generic 429/503 browser-verification wall) rather than fetched.",
   "Outputs:",
   "- summary: a concise answer to your `prompt`. Cheapest and token-efficient. (The DEFAULT when a transform provider is configured — e.g. the hosted server; otherwise 'raw' is the default.)",
   "- raw: the full clean content plus parsed structured data, no LLM. Use when you need everything.",
