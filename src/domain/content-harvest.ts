@@ -115,9 +115,10 @@ function harvestByType(t: string, n: Record<string, unknown>, forLead: boolean):
         ? firstField(n, ["headline", "description"])
         : firstField(n, ["articleBody", "headline", "description"]);
     case "jobposting":
-      // The gate accepts title OR description (a title-only JobPosting is content-bearing); the
-      // lead prefers the richer description (a job title is short — don't lead with it).
-      return forLead ? firstField(n, ["description", "title"]) : firstField(n, ["title", "description"]);
+      // title OR description (a title-only JobPosting is content-bearing); the lead ALWAYS prefers
+      // the richer description (a job title is short — don't lead with it), regardless of forLead
+      // (forLead only governs Article's articleBody duplication, not this field order).
+      return firstField(n, ["description", "title"]);
     case "review":
       return firstField(n, ["reviewBody", "description"]);
     case "recipe":

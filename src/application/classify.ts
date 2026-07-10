@@ -125,14 +125,30 @@ function needsRender(result: Result): boolean {
 }
 
 /** Collect every short schema.org @type across top-level nodes and @graph. */
+/** Collect schema.org @types for contentType classification. Walks top-level nodes, @graph, and
+ *  the nested-content links (mainEntity/about/hasPart/itemListElement, depth-capped + cycle-guarded)
+ *  mirroring the shell-gate's walk — but descends the nested links ONLY for wrapper nodes that are
+ *  not themselves a CONTENT_TYPES type, so an Article.about→Product stays 'article' while an
+ *  ItemList.itemListElement→Product reaches 'product'. Keeps gate-satisfying ⇒ non-unknown (#152). */
 function primaryTypes(jsonLd: unknown): string[] {
   const types: string[] = [];
-  for (const node of asArray(jsonLd)) {
-    if (!isRecord(node)) continue;
-    types.push(...typesOf(node));
-    for (const child of graphNodes(node["@graph"])) types.push(...typesOf(child));
-  }
+  collectPrimaryTypes(jsonLd, types, 0, new Set());
   return types;
+}
+
+const PRIMARY_NESTED_LINKS = ["mainEntity", "mainEntityOfPage", "about", "hasPart", "itemListElement"];
+function collectPrimaryTypes(value: unknown, types: string[], depth: number, seen: Set<Record<string, unknown>>): void {
+  for (const node of asArray(value)) {
+    if (!isRecord(node) || seen.has(node)) continue;
+    seen.add(node);
+    const own = typesOf(node);
+    types.push(...own);
+    if (depth >= 4) continue;
+    collectPrimaryTypes(node["@graph"], types, depth, seen);
+    if (!own.some((t) => CONTENT_TYPES.has(t))) { // wrapper node: descend its nested content links
+      for (const link of PRIMARY_NESTED_LINKS) collectPrimaryTypes(node[link], types, depth + 1, seen);
+    }
+  }
 }
 
 function typesOf(node: Record<string, unknown>): string[] {

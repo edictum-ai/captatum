@@ -61,14 +61,14 @@ export function candidateNodes(jsonLd: unknown): Record<string, unknown>[] {
  * an article, a landing page, a board/profile, or a lookalike host can never lead.
  * An Article's articleBody equals its visible body, so it is never used as a lead.
  */
-function leadDescription(structured: StructuredData, url: string): string | undefined {
+function leadDescription(structured: StructuredData, url: string, hasVisibleText: boolean): string | undefined {
   if (!structured.jsonLd) return undefined;
   // Pass 1: the first content node's harvestable text (#152 widens this per-type — Review.reviewBody,
-  // FAQPage Q&As, HowTo steps, JobPosting.title, Article.articleBody/headline, … — and skips field-less
-  // content nodes). firstContentHarvest mirrors the shell-gate's walk (incl. nested mainEntity/about/
-  // itemListElement) so gate-satisfied ⇒ a non-empty lead. SocialMediaPosting is skipped here (Pass 2
-  // owns the pin-caption harvest).
-  const lead = firstContentHarvest(structured.jsonLd);
+  // FAQPage Q&As, HowTo steps, JobPosting.title, Article.articleBody/headline, …). forLead = hasVisibleText:
+  // when there IS visible text, an Article's articleBody is skipped (it duplicates the body); when there
+  // is NOT, articleBody is led with (gate⇒non-empty for an articleBody-only shell). firstContentHarvest
+  // mirrors the shell-gate's walk. SocialMediaPosting is skipped here (Pass 2 owns the pin-caption harvest).
+  const lead = firstContentHarvest(structured.jsonLd, false, hasVisibleText);
   if (lead) return stripHtml(lead);
   const nodes = candidateNodes(structured.jsonLd);
   // Pass 2: a pin's caption, only on an actual pin detail page whose only content
@@ -117,7 +117,7 @@ function referencesPinId(node: Record<string, unknown> | undefined, pinId: strin
 export function buildPayload(output: Output, structured: StructuredData, text: string, url: string): string {
   if (output === "extract") return JSON.stringify(structured, null, 2);
   const parts: string[] = [];
-  const desc = leadDescription(structured, url);
+  const desc = leadDescription(structured, url, text.trim().length > 0);
   if (desc) parts.push(desc);
   if (text) parts.push(text);
   return parts.join("\n\n");

@@ -74,9 +74,11 @@ export function hasContentBearingJsonLd(jsonLd: unknown, isPinDetail = false): b
 }
 
 /** The first non-social content node's harvestable text (the Tier-1 result.text lead). Mirrors
- *  the gate's walk so gate-satisfied ⇒ non-empty (for non-social types); forLead skips articleBody
- *  (it duplicates the visible body). undefined if none. */
-export function firstContentHarvest(jsonLd: unknown, isPinDetail = false): string | undefined {
+ *  the gate's walk so gate-satisfied ⇒ non-empty (for non-social types). `forLead` skips an
+ *  Article's `articleBody` to avoid duplicating the visible body — but the caller passes forLead =
+ *  hasVisibleText, so an articleBody-only shell with NO visible text still leads with articleBody
+ *  (gate⇒non-empty holds). undefined if none. */
+export function firstContentHarvest(jsonLd: unknown, isPinDetail = false, forLead = true): string | undefined {
   const node = findFirstContentNode(jsonLd, isPinDetail, false, 0, new Set());
-  return node ? harvestContentText(node, { forLead: true }) : undefined;
+  return node ? harvestContentText(node, { forLead }) : undefined;
 }

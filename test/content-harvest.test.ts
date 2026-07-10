@@ -6,7 +6,9 @@ import { test } from "node:test";
 import { shortSchemaType, shortTypes, CONTENT_TYPES, MAX_TYPE_ARRAY } from "../src/domain/content-types.ts";
 import { harvestContentText } from "../src/domain/content-harvest.ts";
 import { classifyContentType } from "../src/application/classify.ts";
+import { buildPayload } from "../src/application/use-cases/tier1-payload.ts";
 import type { Result } from "../src/domain/result.ts";
+import type { StructuredData } from "../src/domain/platform.ts";
 
 const base = (over: Partial<Result> = {}): Result => ({
   url: "https://x.test/", bytes: 100, code: 200, codeText: "OK", durationMs: 1, result: "x",
@@ -103,4 +105,22 @@ test("#152 codex: a deeply-nested ItemList chain is depth-capped (no stack overf
   const out = harvestContentText({ "@type": "HowTo", step: node });
   assert.equal(out, undefined, "depth-capped: the step past MAX_SECTION_DEPTH is not reached");
 });
+
+test("#152 codex: an articleBody-only Article with no visible text still yields a non-empty Tier-1 (gate⇒harvest)", () => {
+  // The gate counts articleBody (content-bearing); the lead must too when there's no visible text to
+  // duplicate — else an empty shell with {Article, articleBody} would satisfy the gate but render empty.
+  const payload = buildPayload("raw", { jsonLd: { "@type": "Article", articleBody: "The full article body text." } } as StructuredData, "", "https://x.test/a");
+  assert.ok(payload.includes("The full article body text."), `lead includes articleBody when no visible text: ${payload}`);
+});
+
+test("#152 codex: nested content-bearing JSON-LD classifies (gate-satisfying ⇒ non-unknown contentType)", () => {
+  // {ItemList, itemListElement:[{Product}]} satisfies the gate via the nested Product; classifyContentType
+  // must descend itemListElement too (else it sees only ItemList → unknown).
+  const nested = base({
+    finalUrl: "https://shop.test/list",
+    structured: { jsonLd: { "@type": "ItemList", itemListElement: [{ "@type": "Product", description: "a widget" }] } },
+  });
+  assert.equal(classifyContentType(nested), "product");
+});
+
 
