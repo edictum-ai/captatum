@@ -1,8 +1,8 @@
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { BridgeConfig, RequestAuthorizer } from "mcp-sso";
 import type { AuditLoggerPort } from "../../application/ports/audit.ts";
 import type { ClockPort } from "../../application/ports/clock.ts";
-import type { RequestAuthorizer } from "../../application/use-cases/request-auth.ts";
 import type { CaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import { config } from "../../config.ts";
 import { createCaptatumMcpServer, OverloadedError, type CaptatumBulkMcpExecutor } from "../mcp/server.ts";
@@ -11,6 +11,9 @@ import { sendMcpAuthError } from "./errors.ts";
 export interface McpRouteDeps {
   captatum: Pick<CaptatumUseCase, "execute" | "defaultOutput">;
   authorizer: Pick<RequestAuthorizer, "authorize">;
+  /** Hosted mcp-sso BridgeConfig — used to build the RFC 9728 `WWW-Authenticate`
+   *  challenge on a 401 (the `/mcp` route is hosted-only, so this is always present). */
+  config: BridgeConfig;
   audit: AuditLoggerPort;
   clock: ClockPort;
   hosted: boolean;
@@ -67,7 +70,7 @@ async function handleMcpPost(
   try {
     auth = await deps.authorizer.authorize({ authorization: request.headers.authorization });
   } catch (error) {
-    sendMcpAuthError(reply, error);
+    sendMcpAuthError(reply, error, deps.config);
     return;
   }
 

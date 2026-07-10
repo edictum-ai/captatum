@@ -176,6 +176,19 @@ the contract reference; this file is the security reasoning.
 
 ## Auth Limits
 
+- **Library boundary:** the hosted OAuth 2.1 / DCR / PKCE / Cloudflare-Access
+  stack is owned by the **mcp-sso** library (`mcp-sso@0.2.0`, acartag7/mcp-sso) —
+  captatum's own OAuth, extracted + hardened there. captatum's auth surface is
+  reduced to: building a validated `BridgeConfig` from env
+  (`src/application/mcp-sso-config.ts`), composing the `Bridge` +
+  `RequestAuthorizer` + CF-Access identity + store in `src/server.ts`, mounting
+  the Fastify routes (`mcp-sso/adapters/fastify`), and its own scope policy +
+  flavor boundary. The token sign/verify, PKCE, consent, replay/rotation, store
+  schema, and the CF JWT verification are the library's — a security-critical auth
+  implementation maintained once (canonically) rather than as a divergent in-repo
+  fork. The local-binary flavor is structurally excluded: it uses a
+  `LocalBypassAuthorizer` reachable ONLY from the stdio bridge (no network
+  listener), never the hosted HTTP `RequestAuthorizer`.
 - OAuth is **only** on the hosted flavor. The local-binary flavor has no auth, so
   it must be single-user/single-agent and never exposed on a network.
 - Authorization codes and refresh tokens are stored only as `sha256` hashes.
@@ -186,13 +199,15 @@ the contract reference; this file is the security reasoning.
   row is retained as long as any family member is still valid (so a stolen-token
   replay can still revoke the family), and GC'd only once the whole family is past
   validity. Orphaned families are cleaned, so the store is not a perpetual accumulator.
-- Hosted production requires `OAUTH_CONSENT_SIGNING_SECRET` +
-  `OAUTH_SIGNING_PRIVATE_JWK` + `OAUTH_ISSUER` (absolute `https` URL) +
-  `OAUTH_RESOURCE` (absolute URL), fail-fast at boot. The hosted flavor must not
-  silently generate production signing secrets or boot with empty iss/aud;
-  missing/malformed injection is a boot failure.
-- The Cloudflare Access JWT verifier confirms signature/audience/issuer/expiry and
-  email presence in code; identity allowlisting (which emails may mint a token) is
+- Hosted production boot is fail-closed. mcp-sso's `createBridgeConfig` validates
+  `OAUTH_CONSENT_SIGNING_SECRET` (≥32 chars) + `OAUTH_SIGNING_PRIVATE_JWK`
+  (EC P-256) + `OAUTH_ISSUER` (absolute `https`) + `OAUTH_RESOURCE` (absolute URL)
+  + valid TTLs + scope subset; captatum adds its AUTH-1 gate that the hosted flavor
+  MUST sit behind Cloudflare Access. The hosted flavor must not silently generate
+  production signing secrets or boot with empty iss/aud; missing/malformed
+  injection is a boot failure (an `AuthConfigError`).
+- mcp-sso's Cloudflare-Access identity port confirms signature/audience/issuer/expiry
+  and email presence; identity allowlisting (which emails may mint a token) is
   delegated to the CF Zero Trust Access app policy — the single source of truth.
   `CF_ACCESS_EMAIL_ALLOWLIST` is an optional defense-in-depth second gate.
 

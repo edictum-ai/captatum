@@ -5,10 +5,10 @@ import type { FetcherPort } from "../../application/ports/fetcher.ts";
 import type { RenderPort } from "../../application/ports/renderer.ts";
 import type { TransformPort } from "../../application/ports/transformer.ts";
 import {
-  loadAuthRuntimeConfig,
-  type AuthRuntimeConfig,
-} from "../../application/use-cases/oauth-config.ts";
-import { createRequestAuthorizer } from "../../application/use-cases/request-auth.ts";
+  loadCaptatumAuth,
+  type CaptatumAuthRuntime,
+} from "../../application/mcp-sso-config.ts";
+import { createLocalBypassAuthorizer } from "../../application/local-auth.ts";
 import { createCaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import { createCaptatumBulkUseCase } from "../../application/use-cases/captatum-bulk.ts";
 import { createAdapterRegistry } from "../../application/adapters.ts";
@@ -34,7 +34,7 @@ export interface LocalMcpDeps {
   transformer?: TransformPort;
   renderer?: RenderPort;
   /** Defaults to the process-resolved runtime config; must be local-binary. */
-  runtime?: AuthRuntimeConfig;
+  runtime?: CaptatumAuthRuntime;
 }
 
 /**
@@ -42,7 +42,7 @@ export interface LocalMcpDeps {
  * single-user/single-agent and opens no network listener; the hosted flavor owns
  * OAuth + the HTTP listener and is reached only through `src/server.ts`.
  */
-export function assertLocalFlavor(runtime: AuthRuntimeConfig): void {
+export function assertLocalFlavor(runtime: CaptatumAuthRuntime): void {
   if (runtime.flavor !== "local-binary") {
     throw new LocalFlavorError(
       "Local stdio bridge runs only under the local-binary flavor; " +
@@ -58,13 +58,9 @@ export function assertLocalFlavor(runtime: AuthRuntimeConfig): void {
  * secrets, and no network transport. The caller attaches a stdio transport.
  */
 export async function createLocalMcpServer(deps: LocalMcpDeps): Promise<Server> {
-  const runtime = deps.runtime ?? loadAuthRuntimeConfig();
+  const runtime = deps.runtime ?? loadCaptatumAuth();
   assertLocalFlavor(runtime);
-  const authorizer = createRequestAuthorizer({
-    runtime,
-    clock: deps.clock,
-    audit: deps.audit,
-  });
+  const authorizer = createLocalBypassAuthorizer(deps.clock, deps.audit);
   const auth = await authorizer.authorize({});
   const captatum = createCaptatumUseCase({
     fetcher: deps.fetcher,

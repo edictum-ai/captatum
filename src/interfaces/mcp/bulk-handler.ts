@@ -7,8 +7,8 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { BulkResult } from "../../domain/bulk-result.ts";
 import type { CaptatumContext } from "../../application/ports/captatum-context.ts";
-import { OAuthError } from "../../application/use-cases/oauth-errors.ts";
-import { requireScope, requiredScopeForCaptatum } from "../../application/use-cases/oauth-scopes.ts";
+import { OAuthError, requireScope } from "mcp-sso";
+import { requiredScopeForCaptatum } from "../../application/scopes.ts";
 import { bulkResultToMcpText } from "./bulk-format.ts";
 import { buildBulkStructuredContent } from "./bulk-shape.ts";
 import { CAPTATUM_BULK_TOOL_NAME } from "./bulk-schema.ts";

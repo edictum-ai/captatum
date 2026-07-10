@@ -9,9 +9,8 @@ import {
 import type { AuditLoggerPort } from "../../application/ports/audit.ts";
 import type { ClockPort } from "../../application/ports/clock.ts";
 import type { CaptatumContext } from "../../application/ports/captatum-context.ts";
-import { OAuthError } from "../../application/use-cases/oauth-errors.ts";
-import { requireScope, requiredScopeForCaptatum } from "../../application/use-cases/oauth-scopes.ts";
-import type { RequestAuthResult } from "../../application/use-cases/request-auth.ts";
+import { OAuthError, requireScope, type AuthorizedSubject } from "mcp-sso";
+import { requiredScopeForCaptatum } from "../../application/scopes.ts";
 import type { CaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import {
   normalizeCaptatumInput,
@@ -51,7 +50,7 @@ export interface CaptatumBulkMcpExecutor {
 
 export interface CaptatumMcpServerDeps {
   captatum: Pick<CaptatumUseCase, "execute" | "defaultOutput">;
-  auth: RequestAuthResult;
+  auth: AuthorizedSubject;
   audit: AuditLoggerPort;
   clock: ClockPort;
   /** Present when captatum_bulk is enabled (local always; hosted only when CAPTATUM_BULK_ENABLED). */

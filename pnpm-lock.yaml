@@ -20,6 +20,9 @@ importers:
       jose:
         specifier: 6.2.3
         version: 6.2.3
+      mcp-sso:
+        specifier: 0.2.0
+        version: 0.2.0(express@5.2.1)(fastify@5.8.5)(hono@4.12.25)(mysql2@3.22.3(@types/node@24.12.4))
       mysql2:
         specifier: 3.22.3
         version: 3.22.3(@types/node@24.12.4)
@@ -360,6 +363,27 @@ packages:
   math-intrinsics@1.1.0:
     resolution: {integrity: sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==}
     engines: {node: '>= 0.4'}
+
+  mcp-sso@0.2.0:
+    resolution: {integrity: sha512-YAZLT8XExJoKaMGQx0cOCQwbIin52UpH/lSUMLzDNp999FtDMhT/IkLJu0RD5ZJ2u9mNOy6hOztSdBRgM31UJw==}
+    engines: {node: '>=24'}
+    peerDependencies:
+      express: '>=5'
+      fastify: '>=5'
+      hono: 4.12.25
+      ioredis: '>=5'
+      mysql2: '>=3'
+    peerDependenciesMeta:
+      express:
+        optional: true
+      fastify:
+        optional: true
+      hono:
+        optional: true
+      ioredis:
+        optional: true
+      mysql2:
+        optional: true
 
   media-typer@1.1.0:
     resolution: {integrity: sha512-aisnrDP4GNe06UcKFnV5bfMNPBUw4jsLGaWwWfnH3v02GnBuXX2MCVn5RbrWo0j3pczUilYblq7fQ7Nw2t5XKw==}
@@ -986,6 +1010,15 @@ snapshots:
   lru.min@1.1.4: {}
 
   math-intrinsics@1.1.0: {}
+
+  mcp-sso@0.2.0(express@5.2.1)(fastify@5.8.5)(hono@4.12.25)(mysql2@3.22.3(@types/node@24.12.4)):
+    dependencies:
+      jose: 6.2.3
+    optionalDependencies:
+      express: 5.2.1
+      fastify: 5.8.5
+      hono: 4.12.25
+      mysql2: 3.22.3(@types/node@24.12.4)
 
   media-typer@1.1.0: {}
 
