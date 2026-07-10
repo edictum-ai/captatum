@@ -45,11 +45,32 @@ function capEcho(value: string): string {
   return value.length <= MAX_ECHO ? value : `${value.slice(0, MAX_ECHO - 1)}…`;
 }
 
-/** Compose the unsupported-keyword message: it leads with the offending key (the pre-fix
- *  `${path} schema keyword "${key}"` visually merged `$` + `schema` into `$schema`, implicating
- *  the supported `$schema` key) and keeps the path visually separate. */
+/** Captatum top-level tool arguments an agent may mistakenly nest inside an extract
+ *  `schema` (they read like JSON-Schema-shaped names but are captatum knobs). When one
+ *  appears as a schema key, the error points at the real fix (move it to the top level)
+ *  instead of the generic "remove it" — agents naturally pass budget/timeoutMs/debug (and,
+ *  for captatum_bulk, maxTransformCostUsd/perSeedTransformCostUsd/urls) into the schema,
+ *  and "remove it" is wrong advice for a real captatum arg. Union of captatum-input.ts's
+ *  and bulk-input.ts's zod schemas — keep in sync when a top-level arg is added/removed in
+ *  EITHER (messageForUnsupportedKeyword is shared by both paths via assertExtractSchemaSupported).
+ *  Key names are matched case-sensitively (captatum args are lowercase); no schema value
+ *  is ever echoed. */
+const CAPTATUM_KNOB_KEYS: ReadonlySet<string> = new Set([
+  "url", "urls", "prompt", "output", "schema", "budget", "transform", "maxBytes", "timeoutMs", "allowRender", "debug", "maxTransformCostUsd", "perSeedTransformCostUsd",
+]);
+
+/** Compose the unsupported-keyword message. A captatum tool argument misplaced inside the
+ *  schema (budget/timeoutMs/debug/…) gets a "move it out of schema" hint; any other
+ *  unsupported keyword (format, contentEncoding, …) gets the generic "remove it". It leads
+ *  with the offending key (the pre-fix `${path} schema keyword "${key}"` visually merged `$`
+ *  + `schema` into `$schema`, implicating the supported `$schema` key) and keeps the path
+ *  visually separate. */
 export function messageForUnsupportedKeyword(key: string, path: string): string {
-  return `Unsupported JSON Schema keyword "${capEcho(key)}" at ${path} — captatum cannot verify it; remove it.`;
+  const cleanKey = capEcho(key);
+  if (CAPTATUM_KNOB_KEYS.has(cleanKey)) {
+    return `"${cleanKey}" at ${path} is a captatum tool argument, not a JSON Schema keyword — move it out of "schema" to the top level of the captatum call (captatum validates "schema" as a JSON Schema, so a knob nested there is rejected).`;
+  }
+  return `Unsupported JSON Schema keyword "${cleanKey}" at ${path} — captatum cannot verify it; remove it.`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
