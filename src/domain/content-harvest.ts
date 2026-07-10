@@ -37,18 +37,27 @@ function firstField(node: Record<string, unknown>, names: readonly string[]): st
   return undefined;
 }
 
-/** Descend HowTo `step[]` / Recipe `recipeInstructions`: HowToStep → .text; HowToSection →
- *  recurse its `.itemListElement`/`.step` (depth-capped) BEFORE falling back to a name. A
- *  section's `.name` is a heading — its real steps live in itemListElement. Slice-then-normalize. */
+/** Descend HowTo `step[]` / Recipe `recipeInstructions` across their schema.org shapes: a single
+ *  Text string, a `Text[]` (string elements), an `ItemList` wrapper, `HowToStep[]` (.text), and
+ *  `HowToSection` (recurse its `.itemListElement`/`.step`, depth-capped) BEFORE falling back to a
+ *  name. Slice-then-normalize (codex: Text[]/ItemList were skipped). */
 function harvestSteps(raw: unknown, depth = 0): string | undefined {
-  if (!Array.isArray(raw)) return textField(raw); // a Text instruction (string)
+  if (typeof raw === "string") return textField(raw); // a single Text instruction
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) { // an ItemList wrapper / single step object
+    const n = raw as Record<string, unknown>;
+    const inner = n.itemListElement ?? n.step;
+    if (inner !== undefined) return harvestSteps(inner, depth);
+    return textField(n.text);
+  }
+  if (!Array.isArray(raw)) return undefined;
   const parts: string[] = [];
   for (const el of raw.slice(0, ARRAY_MAX)) {
+    if (typeof el === "string") { const t = textField(el); if (t) { parts.push(t); continue; } } // Text[] element
     if (!el || typeof el !== "object") continue;
     const n = el as Record<string, unknown>;
     const text = textField(n.text); // HowToStep.text
     if (text) { parts.push(text); continue; }
-    if (depth < MAX_SECTION_DEPTH) { // HowToSection: descend its real steps first
+    if (depth < MAX_SECTION_DEPTH) { // HowToSection / nested ItemList: descend its real steps first
       const inner = harvestSteps(n.itemListElement ?? n.step, depth + 1);
       if (inner) { parts.push(inner); continue; }
     }

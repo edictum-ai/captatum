@@ -149,7 +149,9 @@ function mapType(type: string | undefined): ContentType | undefined {
   // The rest of CONTENT_TYPES (#152 widening: recipe/review/howto/faqpage/question/dataset/
   // softwareapplication/webapplication/media titles/business) → "article" (text/reference content;
   // a distinct ContentType value is an impl detail). Keeps gate-satisfying ⇒ non-unknown.
-  return CONTENT_TYPES.has(type) ? "article" : undefined;
+  // socialmediaposting is EXCLUDED: a pin page classifies via the isPinHost check ("pin"), so a
+  // SocialMediaPosting JSON-LD must not preempt it with "article" (codex).
+  return type !== "socialmediaposting" && CONTENT_TYPES.has(type) ? "article" : undefined;
 }
 
 /** Highest-precedence content type from a list of short @types: job > product > article. */

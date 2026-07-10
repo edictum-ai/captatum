@@ -18,7 +18,10 @@
  *  CURIE/prefix forms (schema:JobPosting, s:JobPosting) are intentionally NOT normalized —
  *  they fail the Set lookup (a safe extra render, never a bypass). */
 export function shortSchemaType(value: string): string {
-  const lower = value.toLowerCase().replace(/^https?:\/\/schema\.org\//, "").replace(/\/+$/, "");
+  // Trim BEFORE the prefix/trailing-slash strips: a value like " https://schema.org/JobPosting/ "
+  // ends in whitespace, so a late slash-strip would miss it (codex). Then strip the IRI prefix,
+  // strip a trailing "/", take the last "/"-segment.
+  const lower = value.toLowerCase().trim().replace(/^https?:\/\/schema\.org\//, "").replace(/\/+$/, "");
   const seg = lower.includes("/") ? lower.slice(lower.lastIndexOf("/") + 1) : lower;
   return seg.trim();
 }

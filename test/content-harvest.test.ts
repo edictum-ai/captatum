@@ -5,6 +5,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { shortSchemaType, shortTypes, CONTENT_TYPES, MAX_TYPE_ARRAY } from "../src/domain/content-types.ts";
 import { harvestContentText } from "../src/domain/content-harvest.ts";
+import { classifyContentType } from "../src/application/classify.ts";
+import type { Result } from "../src/domain/result.ts";
+
+const base = (over: Partial<Result> = {}): Result => ({
+  url: "https://x.test/", bytes: 100, code: 200, codeText: "OK", durationMs: 1, result: "x",
+  schemaVersion: 1, finalUrl: "https://x.test/", redirects: [], tier: 1, output: "raw",
+  platform: { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" },
+  jsRequired: false, resolvedVia: "tier1-text", attempts: [], contentType: "text/html",
+  timings: { totalMs: 1, fetchMs: 1 }, errors: [], ...over,
+});
 
 test("#152 shortSchemaType: IRI, trailing-slash, whitespace, and last-segment forms normalize", () => {
   assert.equal(shortSchemaType("JobPosting"), "jobposting");
@@ -59,3 +69,29 @@ test("#152: recipeInstructions HowToStep[] is descended per-element (not string-
   assert.match(r, /Bake 25 min/);
   assert.ok(!r.includes("[object Object]"), "HowToStep[] not string-coerced");
 });
+
+// --- codex P2 regression guards ---
+
+test("#152 codex: shortSchemaType trims BEFORE the trailing-slash strip (whitespace + IRI + slash)", () => {
+  assert.equal(shortSchemaType(" https://schema.org/JobPosting/ "), "jobposting");
+  assert.equal(shortSchemaType("\thttps://schema.org/Article/\t"), "article");
+});
+
+test("#152 codex: harvestSteps handles Text[] (string elements) and an ItemList wrapper", () => {
+  // Text[]: a recipe whose instructions are an array of plain strings.
+  const textArr = harvestContentText({ "@type": "Recipe", recipeInstructions: ["Preheat oven.", "Bake 25 min."] })!;
+  assert.match(textArr, /Preheat oven/);
+  assert.match(textArr, /Bake 25 min/);
+  // ItemList wrapper: howto steps wrapped in an ItemList.
+  const itemList = harvestContentText({ "@type": "HowTo", step: { "@type": "ItemList", itemListElement: [{ "@type": "HowToStep", text: "Cut the wood." }] } })!;
+  assert.match(itemList, /Cut the wood/);
+});
+
+test("#152 codex: a Pinterest pin page (SocialMediaPosting JSON-LD) classifies 'pin', not 'article'", () => {
+  const pin = base({
+    finalUrl: "https://www.pinterest.com/pin/1618549864698060/",
+    structured: { jsonLd: { "@type": "SocialMediaPosting", articleBody: "a pin caption" } },
+  });
+  assert.equal(classifyContentType(pin), "pin", "isPinHost wins over the SocialMediaPosting JSON-LD type");
+});
+
