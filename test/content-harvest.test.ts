@@ -131,4 +131,19 @@ test("#152 codex: a co-typed [SocialMediaPosting, Article] counts the Article ev
   assert.equal(hasContentBearingJsonLd({ "@type": ["SocialMediaPosting"], articleBody: "caption" }, false), false, "social-only stays pin-scoped (off-pin → false)");
 });
 
+test("#152 codex: a thin shell ('Loading') does NOT suppress articleBody — the body leads", () => {
+  // hasVisibleText requires SUBSTANTIAL text (≥80 chars / ≥12 words), so a few chars of shell
+  // boilerplate doesn't make the lead skip articleBody (else output would be only the shell text).
+  const payload = buildPayload("raw", { jsonLd: { "@type": "Article", articleBody: "The real article body." } } as StructuredData, "Loading", "https://x.test/a");
+  assert.ok(payload.startsWith("The real article body."), `articleBody leads over thin shell text: ${payload}`);
+});
+
+test("#152 codex: WebPage.subject → Article classifies 'article' (subject is a nested link)", () => {
+  const viaSubject = base({
+    finalUrl: "https://news.test/p",
+    structured: { jsonLd: { "@type": "WebPage", subject: { "@type": "Article", headline: "via subject" } } },
+  });
+  assert.equal(classifyContentType(viaSubject), "article", "subject is a nested-content link (shared with the gate)");
+});
+
 

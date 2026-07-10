@@ -1,5 +1,5 @@
 import type { Result } from "../domain/result.ts";
-import { shortSchemaType, CONTENT_TYPES } from "../domain/content-types.ts";
+import { shortSchemaType, CONTENT_TYPES, NESTED_CONTENT_LINKS } from "../domain/content-types.ts";
 import { isPinHost } from "../domain/pin-url.ts";
 
 /**
@@ -136,7 +136,6 @@ function primaryTypes(jsonLd: unknown): string[] {
   return types;
 }
 
-const PRIMARY_NESTED_LINKS = ["mainEntity", "mainEntityOfPage", "about", "hasPart", "itemListElement"];
 function collectPrimaryTypes(value: unknown, types: string[], depth: number, seen: Set<Record<string, unknown>>): void {
   for (const node of asArray(value)) {
     if (!isRecord(node) || seen.has(node)) continue;
@@ -146,7 +145,7 @@ function collectPrimaryTypes(value: unknown, types: string[], depth: number, see
     if (depth >= 4) continue;
     collectPrimaryTypes(node["@graph"], types, depth, seen);
     if (!own.some((t) => CONTENT_TYPES.has(t))) { // wrapper node: descend its nested content links
-      for (const link of PRIMARY_NESTED_LINKS) collectPrimaryTypes(node[link], types, depth + 1, seen);
+      for (const link of NESTED_CONTENT_LINKS) collectPrimaryTypes(node[link], types, depth + 1, seen);
     }
   }
 }

@@ -50,6 +50,14 @@ export const CONTENT_TYPES: ReadonlySet<string> = new Set([
   "socialmediaposting",
 ]);
 
+/** schema.org properties linking a wrapper node to a nested content entity. SHARED by the shell-gate
+ *  walk (content-bearing.ts) and the contentType classifier (classify.ts) so the two never drift on
+ *  which links reach nested content (#152). Only inline objects are followed (a URL string is a
+ *  reference, not content). */
+export const NESTED_CONTENT_LINKS: readonly string[] = [
+  "mainEntity", "mainEntityOfPage", "about", "subject", "hasPart", "itemListElement",
+];
+
 /** The schema.org @types on a node (short, full-IRI, and array forms), normalized. The @type
  *  array is count-capped (first 64) so a 100k-@type array is O(64), not O(n) (#152 threat note). */
 export const MAX_TYPE_ARRAY = 64;

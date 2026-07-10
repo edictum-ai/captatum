@@ -14,14 +14,13 @@
 // walk (findFirstContentNode) so the invariant "gate satisfied ⇒ non-empty harvest" holds by
 // construction for every non-social type. socialmediaposting is gate-scoped to pin-detail pages
 // (isPinDetail) and harvested by tier1-payload's Pass 2, not here.
-import { CONTENT_TYPES, shortTypes, shortSchemaType } from "./content-types.ts";
+import { CONTENT_TYPES, shortTypes, shortSchemaType, NESTED_CONTENT_LINKS } from "./content-types.ts";
 import { harvestContentText } from "./content-harvest.ts";
 
-export { shortSchemaType } from "./content-types.ts"; // back-compat re-export (canonical copy)
+export { shortSchemaType, NESTED_CONTENT_LINKS } from "./content-types.ts"; // back-compat re-export
 
-/** Cap on chained wrapper descent (mainEntity/about/hasPart/itemListElement). Guards cycles. */
+/** Cap on chained wrapper descent (mainEntity/about/subject/hasPart/itemListElement). Guards cycles. */
 export const MAX_NESTED_DEPTH = 4;
-const NESTED_CONTENT_LINKS = ["mainEntity", "mainEntityOfPage", "about", "subject", "hasPart", "itemListElement"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -113,11 +113,20 @@ function referencesPinId(node: Record<string, unknown> | undefined, pinId: strin
   return refs.some((r) => isPinDetailPage(r) && pinIdFromUrl(r) === pinId);
 }
 
+/** Whether the visible text is substantial (a real body, not a few chars of shell boilerplate like
+ *  "Loading" / nav crumbs) — mirrors the shell-gate's hasContent notion. Used to decide whether an
+ *  Article's articleBody would duplicate the body: only substantial visible text suppresses it, so a
+ *  thin shell still leads with articleBody (gate⇒non-empty) (codex). */
+function hasSubstantialText(text: string): boolean {
+  const t = text.trim();
+  return t.length >= 80 || t.split(/\s+/).filter(Boolean).length >= 12;
+}
+
 /** Shape the Tier-1 output string for the requested output mode. */
 export function buildPayload(output: Output, structured: StructuredData, text: string, url: string): string {
   if (output === "extract") return JSON.stringify(structured, null, 2);
   const parts: string[] = [];
-  const desc = leadDescription(structured, url, text.trim().length > 0);
+  const desc = leadDescription(structured, url, hasSubstantialText(text));
   if (desc) parts.push(desc);
   if (text) parts.push(text);
   return parts.join("\n\n");
