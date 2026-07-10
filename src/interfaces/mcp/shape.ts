@@ -27,6 +27,7 @@ export function buildStructuredContent(result: Result, debug: boolean): Record<s
     finalUrl: redactSignedQueryParams(result.finalUrl),
     title: result.title,
     output: result.output,
+    ...(result.outputRequested !== undefined ? { outputRequested: result.outputRequested } : {}),
     contentType,
     result: snippet(result.result),
     tier: result.tier,
@@ -71,9 +72,11 @@ function classifyStatus(result: Result, warnings: ProvenanceError[]): Status {
   // even though a body was returned (the agent can still read result.result for the message).
   if (Number(result.code) >= 400) return "fail";
   if (warnings.length > 0) return "partial";
-  // Summary/extract requested but the transform fell back to raw — degraded.
+  // Summary/extract requested but the transform fell back to raw — degraded. provider:"none" is
+  // set ONLY on a degrade, so any reason ⇒ partial (#153 conformance fix: the old reason allowlist
+  // — "failed"||"unconfigured" — under-reported router sub-reasons like no_model_fit as "pass").
   const t = result.transform;
-  if (t && t.provider === "none" && (t.reason === "failed" || t.reason === "unconfigured")) {
+  if (t && t.provider === "none") {
     return "partial";
   }
   return "pass";

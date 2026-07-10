@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { validateJsonSchema } from "../src/infrastructure/llm/json-schema.ts";
+import { findUnsupportedSchemaKeyword, messageForUnsupportedKeyword } from "../src/domain/schema-allowlist.ts";
 
 // PR 8: JSON-Schema validation correctness. The `in` operator walks the prototype
 // chain, so own `constructor`/`toString` keys were masked by inherited ones and
@@ -80,3 +81,52 @@ test("a normal schema pattern still validates (TRANSFORM-2 regression)", () => {
   assert.equal(validateJsonSchema("12345", { pattern: "^\\d+$" }).valid, true);
   assert.equal(validateJsonSchema("abc", { pattern: "^\\d+$" }).valid, false);
 });
+
+// #153: the unsupported-keyword message leads with the offending key (the pre-fix `${path} schema
+// keyword "${key}"` visually merged `$` + `schema` into `$schema`, implicating the supported key).
+test("#153: validateJsonSchema unsupported-keyword message leads with the offending key", () => {
+  const r = validateJsonSchema({ a: "x" }, { type: "object", properties: { a: { type: "string", format: "email" } } });
+  assert.equal(r.unsupported, true);
+  assert.ok(r.message?.startsWith('Unsupported JSON Schema keyword "format"'), `got: ${r.message}`);
+  assert.ok(!r.message?.includes("$schema keyword"), "must not visually merge into '$schema keyword'");
+});
+
+// #153: the input-boundary walker visits exactly the applied-subschema locations validateAt visits —
+// it must NOT visit $defs/definitions (dead — no $ref support) or it would over-reject schemas the
+// value validator accepts.
+test("#153: findUnsupportedSchemaKeyword does not visit $defs/definitions (no $ref support)", () => {
+  // `format` lives only inside $defs — never applied to the value, so it is harmless and must NOT
+  // be flagged (the value validator accepts this schema today).
+  const schema = { type: "object", properties: { a: { type: "string" } }, $defs: { x: { format: "email" } } };
+  assert.equal(findUnsupportedSchemaKeyword(schema), undefined);
+});
+
+test("#153: findUnsupportedSchemaKeyword flags tuple-form items as a fail-closed unverifiable form", () => {
+  // `items` as an array (tuple) can only be advisory-checked by the value validator (invalid,
+  // unsupported unset), so the walker hard-rejects the unverifiable form at the input boundary.
+  const schema = { type: "array", items: [{ type: "string", format: "email" }] };
+  const finding = findUnsupportedSchemaKeyword(schema);
+  assert.equal(finding?.kind, "tuple_items");
+  assert.equal(finding?.path, "$.items");
+  // single-schema items is still recursed (a nested unsupported keyword there is caught normally)
+  assert.equal(
+    findUnsupportedSchemaKeyword({ type: "array", items: { type: "string", format: "email" } })?.kind,
+    "unsupported",
+  );
+});
+
+test("#153: findUnsupportedSchemaKeyword reports a root unsupported keyword + a nested one with its path", () => {
+  assert.deepEqual(findUnsupportedSchemaKeyword({ type: "object", budget: 1 }), { kind: "unsupported", key: "budget", path: "$" });
+  assert.deepEqual(
+    findUnsupportedSchemaKeyword({ type: "object", properties: { email: { type: "string", format: "email" } } }),
+    { kind: "unsupported", key: "format", path: "$.properties.email" },
+  );
+});
+
+test("#153: messageForUnsupportedKeyword caps an oversized key (no-bloat on caller-controlled strings)", () => {
+  const huge = "x".repeat(200);
+  const msg = messageForUnsupportedKeyword(huge, "$");
+  assert.ok(msg.length < 200, "an oversized key is truncated, not echoed verbatim");
+  assert.ok(msg.startsWith("Unsupported JSON Schema keyword \""));
+});
+

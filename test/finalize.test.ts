@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ModelPick, ModelRouterPort, ModelScore } from "../src/application/ports/model-router.ts";
-import type { TransformInput } from "../src/application/ports/transformer.ts";
+import { TransformError, type TransformInput } from "../src/application/ports/transformer.ts";
 import { finalize } from "../src/infrastructure/llm/finalize.ts";
 
 class RecordingRouter implements ModelRouterPort {
@@ -55,6 +55,8 @@ test("finalize records one 'soft' outcome on a schema mismatch — no follow-up 
 
 test("finalize records one 'hard_fail' outcome (and fails closed) for an unsupported schema keyword", () => {
   const router = new RecordingRouter();
+  // #153: the retained defense-in-depth throw carries the rephrased message (leads with the
+  // offending key — the captatum.ts catch maps this code to reason "schema_validation_failed").
   assert.throws(
     () => finalize(
       input("extract", { type: "object", properties: { a: { type: "string", format: "email" } } }),
@@ -62,6 +64,10 @@ test("finalize records one 'hard_fail' outcome (and fails closed) for an unsuppo
       "m",
       router,
     ),
+    (err: unknown): boolean =>
+      err instanceof TransformError
+      && err.code === "extract_schema_invalid"
+      && err.message.startsWith('Unsupported JSON Schema keyword "format"'),
   );
   assert.equal(router.calls.length, 1);
   assert.equal(router.calls[0].outcome, "hard_fail");

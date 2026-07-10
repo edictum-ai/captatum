@@ -1,5 +1,6 @@
 import type { ModelPickOptions, RouterProvider, RouterTask } from "../../application/ports/model-router.ts";
 import type { TransformResult } from "../../application/ports/transformer.ts";
+import type { TransformReason } from "../../domain/result.ts";
 import type { LlmModelCandidate } from "./types.ts";
 
 /** Does a candidate satisfy the pick constraints and fit the context window for the requested
@@ -23,8 +24,8 @@ export function fits(
   return candidate.contextTokens >= inputTokens + reserve;
 }
 
-/** Why pick() returned provider "none" — surfaced as the raw-fallback reason. */
-export function noneReason(options: ModelPickOptions, configuredCount: number): string {
+/** Why pick() returned provider "none" — surfaced as the raw-fallback reason (`TransformReason`). */
+export function noneReason(options: ModelPickOptions, configuredCount: number): TransformReason {
   // No providers configured at all is the primary cause — check it first so a zero-candidate
   // local binary reports "unconfigured" even when the sensitive gate (localOnly) also fired
   // (the gate changed no outcome; mis-attributing it to "sensitive_content_no_local_provider"
@@ -46,7 +47,7 @@ export function overrideProvider(value: unknown): Exclude<RouterProvider, "none"
 
 /** Raw-content fallback: the transform produced no LLM result, so return the cleaned content with
  *  a `provider: "none"` reason. */
-export function rawFallback(result: string, reason: string): TransformResult {
+export function rawFallback(result: string, reason: TransformReason): TransformResult {
   return { result, info: { provider: "none", reason } };
 }
 

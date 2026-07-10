@@ -16,6 +16,7 @@
     "redirects": [],
     "tier": 1,
     "output": "raw",
+    "outputRequested": "summary",
     "platform": {
       "adapterId": "generic",
       "label": "Generic HTML",

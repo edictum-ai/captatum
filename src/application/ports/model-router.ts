@@ -7,6 +7,8 @@
  * See docs/contracts.md "Ports → ModelRouterPort" and "Transform".
  */
 
+import type { TransformReason } from "../../domain/result.ts";
+
 export type RouterTask = "summarize" | "extract";
 export type RouterProvider = "openrouter" | "ollama" | "none";
 
@@ -34,8 +36,8 @@ export interface ModelPick {
    *  remaining context (context − input) so a long page isn't rejected for a model MAX
    *  the context can't hold (#125). Absent when provider is "none". */
   contextTokens?: number;
-  /** Populated when provider is "none" (degrade to raw). */
-  reason?: string;
+  /** Populated when provider is "none" (degrade to raw) — a typed `TransformReason` (#153). */
+  reason?: TransformReason;
 }
 
 export interface ModelScore {

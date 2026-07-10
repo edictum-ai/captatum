@@ -3,7 +3,7 @@ import type { ClockPort } from "../ports/clock.ts";
 import type { RenderPort } from "../ports/renderer.ts";
 import { TransformError, type TransformPort, type TransformResult } from "../ports/transformer.ts";
 import type { Platform } from "../../domain/platform.ts";
-import { type Result } from "../../domain/result.ts";
+import { type Result, type TransformReason } from "../../domain/result.ts";
 import type { CaptatumContext } from "../ports/captatum-context.ts";
 import type { PlatformAdapterRegistry } from "../ports/platform-adapter.ts";
 import { createAdapterRegistry } from "../adapters.ts";
@@ -133,6 +133,7 @@ export class CaptatumUseCase {
     startMs: number,
     fetchMs: number,
   ): Promise<Result> {
+    base.outputRequested = request.requestedOutput; // #153: requested vs actual (output below may flip to raw)
     // Returned raw (never summarized): a challenge (#41), 4xx/5xx error page, or a demoted app-error screen (tier:error — #145; a crash screen through the LLM would overwrite the crash text).
     if (base.challengeProvider || request.requestedOutput === "raw" || Number(base.code) >= 400 || base.tier === "error") {
       base.output = "raw";
@@ -170,8 +171,10 @@ export class CaptatumUseCase {
       transformMs = elapsed(transformStartMs, this.clock.nowMs());
     } catch (error) {
       transformMs = elapsed(transformStartMs, this.clock.nowMs());
+      // Typed degrade reason (#153): extract_schema_invalid → schema_validation_failed, else transform_failed.
+      const reason: TransformReason = transformErrorCode(error) === "extract_schema_invalid" ? "schema_validation_failed" : "transform_failed";
       base.output = "raw";
-      base.transform = { provider: "none", reason: "failed", latencyMs: transformMs, ...(error instanceof TransformError && error.costUsd ? { costUsd: error.costUsd } : {}) };
+      base.transform = { provider: "none", reason, latencyMs: transformMs, ...(error instanceof TransformError && error.costUsd ? { costUsd: error.costUsd } : {}) };
       base.timings.transformMs = transformMs;
       base.errors.push({ code: transformErrorCode(error), message: errorMessage(error, "Transform failed") });
       // A Tier-2 result is a structured roster (contentType application/json); a failed/absent
@@ -184,13 +187,9 @@ export class CaptatumUseCase {
     base.result = transformed.result;
     base.output = transformed.info.provider === "none" ? "raw" : request.requestedOutput;
     base.transform = transformed.info;
-    // (#82) A successful model fallback is SILENT in the user-facing receipt — no warning, so
-    // status stays `pass` and the caller is not told a model failed. The failed-primary list rides
-    // on `transform.fallbackFrom`, visible via `debug:true` and the audit log (transformFallbackFrom)
-    // for the operator. An all-models-fail still surfaces honestly via the catch above
-    // (provider:"none", reason:"failed").
-    // No summary was produced. For a Tier-2 roster, restore the parseable JSON roster (transformed.result
-    // is the preambled LLM input, not valid JSON); for pages, bound the fallback to a token-safe excerpt.
+    // (#82) A successful model fallback is SILENT (status stays `pass`); the failed-primary list rides
+    // on `transform.fallbackFrom` (debug + audit). An all-models-fail surfaces via the catch above.
+    // No summary produced: restore a Tier-2 JSON roster (transformed.result is preambled LLM input); else bound the excerpt.
     if (transformed.info.provider === "none") {
       base.result = base.tier === 2 ? originalResult : fallbackExcerpt(base.result);
     }
@@ -229,6 +228,7 @@ function rejectResult(
     finalUrl: request.url,
     tier: "error",
     output: request.requestedOutput,
+    outputRequested: request.requestedOutput,
     platform: GENERIC_PLATFORM,
     jsRequired: false,
     resolvedVia: "guarded-fetch",

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { ClockPort } from "../src/application/ports/clock.ts";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
 import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts";
+import { CaptatumInputError } from "../src/application/use-cases/captatum-input.ts";
 import type { HtmlExtraction, HtmlExtractionInput } from "../src/application/use-cases/tier1-extract.ts";
 import { TransformError } from "../src/application/ports/transformer.ts";
 import { validateJsonSchema } from "../src/infrastructure/llm/json-schema.ts";
@@ -160,57 +161,45 @@ test("output extract keeps parsed JSON on minLength schema mismatch and surfaces
   assert.deepEqual(result.errors, [{ code: "extract_schema_invalid", message: "$.title length must be at least 10" }]);
 });
 
-test("output extract fails closed for an unsupported schema keyword (cannot be verified)", async () => {
-  const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), {
-    text: '{"title":"Hi"}',
-  });
-  // `format` is a keyword this validator does not support, so the value cannot
-  // be checked — the contract requires failing closed rather than accepting it.
+test("output extract with an unsupported schema keyword fails fast at the input boundary (#153)", async () => {
+  // `format` is a keyword this validator does not support. #153: the schema is rejected at the
+  // input boundary (normalizeCaptatumInput) BEFORE any fetch/LLM, with a clear message naming the
+  // offending key — no post-LLM degrade. (The retained finalize defense-in-depth is covered by
+  // finalize.test.ts and the frozen acceptance suite C8.)
   const schema = { type: "object", properties: { title: { type: "string", format: "email" } } };
-  const transformer = new LlmTransformer({
-    router: new ModelRouter(provider.candidates()),
-    providers: { openrouter: provider },
-    clock: new FakeClock([10, 15]),
-  });
-
-  const result = await createCaptatumUseCase({
-    fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
-    extractHtml: new FakeExtractor(extraction({ text: "Original unsupported source" })).extract,
-    transformer,
-    clock: new FakeClock([0, 4, 5, 5, 8, 8]),
-  }).execute({ url: "https://extract.test/unsupported", output: "extract", schema });
-
-  assert.equal(result.output, "raw");
-  assert.equal(result.result, "Original unsupported source");
-  assert.deepEqual(result.errors, [{ code: "extract_schema_invalid", message: "$.title schema keyword \"format\" is not supported" }]);
+  await assert.rejects(
+    createCaptatumUseCase({
+      fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
+      extractHtml: new FakeExtractor(extraction({ text: "Original unsupported source" })).extract,
+      clock: new FakeClock([0, 4, 5, 5, 8, 8]),
+    }).execute({ url: "https://extract.test/unsupported", output: "extract", schema }),
+    (err: unknown): err is CaptatumInputError =>
+      err instanceof CaptatumInputError
+      && err.body.error.code === "extract_schema_unsupported_keyword"
+      && err.body.error.message.includes("format"),
+  );
 });
 
-test("output extract fails closed for an unsupported keyword nested in anyOf/oneOf/not", async () => {
-  // The unsupported flag must propagate out of composites (which collapse nested
-  // results to a boolean), not just direct properties/items/allOf.
+test("output extract rejects an unsupported keyword nested in anyOf/oneOf/not at the input boundary (#153)", async () => {
+  // The unsupported flag must propagate out of composites at the input boundary (the walker
+  // recurses into anyOf/oneOf/not), so a nested unsupported keyword is rejected before any fetch.
   for (const schema of [
     { anyOf: [{ type: "string" }, { type: "number", format: "email" }] },
     { oneOf: [{ type: "string" }, { type: "number", format: "email" }] },
     { not: { type: "string", format: "email" } },
   ]) {
-    const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), {
-      text: '{"x":5}',
-    });
-    const transformer = new LlmTransformer({
-      router: new ModelRouter(provider.candidates()),
-      providers: { openrouter: provider },
-      clock: new FakeClock([10, 15]),
-    });
-    const result = await createCaptatumUseCase({
-      fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
-      extractHtml: new FakeExtractor(extraction({ text: "Original composite source" })).extract,
-      transformer,
-      clock: new FakeClock([0, 4, 5, 5, 8, 8]),
-    }).execute({ url: "https://extract.test/composite", output: "extract", schema });
-
-    assert.equal(result.output, "raw", `composite ${JSON.stringify(schema)} should fail closed, got output=${result.output}`);
-    assert.equal(result.errors[0]?.code, "extract_schema_invalid");
-    assert.ok(result.errors[0]?.message.includes("format"), `expected format in message: ${result.errors[0]?.message}`);
+    await assert.rejects(
+      createCaptatumUseCase({
+        fetcher: new FakeFetcher(fetchResult({ html: "<main>extract</main>" })),
+        extractHtml: new FakeExtractor(extraction({ text: "Original composite source" })).extract,
+        clock: new FakeClock([0, 4, 5, 5, 8, 8]),
+      }).execute({ url: "https://extract.test/composite", output: "extract", schema }),
+      (err: unknown): boolean =>
+        err instanceof CaptatumInputError
+        && err.body.error.code === "extract_schema_unsupported_keyword"
+        && err.body.error.message.includes("format"),
+      `composite ${JSON.stringify(schema)} should be rejected at the input boundary`,
+    );
   }
 });
 
@@ -261,7 +250,7 @@ test("output extract invalid JSON returns structured error and keeps fetch prove
 
   assert.equal(result.output, "raw");
   assert.equal(result.result, "Original clean content");
-  assert.deepEqual(result.transform, { provider: "none", reason: "failed", latencyMs: 4 });
+  assert.deepEqual(result.transform, { provider: "none", reason: "transform_failed", latencyMs: 4 });
   assert.equal(result.finalUrl, "https://extract.test/final");
   assert.deepEqual(result.redirects, redirects);
   assert.deepEqual(result.attempts.map((attempt) => attempt.reason), ["content-present"]);
