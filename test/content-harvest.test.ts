@@ -95,3 +95,12 @@ test("#152 codex: a Pinterest pin page (SocialMediaPosting JSON-LD) classifies '
   assert.equal(classifyContentType(pin), "pin", "isPinHost wins over the SocialMediaPosting JSON-LD type");
 });
 
+test("#152 codex: a deeply-nested ItemList chain is depth-capped (no stack overflow on untrusted input)", () => {
+  // 100-deep {itemListElement:{itemListElement:…}} ending in a step — untrusted page data within the
+  // extraction cap. Must NOT crash (depth-capped); the step past MAX_SECTION_DEPTH is not reached.
+  let node: unknown = { "@type": "HowToStep", text: "deep step" };
+  for (let i = 0; i < 100; i++) node = { "@type": "ItemList", itemListElement: node };
+  const out = harvestContentText({ "@type": "HowTo", step: node });
+  assert.equal(out, undefined, "depth-capped: the step past MAX_SECTION_DEPTH is not reached");
+});
+

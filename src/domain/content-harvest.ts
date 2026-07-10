@@ -46,7 +46,10 @@ function harvestSteps(raw: unknown, depth = 0): string | undefined {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) { // an ItemList wrapper / single step object
     const n = raw as Record<string, unknown>;
     const inner = n.itemListElement ?? n.step;
-    if (inner !== undefined) return harvestSteps(inner, depth);
+    // Depth-capped (codex): a nested {itemListElement:{itemListElement:…}} chain is untrusted page
+    // data within the extraction cap — recurse with depth+1 + the same guard as HowToSection, else a
+    // deep chain would overflow the stack before the shell-gate can fail closed.
+    if (inner !== undefined && depth < MAX_SECTION_DEPTH) return harvestSteps(inner, depth + 1);
     return textField(n.text);
   }
   if (!Array.isArray(raw)) return undefined;
