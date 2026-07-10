@@ -5,7 +5,8 @@
 // path: computeAntiBotEvidence(status, body, headers) → stampAntibotChallenge → classifyAccess.
 // These WILL FAIL against pre-#151 code (intended). Hash-frozen after authoring.
 // Spec: docs/specs/151-antibot-bot-verification.md — criteria 1,1b,2,2b,3,4,5,6,6b,7,9,10.
-// ReDoS-shape (8a) + 4096-cap (8b) live in redos.test.ts.
+// ReDoS-shape + scan-window guards are implementation-detail tests, NOT part of the frozen
+// contract — they live in the non-frozen test/antibot-redos.test.ts (ReDoS) + test/guarded-fetch.test.ts (scan window).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
