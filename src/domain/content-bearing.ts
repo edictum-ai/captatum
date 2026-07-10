@@ -32,10 +32,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function nodeIsContentBearing(node: Record<string, unknown>, isPinDetail: boolean): boolean {
   const types = shortTypes(node);
   if (!types.some((t) => CONTENT_TYPES.has(t))) return false;
-  if (types.includes("socialmediaposting")) {
-    return isPinDetail && typeof node.articleBody === "string" && node.articleBody.trim().length > 0;
+  // A NON-social content type decides it: harvestContentText tries social first (yields nothing —
+  // the social case returns undefined) then the real type, so a co-typed ["SocialMediaPosting",
+  // "Article"] still counts the Article (codex: don't let an embedded post vanish real content).
+  if (types.some((t) => t !== "socialmediaposting" && CONTENT_TYPES.has(t))) {
+    return harvestContentText(node) !== undefined;
   }
-  return harvestContentText(node) !== undefined;
+  // socialmediaposting only: gate-scoped to a pin-detail page + a non-empty articleBody.
+  return isPinDetail && typeof node.articleBody === "string" && node.articleBody.trim().length > 0;
 }
 
 /** Shared walk: the first content-bearing node reachable from `value` (arrays, @graph, and the

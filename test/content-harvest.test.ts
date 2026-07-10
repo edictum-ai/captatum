@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { shortSchemaType, shortTypes, CONTENT_TYPES, MAX_TYPE_ARRAY } from "../src/domain/content-types.ts";
 import { harvestContentText } from "../src/domain/content-harvest.ts";
+import { hasContentBearingJsonLd } from "../src/domain/content-bearing.ts";
 import { classifyContentType } from "../src/application/classify.ts";
 import { buildPayload } from "../src/application/use-cases/tier1-payload.ts";
 import type { Result } from "../src/domain/result.ts";
@@ -121,6 +122,13 @@ test("#152 codex: nested content-bearing JSON-LD classifies (gate-satisfying ⇒
     structured: { jsonLd: { "@type": "ItemList", itemListElement: [{ "@type": "Product", description: "a widget" }] } },
   });
   assert.equal(classifyContentType(nested), "product");
+});
+
+test("#152 codex: a co-typed [SocialMediaPosting, Article] counts the Article even off-pin", () => {
+  // An embedded post alongside an Article: the Article is real content — don't let the social type
+  // short-circuit it off-pin. (Social-ONLY stays pin-scoped.)
+  assert.equal(hasContentBearingJsonLd({ "@type": ["SocialMediaPosting", "Article"], headline: "real story" }, false), true, "co-typed Article counts off-pin");
+  assert.equal(hasContentBearingJsonLd({ "@type": ["SocialMediaPosting"], articleBody: "caption" }, false), false, "social-only stays pin-scoped (off-pin → false)");
 });
 
 
