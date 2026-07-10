@@ -146,4 +146,11 @@ test("#152 codex: WebPage.subject → Article classifies 'article' (subject is a
   assert.equal(classifyContentType(viaSubject), "article", "subject is a nested-content link (shared with the gate)");
 });
 
+test("#152 codex: a co-typed [SocialMediaPosting, Article] shell yields the Article body (gate⇒non-empty)", () => {
+  // The gate counts the co-typed Article; the lead must harvest it too (findFirstContentNode skips
+  // only SOCIAL-ONLY nodes, not co-typed) — else an off-pin co-typed shell renders empty.
+  const payload = buildPayload("raw", { jsonLd: { "@type": ["SocialMediaPosting", "Article"], articleBody: "co-typed article body." } } as StructuredData, "", "https://news.test/p");
+  assert.ok(payload.includes("co-typed article body."), `co-typed Article body is harvested: ${payload}`);
+});
+
 

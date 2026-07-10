@@ -58,8 +58,12 @@ function findFirstContentNode(
   if (seen.has(value)) return undefined;
   seen.add(value);
   const types = shortTypes(value);
-  const isSocial = types.includes("socialmediaposting");
-  if ((!isSocial || allowSocial) && nodeIsContentBearing(value, isPinDetail)) return value;
+  // "Social-only" = socialmediaposting is the node's ONLY content type. Those are skipped for the
+  // lead (allowSocial=false; Pass 2 owns the pin caption). A CO-TYPED [SocialMediaPosting, Article]
+  // is NOT social-only → included, so its Article is harvested (gate⇒non-empty holds) (codex).
+  const ctypes = types.filter((t) => CONTENT_TYPES.has(t));
+  const isSocialOnly = ctypes.length > 0 && ctypes.every((t) => t === "socialmediaposting");
+  if ((!isSocialOnly || allowSocial) && nodeIsContentBearing(value, isPinDetail)) return value;
   if (depth >= MAX_NESTED_DEPTH) return undefined;
   const graph = findFirstContentNode(value["@graph"], isPinDetail, allowSocial, depth, seen);
   if (graph) return graph;
