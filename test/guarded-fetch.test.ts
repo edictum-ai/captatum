@@ -7,6 +7,7 @@ import { isPrivate } from "../src/domain/policy.ts";
 import type { DnsResolver, ResolvedAddress } from "../src/infrastructure/http/dns.ts";
 import { GuardedFetchError } from "../src/infrastructure/http/errors.ts";
 import { GuardedHttpFetcher } from "../src/infrastructure/http/guarded-fetcher.ts";
+import { computeAntiBotEvidence } from "../src/infrastructure/http/antibot-evidence.ts";
 import { FetcherRouteFulfiller } from "../src/infrastructure/render/route-fulfill.ts";
 import { fetchTier1WithBodyReadRetry } from "../src/application/use-cases/captatum-util.ts";
 import type {
@@ -433,3 +434,48 @@ function assertResult(result: FetcherResult | RejectResult): asserts result is F
 async function textOf(result: FetcherResult): Promise<string> {
   return await new Response(result.bodyStream).text();
 }
+
+// --- #151: computeAntiBotEvidence — vendor challenge markers + the status/non-JSON phrase gate ---
+// Pure-function tests of the detection layer (the regexes + gates). The full classification flow
+// (stamp → classify → gateReason) is covered by test/antibot.test.ts + test/acceptance/151/.
+
+const ev = (status: number, body: string, headers: Record<string, string> = {}) =>
+  computeAntiBotEvidence(headers, Buffer.from(body, "utf8"), status);
+
+test("#151: DataDome CHALLENGE marker (captcha-delivery) is detected; the bare SDK tag is NOT (FP guard)", () => {
+  assert.equal(ev(403, `<script src="https://ct.captcha-delivery.com/c.js"></script>`).hasChallengeBody, true);
+  assert.equal(ev(403, `<script src="https://ct.captcha-delivery.com/c.js"></script>`).hasDataDomeBody, true);
+  // A passing DataDome-protected page carries only the SDK tag (an external script) in its bodyHead.
+  assert.equal(ev(200, `<script src="https://js.datadome.co/tags.js" async></script>real content`).hasChallengeBody, false);
+  assert.equal(ev(200, `<script src="https://js.datadome.co/tags.js" async></script>real content`).hasDataDomeBody, false);
+});
+
+test("#151: Imperva BLOCK marker (Incapsula incident ID) is detected; the inline sensor is NOT (FP guard)", () => {
+  assert.equal(ev(403, `Request unsuccessful. Incapsula incident ID: 1234. Powered By Incapsula`).hasChallengeBody, true);
+  assert.equal(ev(403, `Request unsuccessful. Incapsula incident ID: 1234. Powered By Incapsula`).hasImpervaBody, true);
+  // A passing Imperva-protected page carries only the inline SWJIYLWA sensor.
+  assert.equal(ev(200, `<script src="/_Incapsula_Resource?SWJIYLWA=719abc"></script>real content`).hasChallengeBody, false);
+  assert.equal(ev(200, `<script src="/_Incapsula_Resource?SWJIYLWA=719abc"></script>real content`).hasImpervaBody, false);
+});
+
+test("#151: existing Cloudflare/Akamai/PerimeterX markers still detected (no regression)", () => {
+  assert.equal(ev(403, `<script src="/cdn-cgi/challenge-platform/h/g/jsch.js"></script>`, { "cf-mitigated": "challenge" }).hasChallengeBody, true);
+  assert.equal(ev(403, `<script>_abck</script>`, { server: "AkamaiGH" }).serverVendor, "akamai");
+  assert.equal(ev(403, `<div id="px-captcha"></div>`).hasChallengeBody, true);
+});
+
+test("#151: verification phrase fires ONLY at 429/503 AND non-JSON (the two FP controls)", () => {
+  const phraseBody = `<body>We are verifying your browser. Please wait.</body>`;
+  assert.equal(ev(429, phraseBody).hasVerificationPhrase, true);
+  assert.equal(ev(503, phraseBody).hasVerificationPhrase, true);
+  // Status gate: a 200 page with the phrase is NOT gated.
+  assert.equal(ev(200, phraseBody).hasVerificationPhrase, false);
+  // JSON gate: a 429 JSON API error with the phrase is NOT gated.
+  assert.equal(ev(429, `{"detail":"verifying your browser"}`, { "content-type": "application/json" }).hasVerificationPhrase, false);
+  assert.equal(ev(429, `{"detail":"verifying your browser"}`, { "content-type": "application/vnd.api+json" }).hasVerificationPhrase, false);
+});
+
+test("#151: a marker past the 4096-byte bodyHead cap is not detected", () => {
+  assert.equal(ev(403, "x".repeat(4096) + "captcha-delivery").hasChallengeBody, false);
+  assert.equal(ev(429, "x".repeat(4096) + "verifying your browser").hasVerificationPhrase, false);
+});

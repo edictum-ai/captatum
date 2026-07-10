@@ -53,9 +53,23 @@ export interface AntiBotEvidence {
   /** A vendor challenge cookie was set (`__cf_bm`, `datadome`, `_px`, …). */
   hasChallengeCookie: boolean;
   /** The body head matches a VENDOR-SPECIFIC challenge marker (Cloudflare
-   *  challenge-platform / `__cf_chl` / "Just a moment", Akamai sensor, …) — not a
-   *  generic "enable javascript" phrase. */
+   *  challenge-platform / `__cf_chl`, Akamai sensor, DataDome `captcha-delivery`,
+   *  Imperva `Incapsula incident ID`, …) — not a generic "enable javascript" phrase
+   *  and not a bare vendor name (the SDK tag, which appears on every protected page). */
   hasChallengeBody: boolean;
+  /** The body head matches the DataDome challenge-delivery marker (`captcha-delivery`).
+   *  Drives `challengeProvider:"datadome"` attribution (a body marker, not a forgeable
+   *  server header). #151. */
+  hasDataDomeBody: boolean;
+  /** The body head matches the Imperva/Incapsula block-page marker
+   *  (`Incapsula incident ID` / `Powered By Incapsula`). Drives
+   *  `challengeProvider:"imperva"` attribution. #151. */
+  hasImpervaBody: boolean;
+  /** A generic browser-verification phrase (`verifying your browser`, …) in the body
+   *  head, gated on status 429/503 AND a non-JSON content type (the FP controls — a 200
+   *  page or a JSON API error with the phrase is NOT gated). Drives
+   *  `gateReason:"bot_verification"` (vendor not attributable). #151. */
+  hasVerificationPhrase: boolean;
 }
 
 export interface FetcherResult {

@@ -16,7 +16,7 @@ Captatum is the web read an agent can trust: one MCP tool that fetches **any** U
 
 The **default output is provider-conditional**: `summary` (via the free-model router — OpenRouter/Ollama) when a transform provider is configured (e.g. the hosted server), otherwise `raw` (full clean content, no LLM) — so a zero-config call returns real content instead of silently degrading to a truncated excerpt. `output: "raw"` returns clean resolved content + parsed structured data; `output: "extract"` returns JSON shaped to a caller schema.
 
-Unlike `WebFetch` (static GET + Turndown, which drops `<script>` JSON-LD/app-state and runs no JS) and render-only services (Firecrawl/Jina strip structured data and give no receipt), captatum uses anti-bot TLS-fingerprinted fetch (`wreq-js`), renders JS only when a page needs it, extracts structured data (JSON-LD / Open Graph / meta) from raw HTML, and reports provenance on every response. Anti-bot challenge walls (Cloudflare/Akamai/PerimeterX) over HTTPS it **detects and reports as gated** (`gateReason: captcha`); it does **not** bypass them.
+Unlike `WebFetch` (static GET + Turndown, which drops `<script>` JSON-LD/app-state and runs no JS) and render-only services (Firecrawl/Jina strip structured data and give no receipt), captatum uses anti-bot TLS-fingerprinted fetch (`wreq-js`), renders JS only when a page needs it, extracts structured data (JSON-LD / Open Graph / meta) from raw HTML, and reports provenance on every response. Anti-bot challenge walls (Cloudflare/Akamai/PerimeterX/DataDome/Imperva, plus generic browser-verification interstitials) over HTTPS it **detects and reports as gated** (`gateReason: captcha` when a vendor is attributable, `bot_verification` for a generic 429/503 verification wall); it does **not** bypass them.
 
 ## Protocol
 
@@ -469,7 +469,7 @@ Default (lean) `structuredContent`:
   result,                              // summary text | raw content | extracted JSON (string)
   tier, code, codeText, bytes,         // kept for existing consumers
   resolvedVia, platform, jsRequired,
-  access: { mainContentAccessible, gated, gateReason: "paywall"|"js-required"|"captcha"|"byte_cap"|"http_error"|"none" },
+  access: { mainContentAccessible, gated, gateReason: "paywall"|"js-required"|"captcha"|"bot_verification"|"byte_cap"|"http_error"|"none" },
   contentQuality?: "app_error" | "low_value",   // present only when a successful fetch's bytes aren't real/usable content (#145/#150)
   provenance: { tier, resolvedVia, code, bytes },     // convenience envelope
   warnings: [{ code, message }],       // non-fatal (tier !== "error"): advisories, render-failed-but-tier1-ok, byte-cap/body_read_error truncation, extract_schema_invalid, transform_truncated, low_value_extraction
@@ -482,7 +482,7 @@ Default (lean) `structuredContent`:
 Rules:
 - **errors vs warnings:** fatal ⟺ `tier === "error"` (per the note above: "advisory entries never set `tier: error`"). Everything else in `Result.errors` becomes a `warning`.
 - **status:** `fail` when `tier === "error"`, the response was 4xx/5xx (the body is an error page, not usable content), or no body content was returned; `partial` when content was returned but warnings exist or the summary/extract transform fell back to raw (`transform.provider === "none"`); else `pass`. A successful candidate-MODEL fallback is a `pass` (not `partial`) — the failed-primary list rides on `transform.fallbackFrom` (debug + audit only), not a warning (#82).
-- **access.gateReason:** `paywall` when JSON-LD declares `isAccessibleForFree: false`; `byte_cap` when the response was truncated at the cap; `js-required` when no content was returned on a page that needed JS we could not run (render-blocked/render-unavailable/`jsRequired`); `http_error` when the response was 4xx/5xx (an error page — the body is still returned in `result` for the agent to read the server's message); else `none`.
+- **access.gateReason:** `captcha` when the fetched bytes are a **vendor-attributed** bot-protection challenge (a Cloudflare/Akamai/PerimeterX/DataDome/Imperva challenge-only body marker or the `cf-mitigated` header), with the vendor in `access.challengeProvider` (#41); `bot_verification` when a 429/503 response body is a **generic** browser-verification interstitial (e.g. "verifying your browser") with no attributable vendor — status-gated (429/503) + non-JSON, `challengeProvider` absent (#151); `paywall` when JSON-LD declares `isAccessibleForFree: false`; `byte_cap` when the response was truncated at the cap; `js-required` when no content was returned on a page that needed JS we could not run (render-blocked/render-unavailable/`jsRequired`); `http_error` when the response was 4xx/5xx (an error page — the body is still returned in `result` for the agent to read the server's message); else `none`. `captcha`/`bot_verification` take precedence over `http_error` so a 429/503 challenge wall is named as such, not as a generic error page.
 - **contentType:** `json` when the response's HTTP content-type is `application/json` (or a `+json` suffix); else `pin` for pinterest.*/pin.it hosts; else from the first content-bearing JSON-LD `@type` (`JobPosting`→job, `Product`→product, Article family→article); else `og:type`; else `spa` when `jsRequired`; else `unknown`.
 - **images:** never fetched by this service — surfaced for the calling agent's optional vision fetch. Private/loopback hosts are stripped (string check, no DNS).
 - **result:** snippeted to ~2000 chars in `structuredContent` when large; the full text is always delivered as MCP `content[0].text` (the primary agent channel), so mirroring a huge body in the structured payload would only duplicate tokens. Summaries are small and pass through unchanged.
@@ -510,8 +510,11 @@ that read `structuredContent.timings`, `structuredContent.structured`, or
 success-tier `errors` should pass `debug: true` or read `warnings`. The domain
 `Result` and its `schemaVersion: 1` are unchanged — only the presentation changed.
 
-`access.gateReason: "captcha"` is reserved in the union but not yet emitted (no
-detector); captcha/challenge pages currently fall to `"js-required"` or `"none"`.
+`access.gateReason: "captcha"` is emitted by the anti-bot detector (#41) for
+vendor-attributed challenge bodies/headers, with the vendor in `access.challengeProvider`;
+`"bot_verification"` is emitted for status-gated (429/503) generic browser-verification
+interstitials with no attributable vendor (#151). Both take precedence over `"http_error"`
+so a 429/503 challenge wall is named as such, not as a generic error page.
 
 ## Ports
 

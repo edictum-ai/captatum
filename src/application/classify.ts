@@ -12,8 +12,9 @@ export type ContentType = "article" | "job" | "json" | "pin" | "product" | "spa"
 export interface AccessInfo {
   mainContentAccessible: boolean;
   gated: boolean;
-  gateReason: "paywall" | "js-required" | "captcha" | "byte_cap" | "http_error" | "none";
-  /** The anti-bot vendor when gateReason is "captcha" (#41 Half A). */
+  gateReason: "paywall" | "js-required" | "captcha" | "bot_verification" | "byte_cap" | "http_error" | "none";
+  /** The anti-bot vendor when gateReason is "captcha" (#41 Half A). Absent for "bot_verification"
+   *  (vendor not attributable — #151). */
   challengeProvider?: string;
 }
 
@@ -41,8 +42,8 @@ export function truncatedReason(result: Result): "max_bytes" | "body_read_error"
   return code === "max_bytes" || code === "body_read_error" ? code : undefined;
 }
 
-/** application-local mirror of infrastructure/http/body.ts isJsonContentType (kept here to avoid
- *  an application → concrete-infra import; tiny + stable). True for application/json and +json. */
+/** application-local mirror of infrastructure/http/body.ts isJsonContentType (tiny + stable; also
+ *  mirrored in antibot-evidence.ts — keep in sync; a drift weakens the #151 JSON FP gate). */
 function isJsonContentType(contentType: string | undefined): boolean {
   if (!contentType) return false;
   const primary = contentType.split(";")[0].trim().toLowerCase();
@@ -109,6 +110,11 @@ export function isPinDetailPage(url: string): boolean {
 
 export function classifyAccess(result: Result): AccessInfo {
   const mainContentAccessible = hasContent(result);
+  // Generic browser-verification wall (#151): a 429/503 "verifying your browser" interstitial, no
+  // attributable vendor. Precedes code>=400 http_error (the wall is ≥400) or it collapses to http_error.
+  if (result.botVerification) {
+    return { mainContentAccessible: false, gated: true, gateReason: "bot_verification" };
+  }
   // Anti-bot challenge wall (#41 Half A): the fetched bytes are a bot-protection
   // interstitial, not page content. Takes precedence — never silently pass it.
   if (result.challengeProvider) {

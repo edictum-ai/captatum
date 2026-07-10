@@ -75,5 +75,9 @@ export async function executeSeedWithRetry(
 }
 
 function isRetriable(r: Result): boolean {
+  // A bot-protection wall (#41/#151) won't clear on an immediate retry — it's a deliberate
+  // challenge, not transient rate-limiting — so don't burn a redundant fetch + Retry-After wait on
+  // it (a hostile Retry-After would otherwise eat up to 30s of the bulk wall for identical bytes).
+  if (r.botVerification || r.challengeProvider) return false;
   return r.code === 429 || r.code === 503;
 }
