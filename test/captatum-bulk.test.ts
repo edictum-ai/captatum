@@ -525,6 +525,13 @@ test("bulk maxRenderedSeeds: allowRender:true beyond the cap is downgraded (warn
   assert.ok(rendered >= 2, `at least maxRenderedSeeds rendered; got ${rendered}`);
   const downgraded = res.results.filter((r) => r.warnings.some((w) => w.code === "bulk_render_cap_exceeded"));
   assert.ok(downgraded.length >= 1, "at least one allowRender seed was downgraded + warned");
+  // The count-cap path names maxRenderedSeeds (a byte-pool refusal would name the byte budget —
+  // the two causes must not be conflated in the message; chatgpt feedback flagged the old message
+  // blaming the count cap regardless of cause).
+  assert.ok(
+    downgraded.every((r) => r.warnings.some((w) => w.code === "bulk_render_cap_exceeded" && /maxRenderedSeeds/.test(w.message))),
+    "count-cap downgrades name maxRenderedSeeds in the warning message",
+  );
 });
 
 test("bulk render-on-bulk: allowRender:true is threaded into the executor (the seed may render)", async () => {

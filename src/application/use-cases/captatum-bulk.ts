@@ -171,11 +171,11 @@ export class CaptatumBulkUseCase {
             }
           }
           const downgradedByCost = request.requestedOutput !== "raw" && effectiveOutput === "raw";
-          // maxRenderedSeeds (BULK-3): post-settle count over ACTUAL render attempts (attempts with tier 3 —
-          // success, empty, OR a 4xx/5xx render, all spawned a browser; codex R12 P2). Overshoot ≤
-          // maxConcurrentRenders (the renderer's concurrency cap). reserveRender holds the byte invariant.
-          let reservedUnits = 1, renderAllowed = request.allowRender && renderedCount < guard.maxRenderedSeeds;
-          if (renderAllowed && !budget.reserveRender()) renderAllowed = false; // byte pool won't fit → refuse render
+          // maxRenderedSeeds (BULK-3): post-settle count over ACTUAL render attempts (tier 3 — success, empty,
+          // OR 4xx/5xx render; codex R12 P2). Overshoot ≤ maxConcurrentRenders. reserveRender holds the byte invariant.
+          let reservedUnits = 1, renderRefusedBy: "" | "count" | "bytes" = "", renderAllowed = request.allowRender && renderedCount < guard.maxRenderedSeeds;
+          if (request.allowRender && !renderAllowed) renderRefusedBy = "count"; // count cap (renderedCount ≥ max)
+          if (renderAllowed && !budget.reserveRender()) { renderAllowed = false; renderRefusedBy = "bytes"; } // byte pool won't fit
           if (renderAllowed) reservedUnits += renderEgressUnits(request.maxBytes);
           const renderDowngraded = request.allowRender && !renderAllowed;
           const execInput = { url: seed.url, prompt: request.prompt, output: effectiveOutput, schema: request.schema, budget: request.budget, transform: request.transform, maxBytes: request.maxBytes, timeoutMs: request.timeoutMs, allowRender: renderAllowed, debug: request.debug };
@@ -228,7 +228,7 @@ export class CaptatumBulkUseCase {
             if (downgradedByCost) row.warnings.push({ code: "transform_skipped_cost_cap", message: "Requested summary/extract ran as raw — the per-call transform cost cap was reached." });
             if (retried) row.warnings.push({ code: "bulk_retried_429", message: "Seed returned 429/503 and was retried once after the server's Retry-After." });
           }
-          if (renderDowngraded) row.warnings.push({ code: "bulk_render_cap_exceeded", message: "allowRender downgraded to false — the per-call maxRenderedSeeds cap was reached." });
+          if (renderDowngraded) row.warnings.push({ code: "bulk_render_cap_exceeded", message: `allowRender downgraded to false — ${renderRefusedBy === "bytes" ? "the per-call render byte budget could not fit this seed's render" : "the per-call maxRenderedSeeds cap was reached"}.` });
           results[idx] = row;
         } finally {
           gate.release(seedKey);
