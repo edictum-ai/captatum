@@ -49,15 +49,18 @@ function assertLinearRegex(label: string, regex: RegExp, build: (units: number) 
 
 // --- 8a: SHAPE — the marker + phrase regexes are linear (no quantified backtracking) ---
 
-test("8a: CHALLENGE_BODY_MARKERS is linear on an adversarial partial-marker flood", () => {
-  // A mix of partial vendor prefixes (each a near-miss of a marker) maximizes alternation churn.
+test("8a: CHALLENGE_BODY_MARKERS is linear on an adversarial near-miss flood (no early match → full scan)", () => {
+  // Each unit is a NEAR-miss of a marker (last char dropped) + an 'X' separator, so the string
+  // contains NO complete marker — .test() cannot short-circuit and must scan the whole flood
+  // (a matching flood would return true at byte 0 and measure noise). Stresses the alternation; a
+  // future quantifier would backtrack catastrophically here.
   assertLinearRegex(
     "CHALLENGE_BODY_MARKERS",
     CHALLENGE_BODY_MARKERS,
-    (n) => "cdn-cgi/challenge-platformx__cf_chlx_abckxpx-captchaxcaptcha-deliveryxincapsula incident idx".repeat(n),
+    (n) => "cdn-cgi/challenge-platforX__cf_chX_abcXpx-captchXcaptcha-deliverXincapsula incident iX".repeat(n),
   );
-  // Correctness on the same large flood: the marker alternation DOES contain matching substrings.
-  assert.ok(CHALLENGE_BODY_MARKERS.test("cdn-cgi/challenge-platform".repeat(100)));
+  // Correctness: the regex DOES match the real markers.
+  assert.ok(CHALLENGE_BODY_MARKERS.test("captcha-delivery"));
 });
 
 test("8a: VERIFICATION_PHRASES is linear on an adversarial partial-phrase flood", () => {
@@ -69,26 +72,17 @@ test("8a: VERIFICATION_PHRASES is linear on an adversarial partial-phrase flood"
   assert.ok(VERIFICATION_PHRASES.test("verifying your browser".repeat(100)));
 });
 
-// --- 8b: CAP — the 4096-byte bodyHead bound. A marker/phrase placed PAST byte 4096 is not seen. ---
+// --- 8b: scan windows. Markers scan a bounded 64KB head window; the status-gated phrase scans the
+//     FULL body (it can sit DEEP under a large <head> — Vercel's checkpoint buries it ~28KB in). ---
 
-test("8b: a challenge marker past byte 4096 is NOT detected (the bodyHead cap truncates first)", () => {
-  const filler = "x".repeat(4096);
-  const body = new TextEncoder().encode(filler + "captcha-delivery");
+test("8b: a challenge marker past the 64KB scan window is NOT detected", () => {
+  const body = new TextEncoder().encode("x".repeat(65536) + "captcha-delivery");
   const ev = computeAntiBotEvidence({ "content-type": "text/html" }, body, 403);
-  assert.equal(
-    ev.hasChallengeBody,
-    false,
-    "the marker sits beyond the 4096-byte bodyHead cap, so it must not be detected",
-  );
+  assert.equal(ev.hasChallengeBody, false, "the marker sits past the 64KB marker-scan window");
 });
 
-test("8b: a verification phrase past byte 4096 is NOT detected (the bodyHead cap truncates first)", () => {
-  const filler = "x".repeat(4096);
-  const body = new TextEncoder().encode(filler + "verifying your browser");
+test("8b: a verification phrase DEEP in the body IS detected (full-body phrase scan — Vercel/HashiCorp buries it ~28KB in)", () => {
+  const body = new TextEncoder().encode("x".repeat(30000) + "verifying your browser");
   const ev = computeAntiBotEvidence({ "content-type": "text/html" }, body, 429) as Record<string, unknown>;
-  assert.equal(
-    ev.hasVerificationPhrase,
-    false,
-    "the phrase sits beyond the 4096-byte bodyHead cap, so it must not be detected",
-  );
+  assert.equal(ev.hasVerificationPhrase, true, "a deep phrase is caught by the status-gated full-body phrase scan");
 });

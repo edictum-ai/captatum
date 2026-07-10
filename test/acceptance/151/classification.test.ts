@@ -116,6 +116,15 @@ test("C3: a 429 'verifying your browser' interstitial → gateReason bot_verific
   assert.equal(base.botVerification, true, "the Result carries the botVerification flag");
 });
 
+test("C3-deep: a 429 'verifying your browser' buried DEEP under a large <head> (Vercel/HashiCorp repro) → bot_verification", () => {
+  // The REAL wall (Vercel Security Checkpoint) is ~31KB with ~28KB of <head> JS before the phrase.
+  // The status-gated phrase scans the FULL body so a deep phrase is still caught (was missed when
+  // the scan window was 4096 bytes — found by the live prod check, not the synthetic fixture).
+  const { access } = classify(429, "x".repeat(30000) + " We are verifying your browser. Please wait a moment.");
+  assert.equal(access.gated, true);
+  assert.equal(access.gateReason, "bot_verification");
+});
+
 // --- Criterion 4: a 503 "checking your browser" → bot_verification ---
 
 test("C4: a 503 'checking your browser' interstitial → gateReason bot_verification", () => {

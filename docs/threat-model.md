@@ -110,9 +110,9 @@ the contract reference; this file is the security reasoning.
   challenge signatures over an already-fetched body** — it issues NO new request and adds NO
   egress/SSRF surface (it inspects only response headers/body already pulled through the sole
   `guardedFetch` egress). `computeAntiBotEvidence` (`src/infrastructure/http/antibot-evidence.ts`)
-  reads the first 4096 bytes of the body + selected headers and emits booleans/enums ONLY (never
-  raw attacker-controlled strings) to the application layer. Two detections, both ReDoS-safe
-  literal alternations (no quantifiers, so worst case is linear in the scan window):
+  reads the body + selected headers and emits booleans/enums ONLY (never raw attacker-controlled
+  strings) to the application layer. Two detections, both ReDoS-safe literal alternations (no
+  quantifiers, so worst case is linear in the scan window):
   (1) **vendor challenge-only body markers** (`cdn-cgi/challenge-platform`, `__cf_chl`,
   `_abck`, `px-captcha`, DataDome's `captcha-delivery` CDN, Imperva's
   `incapsula incident id`/`powered by incapsula`) + the `cf-mitigated` header → `gateReason:"captcha"`
@@ -127,10 +127,15 @@ the contract reference; this file is the security reasoning.
   AND when the content type is not JSON, so a legitimate 429/503 content page or a JSON API error is
   not mis-gated (a 200 page with these phrases — e.g. an article about bot-detection — is not gated).
   `captcha`/`bot_verification` take precedence over `http_error` in `classifyAccess` so a 429/503
-  wall is named as such. The body/phrase scans are bounded by the 4096-byte `bodyHead` cap; the
-  `CHALLENGE_COOKIE` regex (a single `\s*` quantifier, linear) is bounded instead by the requester's
-  HTTP max-header-size, and a cookie alone never gates (`detectAntibotBlock` ignores
-  `hasChallengeCookie`). No bypass is attempted — the wall is labeled, not entered.
+  wall is named as such. The scan windows differ by where each signal lives: the **vendor markers**
+  scan the first 64 KB of the body (they sit in `<head>`/early body; a bounded window keeps the
+  per-fetch cost low since markers run on EVERY fetch); the **status-gated phrase** scans the FULL
+  body (a phrase can sit deep under a large `<head>` — Vercel's checkpoint buries "verifying your
+  browser" ~28 KB in), and because it is gated on 429/503 the common 200 path short-circuits before
+  the full-body decode (no per-fetch cost on normal reads). The `CHALLENGE_COOKIE` regex (a single
+  `\s*` quantifier, linear) is bounded by the requester's HTTP max-header-size, and a cookie alone
+  never gates (`detectAntibotBlock` ignores `hasChallengeCookie`). No bypass is attempted — the wall
+  is labeled, not entered.
 - **`output:"extract"` schema is untrusted input, validated at the input boundary (#153).**
   The caller-supplied JSON Schema is parsed as DATA (never a directive) and checked against the
   supported-keyword allowlist (`findUnsupportedSchemaKeyword`, the same `SUPPORTED_SCHEMA_KEYS`
