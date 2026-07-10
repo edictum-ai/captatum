@@ -130,3 +130,19 @@ test("#153: messageForUnsupportedKeyword caps an oversized key (no-bloat on call
   assert.ok(msg.startsWith("Unsupported JSON Schema keyword \""));
 });
 
+// #178: a captatum tool argument misplaced inside the schema gets a "move it out of schema"
+// hint (not the generic "remove it") — agents naturally nest budget/timeoutMs/debug there. A
+// genuinely-unsupported keyword (format) keeps "remove it". The exact message wording is an
+// impl detail that lives HERE (non-frozen), un-frozen from acceptance/153 in #178.
+test("#178: messageForUnsupportedKeyword points a misplaced captatum knob out of the schema", () => {
+  const budgetMsg = messageForUnsupportedKeyword("budget", "$");
+  assert.ok(budgetMsg.includes("captatum tool argument"), `budget is a captatum arg: ${budgetMsg}`);
+  assert.ok(budgetMsg.includes('move it out of "schema"'), `points at the fix: ${budgetMsg}`);
+  const timeoutMsg = messageForUnsupportedKeyword("timeoutMs", "$.properties.x");
+  assert.ok(timeoutMsg.includes("captatum tool argument"), `timeoutMs is a captatum arg: ${timeoutMsg}`);
+  // a genuinely-unsupported keyword (not a captatum arg) keeps the generic "remove it".
+  const formatMsg = messageForUnsupportedKeyword("format", "$.properties.email");
+  assert.ok(formatMsg.includes("cannot verify it"), `format is not a captatum arg: ${formatMsg}`);
+  assert.ok(!formatMsg.includes("captatum tool argument"), "format gets the generic 'remove it' message");
+});
+
