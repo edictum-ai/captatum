@@ -521,11 +521,11 @@ so a 429/503 challenge wall is named as such, not as a generic error page.
 - **`FetcherPort`** — the single hardened egress. `fetchGuarded(url, opts, postInit?) → { status, finalUrl, redirects, bodyStream, contentType, bytes } | RejectResult`. Every outbound request (Tier-1, Tier-2 adapter, every redirect hop, every Tier-3 in-browser request) routes through it. The optional `postInit: { method: "POST"; body: Uint8Array; requestContentType?: string }` (#111) carries a first-party POST body on the INITIAL request only — `fetchWithRedirects` reverts to GET + no body on any 3xx (incl. 307/308, a deliberate deviation from RFC 7231) so the body can never reach a redirect target host.
 - **`PlatformAdapter`** — `{ id, detect(ctx): DetectResult | null, resolve(input, fetcher): Promise<ResolveResult> }`. Registered in `src/application/adapters.ts`. Optional general-purpose extension point: adding a platform = one folder under `src/infrastructure/<platform>/` + one registry line + one fixture. Not part of the public contract.
 - **`StorePort`** — OAuth state only: auth-code records and refresh-token records
-  (hashed), plus `close()`. The hosted flavor uses the `node:sqlite` impl
-  (`src/infrastructure/sqlite/`, a single file — the DEFAULT) or, when
-  `TIDB_HOST` is set, the `mysql2` impl (`src/infrastructure/tidb/`). Selection
-  lives in `src/infrastructure/store-selection.ts`. The local stdio bridge has no
-  OAuth and opens no store.
+  (hashed), plus `close()`. Owned by the **mcp-sso** library (`mcp-sso/store/sqlite`
+  + `mcp-sso/store/mysql`); captatum builds the store in its composition root
+  (`src/server.ts`) and hands it to the mcp-sso `Bridge`. The hosted flavor uses the
+  `node:sqlite` impl (a single file — the DEFAULT) or, when `TIDB_HOST` is set, the
+  `mysql2` impl. The local stdio bridge has no OAuth and opens no store.
 - **`ModelRouterPort`** — `pick(task, inputTokens, options?): { provider, model?, free?, reason? }` + `feedback({ model, outcome })` driving sticky per-model health (a model demotes one rank only on SUSTAINED hard failure — ≥3 of the last 5 attempts; transient empties and soft/garbage output don't demote). `options.localOnly` is used for sensitive-content signals so hosted providers are bypassed. Implemented by `src/infrastructure/llm/model-router.ts`.
 
 ## Tiers
@@ -592,7 +592,7 @@ Auth is **conditional on deployment flavor** (see Deployment). Two flavors:
 - **Hosted remote server** (primary) — requires the gateway-owned OAuth below, so it can serve web agents (claude.ai, chatgpt.com) and shared users.
 - **Self-contained local binary** — runs without auth for a single agent/user on one machine.
 
-The OAuth contract below applies only to the hosted flavor. It mirrors `personal-memory-gateway`:
+The OAuth contract below applies only to the hosted flavor. captatum's hosted OAuth is powered by the **mcp-sso** library (`mcp-sso@0.2.0`, acartag7/mcp-sso) — captatum's own OAuth 2.1 / DCR / PKCE / Cloudflare-Access stack, extracted + hardened into the owner's OSS library; captatum dogfoods it as its reference production consumer. The mechanics (DCR/PKCE/consent, token sign+verify, JWKS, AS/PRM metadata, the OAuth-state store + replay/rotation) live in the library; captatum owns only its scope policy (`fetch:read`/`fetch:transform`) and the hosted-vs-local flavor boundary. The client-facing endpoints + flow are unchanged from the prior in-house stack (mcp-sso was extracted from it), so existing clients re-auth once (the store schema is the library's) and continue:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -605,7 +605,7 @@ The OAuth contract below applies only to the hosted flavor. It mirrors `personal
 | POST | `/oauth/token` | `authorization_code` / `refresh_token` grant (`cache-control: no-store`) |
 | POST | `/oauth/revoke` | Revoke refresh-token family; always 200 |
 
-Flow: authorize (PKCE S256, request-bound signed consent token) → approve (single-use code, stored as `sha256(code)`) → token (verify PKCE, issue **ES256 JWT** access token signed by `OAUTH_SIGNING_PRIVATE_JWK`, aud=resource; rotating refresh tokens stored as `sha256(raw)`, grouped by family; replay revokes the family). Auth-code TTL is 300 s, access TTL 600 s, and refresh TTL 30 days. Hosted production requires `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` + `OAUTH_ISSUER` (an absolute `https` URL) + `OAUTH_RESOURCE` (an absolute URL) — fail-fast at boot, so a missing/malformed issuer or resource fails closed rather than building relative discovery metadata and degrading iss/aud checks to empty string. The Cloudflare Access JWT verifier checks signature/audience/issuer/expiry + email presence in code; the email allowlist (which emails may mint a token) is enforced by the CF Zero Trust Access app policy — the single source of truth — with an optional `CF_ACCESS_EMAIL_ALLOWLIST` env as a defense-in-depth second gate.
+Flow: authorize (PKCE S256, request-bound signed consent token) → approve (single-use code, stored as `sha256(code)`) → token (verify PKCE, issue **ES256 JWT** access token signed by `OAUTH_SIGNING_PRIVATE_JWK`, aud=resource; rotating refresh tokens stored as `sha256(raw)`, grouped by family; replay revokes the family). Auth-code TTL is 300 s, access TTL 600 s, and refresh TTL 30 days. The mcp-sso `Bridge` + Fastify adapter serve this flow end-to-end (`registerOAuthRoutes`). Hosted production boot is fail-closed: `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` + `OAUTH_ISSUER` (absolute `https`) + `OAUTH_RESOURCE` (absolute URL) are validated by mcp-sso's `createBridgeConfig` (EC P-256 key shape, ≥32-char consent secret, https origins, valid TTLs, scope subset), and captatum adds its AUTH-1 gate that the hosted flavor MUST sit behind Cloudflare Access (`CF_ACCESS_ENABLED=true` + `CF_ACCESS_AUDIENCE/CERTS_URL/ISSUER`, the JWKS URL https) — so the OAuth subject is always a real verified identity, never a placeholder. mcp-sso's Cloudflare-Access identity port verifies the `Cf-Access-Jwt-Assertion` (RS256 against CF's public JWKS, aud/iss/exp + email presence); the email allowlist (which emails may mint a token) is enforced by the CF Zero Trust Access app policy — the single source of truth — with an optional `CF_ACCESS_EMAIL_ALLOWLIST` env as a defense-in-depth second gate.
 
 Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). Tool handlers enforce required scope per request using the **resolved** output (with the provider-conditional default applied): an effective `raw` call requires `fetch:read`; an effective `summary`/`extract`/transform call requires `fetch:transform`. So a zero-config call with no provider (resolves to `raw`) needs only `fetch:read`.
 
@@ -620,23 +620,22 @@ Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). 
 
 ## Storage
 
-OAuth state only (auth codes + refresh tokens, hashed), behind a swappable
-`StorePort`:
-- **Hosted flavor → SQLite (DEFAULT)** via `node:sqlite` — a single file on disk,
-  no server. Configured with `CAPTATUM_SQLITE_PATH` (default
-  `./data/captatum.sqlite`; the parent dir is created at boot). The hosted flavor
-  boots with SQLite when no `TIDB_HOST` is set, so one-click deploys (Railway /
-  EC2 / Mac Mini) need no external database. Selection (`chooseStoreBackend`) and
-  the TLS gate live in `src/infrastructure/store-selection.ts`.
-- **Hosted flavor → TiDB (optional scale path)** via `mysql2`, opted into by
-  setting `TIDB_HOST/PORT/DATABASE/USER/PASSWORD` (+ `TIDB_SSL_CA`; TLS required
-  regardless of `NODE_ENV`, SQLSTORE-1). The code ships the TiDB store and
-  migrations; provisioning the `captatum` database/user/security-group rule is
-  deployment work outside this repo slice.
+OAuth state only (auth codes + refresh tokens, hashed), behind mcp-sso's
+`StorePort` (the library owns the schema + the SQL migrations):
+- **Hosted flavor → SQLite (DEFAULT)** via `node:sqlite` (`mcp-sso/store/sqlite`,
+  `openSqliteStore`) — a single file on disk, no server. Configured with
+  `CAPTATUM_SQLITE_PATH` (default `./data/captatum.sqlite`; the parent dir is
+  created at boot). The hosted flavor boots with SQLite when no `TIDB_HOST` is set,
+  so one-click deploys (Railway / EC2 / Mac Mini) need no external database.
+- **Hosted flavor → TiDB (optional scale path)** via `mysql2`
+  (`mcp-sso/store/mysql`, `createMysqlStore`), opted into by setting
+  `TIDB_HOST/PORT/DATABASE/USER/PASSWORD` (+ `TIDB_SSL_CA`; TLS required
+  regardless of `NODE_ENV`, SQLSTORE-1). Provisioning the `captatum`
+  database/user/security-group rule is deployment work outside this repo slice.
 - No fetched content/body/cache rows are stored; the service is stateless
   otherwise.
 
-Tables: `oauth_auth_codes` (code hash, client id, subject, redirect URI, resource, scopes JSON, PKCE challenge, expiry), `oauth_refresh_tokens` (token hash, family id, previous token hash, client id, subject, scopes JSON, expiry, consumed timestamp), and `oauth_refresh_token_families` (family id, revoked timestamp). Auth codes are deleted on first consume whether valid or expired. Refresh rotation atomically marks the old token consumed and inserts the next hashed token; replay of a consumed token revokes the whole family. Consumed refresh tokens are retained until their whole FAMILY is past validity (each rotation issues a fresh TTL, so a successor outlives its consumed predecessor — the consumed row is kept as long as any family member is still valid, so a stolen-token replay can still revoke the family) and then swept; orphaned token families — not only revoked ones — are cleaned once they have no remaining tokens (bounded storage growth, no unbounded accumulator). Expiry checks compare caller-supplied UTC ISO timestamps as strings, so all callers MUST supply UTC ISO 8601 with exactly 3 millisecond digits (`…\.fffZ`); `assertUtcIsoTimestamp` enforces uniform precision — mixed precision would invert lexicographic ordering and flip "expired" into "valid". No raw codes/tokens and no fetched content/body/cache rows are stored — the service is stateless otherwise. Schema via SQL migrations (per flavor).
+Tables (owned by mcp-sso; identical to the prior in-house schema — mcp-sso was extracted from captatum): `oauth_auth_codes` (code hash, client id, subject, redirect URI, resource, scopes JSON, PKCE challenge, expiry), `oauth_refresh_tokens` (token hash, family id, previous token hash, client id, subject, scopes JSON, expiry, consumed timestamp), and `oauth_refresh_token_families` (family id, revoked timestamp). Auth codes are deleted on first consume whether valid or expired. Refresh rotation atomically marks the old token consumed and inserts the next hashed token; replay of a consumed token revokes the whole family. Consumed refresh tokens are retained until their whole FAMILY is past validity (each rotation issues a fresh TTL, so a successor outlives its consumed predecessor — the consumed row is kept as long as any family member is still valid, so a stolen-token replay can still revoke the family) and then swept; orphaned token families — not only revoked ones — are cleaned once they have no remaining tokens (bounded storage growth, no unbounded accumulator). captatum keeps a periodic `sweepExpired` loop (5 min) over the mcp-sso store. No raw codes/tokens and no fetched content/body/cache rows are stored — the service is stateless otherwise. Schema via the library's SQL migrations.
 
 ## Contract fixtures
 
@@ -689,7 +688,7 @@ All HTTP/JSON-RPC errors:
 
 Admission overload is a distinct, **retryable** JSON-RPC error, separate from `InternalError`. When the hosted server is at concurrent-execution capacity (DOS-2 admission cap) it emits `{ "jsonrpc":"2.0", "id":<id>, "error":{ "code": -32050, "message":"captatum: server overloaded — retry later", "data":{ "retryable": true } } }`. `-32050` is a server-error-range value, reserved and distinct from the auth-failed `-32003`. `data.retryable: true` is the stable contract field. Clients SHOULD treat this as an expected transient condition — back off and retry the same call (ideally with jitter) — NOT as an `InternalError`/bug. The local stdio bridge (single-user, no admission cap) never emits it. There is no `Retry-After` header (Streamable HTTP carries errors inside the JSON-RPC body, not as HTTP 4xx/5xx). (#84)
 
-Stable `code` values; `message` may change. Auth failure sets `WWW-Authenticate` to an RFC 6750 `Bearer` challenge — `Bearer realm="captatum", error="<invalid_token|insufficient_scope>", error_description="<the same actionable text as the JSON-RPC message>"` — so a non-OAuth Streamable HTTP client can read programmatically why its request was rejected. Per RFC 6750 §3 the `error`/`error_description` attributes appear **only when credentials were presented** (a Bearer token that failed verification → `invalid_token`, or a verified token that failed a scope check → `insufficient_scope`); a request with no authentication information (missing or non-Bearer `Authorization`) gets a realm-only challenge, with the actionable remedy carried in the JSON-RPC `message`. Codes outside the RFC 6750 §3.1 set (e.g. `access_denied` at `/oauth/*`) emit realm only. (#104)
+Stable `code` values; `message` may change. Auth failure sets `WWW-Authenticate` to an RFC 9728 `Bearer` challenge built by mcp-sso (`buildUnauthorizedChallenge`) — `Bearer resource_metadata="<PRM URL>", scope="fetch:read fetch:transform"[, error="<invalid_token|insufficient_scope>", error_description="<text>"]` — where `resource_metadata` is the resource origin's `/.well-known/oauth-protected-resource` URL (lets a client fetch the PRM doc and discover the authorization server per RFC 9728), and `scope` advertises the catalog. The `error`/`error_description` attributes are present whenever the `/mcp` request is rejected (a missing **or** invalid Bearer token → `invalid_token`; a verified token that failed a scope check → `insufficient_scope`); the human remedy also rides on the JSON-RPC `message`. (mcp-sso emits the RFC 9728 `resource_metadata` form; the prior captatum-specific `realm="captatum"` form — incl. its realm-only-on-no-credentials distinction — was retired with the in-house OAuth stack. RFC 9728 `resource_metadata` is the more standards-compliant + self-discovering form, and is mcp-sso's canonical behavior.) (#104 evolved)
 Tool input validation failures use the same HTTP error wrapper and include
 `invalid_input` for malformed tool payloads before any outbound work begins.
 Guarded fetch reject codes include `unsupported_scheme`, `invalid_url`,

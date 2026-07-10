@@ -1,23 +1,30 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import type { Bridge, BridgeConfig, IdentityPort, RequestAuthorizer } from "mcp-sso";
+import { registerOAuthRoutes } from "mcp-sso/fastify";
 import type { AuditLoggerPort } from "../../application/ports/audit.ts";
 import type { ClockPort } from "../../application/ports/clock.ts";
-import type { StorePort } from "../../application/ports/store.ts";
-import type { AuthRuntimeConfig } from "../../application/use-cases/oauth-config.ts";
-import { createRequestAuthorizer } from "../../application/use-cases/request-auth.ts";
+import type { DeploymentFlavor } from "../../application/mcp-sso-config.ts";
 import type { CaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import { config } from "../../config.ts";
-import { createCloudflareAccessJwtVerifier } from "../../infrastructure/auth/cloudflare-access-jwt.ts";
-import { registerOAuthRoutes } from "./oauth-routes.ts";
 import { registerMcpRoute } from "./mcp-route.ts";
 import { sendHttpError } from "./errors.ts";
 import type { CaptatumBulkMcpExecutor } from "../mcp/server.ts";
 
 export interface HttpAppDeps {
   captatum: Pick<CaptatumUseCase, "execute" | "defaultOutput">;
-  runtime: AuthRuntimeConfig;
+  flavor: DeploymentFlavor;
+  /** mcp-sso Bridge — owns the OAuth config + store; serves the `/oauth/*` +
+   *  `.well-known/*` routes via `registerOAuthRoutes`. Its `config` is the hosted
+   *  BridgeConfig (used for the `/mcp` 401 challenge). */
+  bridge: Bridge;
+  /** mcp-sso RequestAuthorizer — verifies the bearer token on `/mcp`. Hosted-only. */
+  authorizer: RequestAuthorizer;
+  /** Cloudflare-Access IdentityPort — resolves the `/oauth/authorize` subject from the
+   *  `Cf-Access-Jwt-Assertion` header. Built once in the composition root (captatum's
+   *  AUTH-1 boot gate guarantees CF Access is configured for the hosted flavor). */
+  identity: IdentityPort;
   clock: ClockPort;
   audit: AuditLoggerPort;
-  store?: StorePort;
   allowedHosts: string[];
   allowedOrigins: string[];
   /** Raw captatum_bulk use case; absent when CAPTATUM_BULK_ENABLED is off (hosted). */
@@ -41,8 +48,8 @@ export class HostedFlavorError extends Error {
  * Local mode runs over the stdio bridge
  * (`node --no-warnings src/interfaces/mcp/stdio-bridge.ts`) instead — never HTTP.
  */
-export function assertHostedFlavor(runtime: AuthRuntimeConfig): void {
-  if (runtime.flavor !== "hosted") {
+export function assertHostedFlavor(flavor: DeploymentFlavor): void {
+  if (flavor !== "hosted") {
     throw new HostedFlavorError(
       "HTTP MCP listener runs only under the hosted flavor; refusing to expose " +
         "the local-binary flavor (no OAuth boundary) on a network listener. " +
@@ -61,41 +68,29 @@ export function assertHostedFlavor(runtime: AuthRuntimeConfig): void {
 const REQUEST_TIMEOUT_MS = 90_000;
 
 export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance> {
-  assertHostedFlavor(deps.runtime);
+  assertHostedFlavor(deps.flavor);
+  const oauthConfig: BridgeConfig = deps.bridge.config;
   const requestTimeout = REQUEST_TIMEOUT_MS;
   const app = Fastify({ logger: false, bodyLimit: config.http.bodyLimitBytes, requestTimeout });
-  app.setErrorHandler((error, _request, reply) => sendHttpError(reply, error));
+  app.setErrorHandler((error, _request, reply) => sendHttpError(reply, error, oauthConfig));
   app.get("/healthz", async () => ({ status: "ok" }));
 
-  if (deps.runtime.flavor === "hosted") {
-    if (!deps.store) throw new Error("Hosted HTTP app requires a StorePort");
-    // Build the Cloudflare Access verifier in the composition root and inject it
-    // (the boot gate in oauth-config guarantees CF_ACCESS_* are set for hosted).
-    const cf = config.cloudflareAccess;
-    const cfAccessVerifier = cf.enabled() && cf.certsUrl()
-      ? createCloudflareAccessJwtVerifier({
-        audience: cf.audience(),
-        certsUrl: cf.certsUrl(),
-        issuer: cf.issuer(),
-        emailAllowlist: cf.emailAllowlist(),
-      })
-      : undefined;
-    await registerOAuthRoutes(app, {
-      config: deps.runtime.oauth,
-      store: deps.store,
-      clock: deps.clock,
-      audit: deps.audit,
-      allowedOrigins: deps.allowedOrigins,
-      cfAccessVerifier,
-    });
-  }
+  // OAuth 2.1 + metadata routes — served end-to-end by the mcp-sso Bridge via its
+  // Fastify adapter. The identity (Cloudflare Access) is resolved from the
+  // `Cf-Access-Jwt-Assertion` header (captatum's existing live-verified CF setup).
+  await registerOAuthRoutes(app, {
+    bridge: deps.bridge,
+    identity: deps.identity,
+    identityHeader: "cf-access-jwt-assertion",
+  });
 
   await registerMcpRoute(app, {
     captatum: deps.captatum,
-    authorizer: createRequestAuthorizer({ runtime: deps.runtime, clock: deps.clock, audit: deps.audit }),
+    authorizer: deps.authorizer,
+    config: oauthConfig,
     audit: deps.audit,
     clock: deps.clock,
-    hosted: deps.runtime.flavor === "hosted",
+    hosted: deps.flavor === "hosted",
     allowedHosts: deps.allowedHosts,
     allowedOrigins: deps.allowedOrigins,
     ...(deps.bulk !== undefined ? { bulk: deps.bulk } : {}),

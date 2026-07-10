@@ -11,7 +11,7 @@ import type {
   RejectResult,
 } from "../src/application/ports/fetcher.ts";
 import type { TransformInput, TransformPort, TransformResult } from "../src/application/ports/transformer.ts";
-import type { AuthRuntimeConfig } from "../src/application/use-cases/oauth-config.ts";
+import type { CaptatumAuthRuntime } from "../src/application/mcp-sso-config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import {
   assertLocalFlavor,
@@ -59,7 +59,7 @@ test("local mode starts without OAuth secrets and returns a contract-shaped raw 
 
 test("local mode refuses the hosted flavor instead of exposing a network listener", async () => {
   assert.throws(
-    () => assertLocalFlavor({ flavor: "hosted" } as AuthRuntimeConfig),
+    () => assertLocalFlavor({ flavor: "hosted" }),
     (error: unknown) => error instanceof LocalFlavorError && error.code === "local_flavor_required",
   );
   await assert.rejects(
@@ -68,7 +68,7 @@ test("local mode refuses the hosted flavor instead of exposing a network listene
       extractHtml,
       clock: fixedClock(),
       audit: new NoopAudit(),
-      runtime: { flavor: "hosted" } as AuthRuntimeConfig,
+      runtime: { flavor: "hosted" },
     }),
     (error: unknown) => error instanceof LocalFlavorError,
   );
@@ -135,7 +135,7 @@ test("debug flag gates heavy diagnostic fields through the real MCP server", asy
 interface ConnectOptions {
   fetcher: FetcherPort;
   transformer?: TransformPort;
-  runtime?: AuthRuntimeConfig;
+  runtime?: CaptatumAuthRuntime;
 }
 
 async function connect(options: ConnectOptions) {

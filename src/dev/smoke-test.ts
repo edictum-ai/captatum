@@ -2,13 +2,19 @@ import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import type { JWK } from "jose";
+import {
+  Bridge,
+  RequestAuthorizer,
+  signAccessToken,
+  createBridgeConfig,
+  type BridgeConfig,
+  type IdentityPort,
+} from "mcp-sso";
+import { createMemoryStore } from "mcp-sso/store/memory";
 import type { AuditLoggerPort } from "../application/ports/audit.ts";
 import type { ClockPort } from "../application/ports/clock.ts";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../application/ports/fetcher.ts";
-import type { StorePort } from "../application/ports/store.ts";
 import type { TransformInput, TransformPort, TransformResult } from "../application/ports/transformer.ts";
-import type { HostedOAuthConfig } from "../application/use-cases/oauth-config.ts";
-import { signAccessToken } from "../application/use-cases/oauth-crypto.ts";
 import { createCaptatumUseCase } from "../application/use-cases/captatum.ts";
 import { config } from "../config.ts";
 import type { Result } from "../domain/result.ts";
@@ -51,17 +57,14 @@ class SmokeAudit implements AuditLoggerPort {
   async writeToolEvent(): Promise<void> {}
 }
 
-class SmokeStore implements StorePort {
-  async saveAuthCode(): Promise<void> {}
-  async consumeAuthCode(): Promise<null> { return null; }
-  async saveRefreshToken(): Promise<void> {}
-  async rotateRefreshToken(): Promise<null> { return null; }
-  async revokeRefreshTokenFamily(): Promise<void> {}
-  async findRefreshToken(): Promise<null> { return null; }
-  async consumeConsentJti(): Promise<boolean> { return true; }
-  async sweepExpired(): Promise<void> {}
-  async close(): Promise<void> {}
-}
+// A synthetic IdentityPort for the smoke test — the hosted /oauth/authorize route is
+// registered but not exercised here (the smoke mints a token directly and calls /mcp),
+// so this only needs to be a valid IdentityPort.
+const smokeIdentity: IdentityPort = {
+  async verify() {
+    return { ok: true, identity: { subject: "smoke-user" } };
+  },
+};
 
 const oauth = hostedConfig();
 const fetcher = new SmokeFetcher();
@@ -74,20 +77,23 @@ printResult("blocked SSRF URL", await captatum.execute({ url: BLOCKED_URL, outpu
 printResult("render-disabled default behavior", await captatum.execute({ url: SPA_URL, output: "raw" }));
 
 const port = await freePort();
+const audit = new SmokeAudit();
 const app = await createHttpApp({
   captatum,
-  runtime: { flavor: "hosted", oauth },
+  flavor: "hosted",
+  bridge: new Bridge({ config: oauth, store: createMemoryStore(), clock, audit }),
+  authorizer: new RequestAuthorizer({ config: oauth, clock, audit }),
+  identity: smokeIdentity,
   clock,
-  audit: new SmokeAudit(),
-  store: new SmokeStore(),
+  audit,
   allowedHosts: [`127.0.0.1:${port}`],
   allowedOrigins: ["https://client.test"],
 });
-const token = await signAccessToken({
-  subject: "smoke-user",
-  clientId: "smoke-client",
-  scopes: ["fetch:read"],
-}, oauth, clock);
+const token = await signAccessToken(
+  { subject: "smoke-user", clientId: "smoke-client", scopes: ["fetch:read"] },
+  oauth,
+  clock,
+);
 await app.listen({ host: "127.0.0.1", port });
 const hosted = await fetch(`http://127.0.0.1:${port}${config.mcp.endpointPath}`, {
   method: "POST",
@@ -168,20 +174,24 @@ function spaHtml(): string {
   return "<html><body><div id=\"root\"></div><script src=\"/app.js\"></script></body></html>";
 }
 
-function hostedConfig(): HostedOAuthConfig {
+function hostedConfig(): BridgeConfig {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
-  return {
+  return createBridgeConfig({
     issuer: "https://captatum.test",
     resource: "https://captatum.test/mcp",
     consentSigningSecret: "smoke-consent-secret-with-enough-entropy",
     signingPrivateJwk: { ...privateKey.export({ format: "jwk" }), alg: "ES256", kid: "smoke-key-1" } as JWK,
     signingKeyId: "smoke-key-1",
     redirectAllowlist: ["https://client.test/callback"],
+    scopeCatalog: ["fetch:read", "fetch:transform"],
+    defaultScopes: ["fetch:read"],
+    allowedOrigins: ["https://client.test"],
+    dcr: { mode: "stateless" },
     accessTokenTtlSeconds: 600,
     refreshTokenTtlSeconds: 2_592_000,
     consentTokenTtlSeconds: 300,
     authorizationCodeTtlSeconds: 300,
-  };
+  });
 }
 
 interface SmokeRpcResponse {

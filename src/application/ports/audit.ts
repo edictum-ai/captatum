@@ -1,25 +1,13 @@
-export type AuthAuditStatus = "success" | "failure";
-
-export type AuthAuditEventName =
-  | "oauth.register"
-  | "oauth.authorize.prepare"
-  | "oauth.authorize.approve"
-  | "oauth.token.authorization_code"
-  | "oauth.token.refresh"
-  | "oauth.revoke"
-  | "auth.request";
-
-export interface AuthAuditEvent {
-  occurredAt: string;
-  event: AuthAuditEventName;
-  status: AuthAuditStatus;
-  clientId?: string;
-  subject?: string;
-  resource?: string;
-  scopes?: string[];
-  redirectHost?: string;
-  reason?: string;
-}
+// Audit ports. captatum's audit sink is a SUPERSET of mcp-sso's: the mcp-sso
+// `Bridge` + `RequestAuthorizer` call `writeAuthEvent` (mcp-sso's `AuthAuditEvent`),
+// while captatum's tool handlers call `writeToolEvent` (captatum's `ToolAuditEvent`).
+// Re-exporting mcp-sso's auth-event types here means a single captatum audit object
+// satisfies BOTH mcp-sso's `AuditPort` and captatum's `AuditLoggerPort` — one unified
+// audit log, no duplicated seam (per the S0b plan). mcp-sso's `AuthAuditEvent` is a
+// superset of captatum's prior in-house type (same fields + `ip?`), so existing
+// captatum event construction stays valid.
+export type { AuthAuditEvent, AuthAuditStatus, AuthAuditEventName } from "mcp-sso";
+import type { AuthAuditEvent } from "mcp-sso";
 
 export interface ToolAuditEvent {
   occurredAt: string;
@@ -56,6 +44,10 @@ export interface ToolAuditEvent {
   quotaWindowSeconds?: number;
 }
 
+/** captatum's audit port: mcp-sso's auth-event sink (`writeAuthEvent`) + captatum's
+ *  tool-event sink (`writeToolEvent`). An object implementing both satisfies mcp-sso's
+ *  narrower `AuditPort` structurally — pass the same instance to the `Bridge` /
+ *  `RequestAuthorizer` and to captatum's tool handlers. */
 export interface AuditLoggerPort {
   writeAuthEvent(event: AuthAuditEvent): Promise<void>;
   writeToolEvent(event: ToolAuditEvent): Promise<void>;

@@ -2,13 +2,19 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import type { JWK } from "jose";
+import {
+  Bridge,
+  RequestAuthorizer,
+  signAccessToken,
+  createBridgeConfig,
+  type BridgeConfig,
+  type IdentityPort,
+} from "mcp-sso";
+import { createMemoryStore } from "mcp-sso/store/memory";
 import type { AuthAuditEvent, AuditLoggerPort, ToolAuditEvent } from "../src/application/ports/audit.ts";
 import type { ClockPort } from "../src/application/ports/clock.ts";
-import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../src/application/ports/fetcher.ts";
-import type { StorePort } from "../src/application/ports/store.ts";
+import type { FetcherOptions, FetcherPort, FetcherResult } from "../src/application/ports/fetcher.ts";
 import type { TransformInput, TransformPort, TransformResult } from "../src/application/ports/transformer.ts";
-import type { AuthRuntimeConfig, HostedOAuthConfig } from "../src/application/use-cases/oauth-config.ts";
-import { signAccessToken } from "../src/application/use-cases/oauth-crypto.ts";
 import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts";
 import { config } from "../src/config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
@@ -19,9 +25,16 @@ const NOW_MS = Date.parse("2026-06-16T12:00:00.000Z");
 const HOST = "captatum.test";
 const ORIGIN = "https://client.test";
 
+// Synthetic CF-Access identity for the hosted app (the /oauth/authorize route is
+// registered but not driven by these tests — they mint tokens directly — so a
+// permissive stub suffices; mcp-sso-wiring.test.ts exercises the full identity flow).
+const stubIdentity: IdentityPort = {
+  async verify() { return { ok: true, identity: { subject: "user-1" } }; },
+};
+
 test("HTTP MCP listener refuses local-binary instead of exposing an unauthenticated /mcp", async () => {
   assert.throws(
-    () => assertHostedFlavor({ flavor: "local-binary" } as AuthRuntimeConfig),
+    () => assertHostedFlavor("local-binary"),
     (error: unknown) => error instanceof HostedFlavorError && error.code === "hosted_flavor_required",
   );
   await assert.rejects(
@@ -31,7 +44,10 @@ test("HTTP MCP listener refuses local-binary instead of exposing an unauthentica
         extractHtml,
         clock: new FakeClock(NOW_MS),
       }),
-      runtime: { flavor: "local-binary" } as AuthRuntimeConfig,
+      flavor: "local-binary",
+      bridge: null as unknown as Bridge,
+      authorizer: null as unknown as RequestAuthorizer,
+      identity: stubIdentity,
       clock: new FakeClock(NOW_MS),
       audit: new MemoryAudit(),
       allowedHosts: [HOST],
@@ -46,28 +62,21 @@ test("POST /mcp rejects unauthenticated hosted calls before captatum runs", asyn
   const response = await ctx.rpc({ arguments: { url: "https://fixture.test/", output: "raw" } }, undefined);
 
   assert.equal(response.statusCode, 401);
-  // #104 + codex P2: RFC 6750 §3 — a request with NO authentication information gets
-  // a realm-only challenge (no error/error_description); the actionable remedy lives
-  // in the JSON-RPC message. (A presented-then-rejected token, tested separately,
-  // DOES get error="invalid_token".)
+  // mcp-sso buildUnauthorizedChallenge: RFC 9728 resource_metadata + scope + error. The
+  // prior captatum realm="captatum" form was retired with the in-house OAuth stack; the
+  // human remedy rides the JSON-RPC message + the PRM doc the client can now discover.
   const wwwAuth = String(response.headers["www-authenticate"]);
-  assert.match(wwwAuth, /^Bearer realm="captatum"$/);
-  assert.doesNotMatch(wwwAuth, /error=/, "no error attr when no credentials were presented");
+  assert.match(wwwAuth, /^Bearer resource_metadata="/);
+  assert.match(wwwAuth, /error="invalid_token"/);
   const body = response.json();
   assert.equal(body.id, null);
   assert.equal(body.error.code, -32003);
-  assert.match(body.error.message, /^invalid_token: OAuth Bearer access token required/);
-  assert.match(body.error.message, /\/oauth\/token/, "message names how to obtain a token");
+  assert.match(body.error.message, /^invalid_token:/);
   assert.equal(ctx.fetcher.calls.length, 0);
   await ctx.app.close();
 });
 
-test("POST /mcp with a malformed Bearer token returns a 401 with the actionable invalid/expired message (#104)", async () => {
-  // Exercises verifyAccessToken (oauth-crypto.ts) — the stale/expired-token path, a
-  // more common real-world 401 than "no token at all". The prior test sends NO
-  // Authorization header (bearerToken path); this sends a bad one so the actionable
-  // "invalid or expired … /oauth/token" message is asserted end-to-end, including its
-  // em-dash safety in the WWW-Authenticate header.
+test("POST /mcp with a malformed Bearer token returns 401 invalid_token (#104 evolved)", async () => {
   const ctx = await setup();
   const response = await ctx.rpc(
     { arguments: { url: "https://fixture.test/", output: "raw" } },
@@ -77,12 +86,10 @@ test("POST /mcp with a malformed Bearer token returns a 401 with the actionable 
   assert.equal(response.statusCode, 401);
   const wwwAuth = String(response.headers["www-authenticate"]);
   assert.match(wwwAuth, /error="invalid_token"/);
-  assert.match(wwwAuth, /\/oauth\/token/, "error_description carries the remedy");
-  assert.ok(!wwwAuth.includes("—"), "em dash is ASCII-sanitized out of the header value");
+  assert.match(wwwAuth, /resource_metadata="/);
   const body = response.json();
   assert.equal(body.error.code, -32003);
-  assert.match(body.error.message, /invalid_token: .*invalid or expired/);
-  assert.match(body.error.message, /\/oauth\/token/);
+  assert.match(body.error.message, /invalid_token/);
   assert.equal(ctx.fetcher.calls.length, 0);
   await ctx.app.close();
 });
@@ -139,8 +146,6 @@ test("tools/list advertises a strict captatum input schema", async () => {
   const tool = body.result.tools.find((item) => item.name === "captatum");
   assert.ok(tool);
   assert.equal(tool.inputSchema.additionalProperties, false);
-  // Discoverability: the tool description advertises every output mode + provenance
-  // + allowRender so clients learn the full surface from tools/list alone.
   for (const phrase of ["summary", "'raw'", "'extract'", "allowRender: false", "provenance"]) {
     assert.ok(tool.description.includes(phrase), `tool description missing "${phrase}"`);
   }
@@ -148,8 +153,6 @@ test("tools/list advertises a strict captatum input schema", async () => {
 });
 
 test("server advertises capability instructions for discoverability", () => {
-  // Sent on `initialize` so clients/agents learn captatum's features (output modes,
-  // provenance, when to render) without reading the repo.
   assert.ok(CAPTATUM_SERVER_INSTRUCTIONS.length > 200, "instructions are substantive");
   for (const phrase of ["summary", "raw", "extract", "allowRender", "Provenance", "rule of thumb"]) {
     assert.ok(CAPTATUM_SERVER_INSTRUCTIONS.includes(phrase), `instructions missing "${phrase}"`);
@@ -183,15 +186,20 @@ test("MCP transport rejects authenticated requests with a disallowed origin", as
 
 async function setup(options: { transformer?: TransformPort } = {}) {
   const clock = new FakeClock(NOW_MS);
-  const oauth = hostedConfig();
+  const oauthConfig = hostedConfig();
   const fetcher = new FakeFetcher("<main>Fixture raw body</main>");
   const audit = new MemoryAudit();
+  const bridge = new Bridge({ config: oauthConfig, store: createMemoryStore(), clock, audit });
+  const authorizer = new RequestAuthorizer({ config: oauthConfig, clock, audit });
+  const captatum = createCaptatumUseCase({ fetcher, extractHtml, transformer: options.transformer, clock });
   const app = await createHttpApp({
-    captatum: createCaptatumUseCase({ fetcher, extractHtml, transformer: options.transformer, clock }),
-    runtime: { flavor: "hosted", oauth },
+    captatum,
+    flavor: "hosted",
+    bridge,
+    authorizer,
+    identity: stubIdentity,
     clock,
     audit,
-    store: new MemoryStore(),
     allowedHosts: [HOST],
     allowedOrigins: [ORIGIN],
   });
@@ -199,8 +207,8 @@ async function setup(options: { transformer?: TransformPort } = {}) {
     app,
     fetcher,
     audit,
-    rpc: async (input: RpcInput, scopes?: Array<"fetch:read" | "fetch:transform">, headers: Record<string, string> = {}) => {
-      const token = scopes ? await signAccessToken({ subject: "user-1", clientId: "client-1", scopes }, oauth, clock) : undefined;
+    rpc: async (input: RpcInput, scopes?: string[], headers: Record<string, string> = {}) => {
+      const token = scopes ? await signAccessToken({ subject: "user-1", clientId: "client-1", scopes }, oauthConfig, clock) : undefined;
       return await app.inject({
         method: "POST",
         url: config.mcp.endpointPath,
@@ -239,7 +247,7 @@ class FakeFetcher implements FetcherPort {
   readonly calls: Array<{ url: string; opts: FetcherOptions }> = [];
   private readonly html: string;
   constructor(html: string) { this.html = html; }
-  async fetchGuarded(url: string, opts: FetcherOptions): Promise<FetcherResult | RejectResult> {
+  async fetchGuarded(url: string, opts: FetcherOptions): Promise<FetcherResult> {
     this.calls.push({ url, opts });
     const bytes = new TextEncoder().encode(this.html);
     return {
@@ -268,32 +276,24 @@ class MemoryAudit implements AuditLoggerPort {
   async writeToolEvent(event: ToolAuditEvent): Promise<void> { this.toolEvents.push(event); }
 }
 
-class MemoryStore implements StorePort {
-  async saveAuthCode(): Promise<void> {}
-  async consumeAuthCode(): Promise<null> { return null; }
-  async saveRefreshToken(): Promise<void> {}
-  async rotateRefreshToken(): Promise<null> { return null; }
-  async revokeRefreshTokenFamily(): Promise<void> {}
-  async findRefreshToken(): Promise<null> { return null; }
-  async consumeConsentJti(): Promise<boolean> { return true; }
-  async sweepExpired(): Promise<void> {}
-  async close(): Promise<void> {}
-}
-
-function hostedConfig(): HostedOAuthConfig {
+function hostedConfig(): BridgeConfig {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
-  return {
+  return createBridgeConfig({
     issuer: "https://captatum.test",
     resource: "https://captatum.test/mcp",
     consentSigningSecret: "test-consent-secret-with-enough-entropy",
     signingPrivateJwk: { ...privateKey.export({ format: "jwk" }), alg: "ES256", kid: "test-key-1" } as JWK,
     signingKeyId: "test-key-1",
     redirectAllowlist: ["https://client.test/callback"],
+    scopeCatalog: ["fetch:read", "fetch:transform"],
+    defaultScopes: ["fetch:read"],
+    allowedOrigins: [ORIGIN],
+    dcr: { mode: "stateless" },
     accessTokenTtlSeconds: 600,
     refreshTokenTtlSeconds: 2_592_000,
     consentTokenTtlSeconds: 300,
     authorizationCodeTtlSeconds: 300,
-  };
+  });
 }
 
 type RpcInput = { method?: "tools/call"; arguments: unknown } | { method: "tools/list"; params: Record<string, unknown> };

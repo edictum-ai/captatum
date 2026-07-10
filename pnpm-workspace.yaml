@@ -3,3 +3,11 @@ packages:
 
 # 15 days, in minutes. Requires pnpm >= 10.16.0.
 minimumReleaseAge: 21600
+
+# Own-package exception: mcp-sso (acartag7/mcp-sso) is the owner's own OSS library —
+# captatum's own OAuth, extracted + hardened there. The 15-day rule guards against
+# stranger supply-chain compromise (yanked within hours-days), which doesn't apply to a
+# freshly-published own library. Scoped to mcp-sso ONLY; the global rule is unchanged.
+# Remove once a release clears 15 days organically. Re-check before every install/deploy.
+minimumReleaseAgeExclude:
+  - mcp-sso
