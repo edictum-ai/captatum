@@ -48,13 +48,15 @@ function capEcho(value: string): string {
 /** Captatum top-level tool arguments an agent may mistakenly nest inside an extract
  *  `schema` (they read like JSON-Schema-shaped names but are captatum knobs). When one
  *  appears as a schema key, the error points at the real fix (move it to the top level)
- *  instead of the generic "remove it" — agents naturally pass budget/timeoutMs/debug into
- *  the schema, and "remove it" is wrong advice for a real captatum arg. Mirror of
- *  captatum-input.ts's zod schema — keep in sync when a top-level arg is added/removed.
+ *  instead of the generic "remove it" — agents naturally pass budget/timeoutMs/debug (and,
+ *  for captatum_bulk, maxTransformCostUsd/perSeedTransformCostUsd/urls) into the schema,
+ *  and "remove it" is wrong advice for a real captatum arg. Union of captatum-input.ts's
+ *  and bulk-input.ts's zod schemas — keep in sync when a top-level arg is added/removed in
+ *  EITHER (messageForUnsupportedKeyword is shared by both paths via assertExtractSchemaSupported).
  *  Key names are matched case-sensitively (captatum args are lowercase); no schema value
  *  is ever echoed. */
 const CAPTATUM_KNOB_KEYS: ReadonlySet<string> = new Set([
-  "url", "prompt", "output", "schema", "budget", "transform", "maxBytes", "timeoutMs", "allowRender", "debug",
+  "url", "urls", "prompt", "output", "schema", "budget", "transform", "maxBytes", "timeoutMs", "allowRender", "debug", "maxTransformCostUsd", "perSeedTransformCostUsd",
 ]);
 
 /** Compose the unsupported-keyword message. A captatum tool argument misplaced inside the

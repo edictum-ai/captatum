@@ -146,3 +146,16 @@ test("#178: messageForUnsupportedKeyword points a misplaced captatum knob out of
   assert.ok(!formatMsg.includes("captatum tool argument"), "format gets the generic 'remove it' message");
 });
 
+// #178 sibling sweep: messageForUnsupportedKeyword is shared with the captatum_bulk path
+// (assertExtractSchemaSupported runs for bulk's uniform schema too). The bulk-only top-level
+// knobs (urls/maxTransformCostUsd/perSeedTransformCostUsd) must get the SAME "move it out of
+// schema" hint — not the generic "remove it" (which would, e.g., silently drop a caller's
+// maxTransformCostUsd ceiling). Same defect class as #178; the set is the union of both schemas.
+test("#178 sibling: captatum_bulk-only knobs misplaced in a schema also get the 'move it out' hint", () => {
+  for (const key of ["urls", "maxTransformCostUsd", "perSeedTransformCostUsd"]) {
+    const msg = messageForUnsupportedKeyword(key, "$");
+    assert.ok(msg.includes("captatum tool argument"), `${key} is a captatum_bulk arg: ${msg}`);
+    assert.ok(msg.includes('move it out of "schema"'), `${key} points at the fix: ${msg}`);
+  }
+});
+
