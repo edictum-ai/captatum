@@ -2,7 +2,8 @@ import type { Output } from "../../domain/tier.ts";
 import type { StructuredData } from "../../domain/platform.ts";
 import { stripHtmlTags } from "../../infrastructure/extract/html.ts";
 import { shortTypes, CONTENT_TYPES } from "../../domain/content-types.ts";
-import { firstContentHarvest } from "../../domain/content-bearing.ts";
+import { firstContentHarvest, collectPostingNodes } from "../../domain/content-bearing.ts";
+import { harvestContentText } from "../../domain/content-harvest.ts";
 import { isPinDetailPage } from "../../domain/pin-url.ts";
 
 /** A node whose @type is a content type — the shared CONTENT_TYPES set (the gate set == the
@@ -74,12 +75,17 @@ function leadDescription(structured: StructuredData, url: string, hasVisibleText
   // Pass 2: a pin's caption, only on an actual pin detail page whose only content
   // node is the post itself. A higher-priority content node suppresses the fallback
   // — but a co-typed post (e.g. @type ["SocialMediaPosting","Article"]) is the pin,
-  // so exclude social postings from the suppression.
-  const hasHigherContent = nodes.some(
-    (n) => isContentNode(n) && !shortTypes(n).includes("socialmediaposting"),
-  );
+  // so exclude social postings from the suppression. FIELD-GATED (audit): a sibling counts as
+  // "higher content" only if it is non-social content-typed AND harvestable — a field-less
+  // {Product, name+image} (no description) must NOT suppress the caption (else gate⇒empty).
+  const hasHigherContent = nodes.some((n) => {
+    const ts = shortTypes(n);
+    return ts.some((t) => t !== "socialmediaposting" && CONTENT_TYPES.has(t)) && harvestContentText(n) !== undefined;
+  });
   if (!isPinDetailPage(url) || hasHigherContent) return undefined;
-  const postings = nodes.filter((n) => shortTypes(n).includes("socialmediaposting"));
+  // Nested-aware: a pin caption can sit behind a wrapper (WebPage.mainEntity → SocialMediaPosting),
+  // not just at top-level/@graph, so search the whole reachable graph (codex).
+  const postings = collectPostingNodes(structured.jsonLd);
   // Prefer the posting that IS this pin (its url/mainEntityOfPage references the
   // fetched pin id) over a related/embedded pin; fall back to the first posting.
   const pinId = pinIdFromUrl(url);

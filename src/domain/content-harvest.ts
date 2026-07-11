@@ -70,11 +70,13 @@ function harvestSteps(raw: unknown, depth = 0): string | undefined {
   return parts.join(" · ") || undefined;
 }
 
-/** Descend FAQPage `mainEntity[]` (Question[]) → "Q: … A: …" pairs. Slice-then-normalize. */
+/** Descend FAQPage `mainEntity[]` (Question[]) → "Q: … A: …" pairs. A single-object mainEntity
+ *  (one Question, not an array) is normalized to a 1-element array (audit). Slice-then-normalize. */
 function harvestFaq(raw: unknown): string | undefined {
-  if (!Array.isArray(raw)) return undefined;
+  const arr = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? [raw] : [];
+  if (!arr.length) return undefined;
   const parts: string[] = [];
-  for (const q of raw.slice(0, ARRAY_MAX)) {
+  for (const q of arr.slice(0, ARRAY_MAX)) {
     if (!q || typeof q !== "object") continue;
     const qn = q as Record<string, unknown>;
     const question = textField(qn.name);
@@ -110,9 +112,11 @@ function harvestByType(t: string, n: Record<string, unknown>, forLead: boolean):
   switch (t) {
     case "article": case "newsarticle": case "blogposting": case "techarticle":
     case "scholarlyarticle": case "report":
-      // forLead skips articleBody (== the visible body) so the lead does not duplicate it.
+      // forLead prefers headline/description (articleBody == the visible body, would duplicate).
+      // But if those are absent, fall back to articleBody — duplication is better than an empty lead
+      // (e.g. substantial visible text that is actually chrome, not the body) (audit).
       return forLead
-        ? firstField(n, ["headline", "description"])
+        ? firstField(n, ["headline", "description"]) ?? firstField(n, ["articleBody"])
         : firstField(n, ["articleBody", "headline", "description"]);
     case "jobposting":
       // title OR description (a title-only JobPosting is content-bearing); the lead ALWAYS prefers

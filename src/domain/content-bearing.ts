@@ -47,9 +47,14 @@ function nodeIsContentBearing(node: Record<string, unknown>, isPinDetail: boolea
 function findFirstContentNode(
   value: unknown, isPinDetail: boolean, allowSocial: boolean, depth: number, seen: Set<Record<string, unknown>>,
 ): Record<string, unknown> | undefined {
+  // TOP depth guard (codex): caps array / @graph / nested-link recursion UNIFORMLY. Without it a
+  // chain of distinct array/@graph wrappers (not a cycle, so `seen` doesn't help) recurses forever
+  // and overflows the stack on untrusted JSON-LD. Content nested ≥ MAX_NESTED_DEPTH isn't reached
+  // (a safe extra render, never a crash).
+  if (depth >= MAX_NESTED_DEPTH) return undefined;
   if (Array.isArray(value)) {
     for (const v of value) {
-      const found = findFirstContentNode(v, isPinDetail, allowSocial, depth, seen);
+      const found = findFirstContentNode(v, isPinDetail, allowSocial, depth + 1, seen);
       if (found) return found;
     }
     return undefined;
@@ -64,10 +69,6 @@ function findFirstContentNode(
   const ctypes = types.filter((t) => CONTENT_TYPES.has(t));
   const isSocialOnly = ctypes.length > 0 && ctypes.every((t) => t === "socialmediaposting");
   if ((!isSocialOnly || allowSocial) && nodeIsContentBearing(value, isPinDetail)) return value;
-  if (depth >= MAX_NESTED_DEPTH) return undefined;
-  // @graph recurses at depth+1 (codex): a chain of distinct {@graph:{@graph:…}} wrappers is genuine
-  // recursion (the `seen` set only guards cycles, not depth) — without the increment it bypasses
-  // MAX_NESTED_DEPTH and overflows the stack on untrusted JSON-LD.
   const graph = findFirstContentNode(value["@graph"], isPinDetail, allowSocial, depth + 1, seen);
   if (graph) return graph;
   for (const key of NESTED_CONTENT_LINKS) {
@@ -105,13 +106,38 @@ export function contentBearingTypes(jsonLd: unknown, isPinDetail = false): strin
 }
 
 function collectContentTypes(value: unknown, isPinDetail: boolean, depth: number, seen: Set<Record<string, unknown>>, types: string[]): void {
-  if (Array.isArray(value)) { for (const v of value) collectContentTypes(v, isPinDetail, depth, seen, types); return; }
+  if (depth >= MAX_NESTED_DEPTH) return; // top guard: caps array/@graph/nested uniformly (codex)
+  if (Array.isArray(value)) { for (const v of value) collectContentTypes(v, isPinDetail, depth + 1, seen, types); return; }
   if (!isRecord(value) || seen.has(value)) return;
   seen.add(value);
-  if (nodeIsContentBearing(value, isPinDetail)) {
+  const bearing = nodeIsContentBearing(value, isPinDetail);
+  if (bearing) {
     for (const t of shortTypes(value)) if (CONTENT_TYPES.has(t)) types.push(t);
   }
+  // A content-bearing node is TERMINAL for classification (its own type is primary) — do NOT descend
+  // its @graph or related links (mirrors findFirstContentNode's first-found; an Article carrying its
+  // own @graph:[Product] stays 'article'). A wrapper (non-bearing) descends @graph (flat expansion)
+  // + the nested links to find content (audit).
+  if (!bearing) {
+    collectContentTypes(value["@graph"], isPinDetail, depth + 1, seen, types);
+    for (const key of NESTED_CONTENT_LINKS) collectContentTypes(value[key], isPinDetail, depth + 1, seen, types);
+  }
+}
+
+/** Every SocialMediaPosting node reachable from jsonLd (top-level, @graph, AND the nested-content
+ *  links — depth-capped + cycle-guarded) — so the pin-caption lead finds a caption nested behind a
+ *  wrapper (WebPage.mainEntity → SocialMediaPosting), not just top-level/@graph ones (#152, codex). */
+export function collectPostingNodes(jsonLd: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  walkPostings(jsonLd, 0, new Set(), out);
+  return out;
+}
+function walkPostings(value: unknown, depth: number, seen: Set<Record<string, unknown>>, out: Record<string, unknown>[]): void {
   if (depth >= MAX_NESTED_DEPTH) return;
-  collectContentTypes(value["@graph"], isPinDetail, depth + 1, seen, types); // @graph: depth+1 (stack cap, codex)
-  for (const key of NESTED_CONTENT_LINKS) collectContentTypes(value[key], isPinDetail, depth + 1, seen, types);
+  if (Array.isArray(value)) { for (const v of value) walkPostings(v, depth + 1, seen, out); return; } // recurse nested arrays (extractJsonLd nests multi-script as [[nodes], node])
+  if (!isRecord(value) || seen.has(value)) return;
+  seen.add(value);
+  if (shortTypes(value).includes("socialmediaposting")) out.push(value);
+  walkPostings(value["@graph"], depth + 1, seen, out);
+  for (const key of NESTED_CONTENT_LINKS) walkPostings(value[key], depth + 1, seen, out);
 }

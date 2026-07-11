@@ -115,6 +115,50 @@ test("#152 codex: a deeply-nested @graph chain is depth-capped (no stack overflo
   assert.equal(hasContentBearingJsonLd(node), false, "depth-capped: the deep node past MAX_NESTED_DEPTH is not reached");
 });
 
+test("#152 codex: a deeply-nested ARRAY chain is depth-capped (no stack overflow)", () => {
+  // [[[[…{Article}…]]]] — nested array wrappers (distinct, not a cycle) must be capped too.
+  let node: unknown = { "@type": "Article", headline: "deep" };
+  for (let i = 0; i < 100; i++) node = [node];
+  assert.equal(hasContentBearingJsonLd(node), false, "array-chain depth-capped: the deep node is not reached");
+});
+
+test("#152 codex: a nested pin caption (WebPage.mainEntity → SocialMediaPosting) is harvested", () => {
+  // The gate counts a nested pin caption; the lead must harvest it too (Pass 2 now searches the
+  // nested graph, not just top-level) — else a pin page with a nested caption returns empty.
+  const payload = buildPayload("raw", { jsonLd: { "@type": "WebPage", mainEntity: { "@type": "SocialMediaPosting", articleBody: "nested pin caption." } } } as StructuredData, "", "https://www.pinterest.com/pin/123/");
+  assert.ok(payload.includes("nested pin caption."), `nested pin caption harvested: ${payload}`);
+});
+
+test("#152 codex: an Article.about → Product stays 'article' (related entity is not the page's content)", () => {
+  const articleAboutProduct = base({ finalUrl: "https://news.test/p", structured: { jsonLd: { "@type": "Article", headline: "the story", about: { "@type": "Product", description: "a widget" } } } });
+  assert.equal(classifyContentType(articleAboutProduct), "article", "the Article's own type wins; about→Product does not re-rank to product");
+});
+
+test("#152 audit: a field-less sibling on a pin page does NOT suppress the caption (gate⇒non-empty)", () => {
+  // A pin page (shell) with a SocialMediaPosting (caption) + a field-less Product (name+image, no
+  // description). The gate is satisfied by the caption; the lead must surface it — the field-less
+  // Product is NOT "higher content" (hasHigherContent is field-gated now), so it can't suppress.
+  const payload = buildPayload("raw", { jsonLd: [{ "@type": "SocialMediaPosting", articleBody: "the pin caption." }, { "@type": "Product", name: "Pin", image: "https://i.test/x.jpg" }] } as StructuredData, "", "https://www.pinterest.com/pin/123/");
+  assert.ok(payload.includes("the pin caption."), `field-less sibling does not suppress the caption: ${payload}`);
+});
+
+test("#152 audit: a content-bearing node's own @graph does not re-rank contentType", () => {
+  const withGraph = base({ finalUrl: "https://news.test/p", structured: { jsonLd: { "@type": "Article", articleBody: "the review.", "@graph": [{ "@type": "Product", description: "a widget" }] } } });
+  assert.equal(classifyContentType(withGraph), "article", "Article is terminal for classification; its @graph:[Product] does not flip to product");
+});
+
+test("#152 audit: a FAQPage whose mainEntity is a single Question object (not an array) is harvested", () => {
+  assert.equal(hasContentBearingJsonLd({ "@type": "FAQPage", mainEntity: { "@type": "Question", name: "What is this?", acceptedAnswer: { "@type": "Answer", text: "An answer." } } }), true, "single-object mainEntity is content-bearing");
+});
+
+test("#152 audit: an Article with only articleBody + substantial chrome text still leads with the body", () => {
+  // hasSubstantialText(chrome)=true → forLead=true; headline/description absent → fall back to
+  // articleBody (duplication > content loss), else the lead would be empty + output only chrome.
+  const chrome = "Products Solutions Pricing Docs Company Blog Careers Contact Support Login".repeat(2);
+  const payload = buildPayload("raw", { jsonLd: { "@type": "Article", articleBody: "the real article body." } } as StructuredData, chrome, "https://x.test/a");
+  assert.ok(payload.includes("the real article body."), `articleBody lead fallback fires over chrome: ${payload}`);
+});
+
 test("#152 codex: an articleBody-only Article with no visible text still yields a non-empty Tier-1 (gate⇒harvest)", () => {
   // The gate counts articleBody (content-bearing); the lead must too when there's no visible text to
   // duplicate — else an empty shell with {Article, articleBody} would satisfy the gate but render empty.
