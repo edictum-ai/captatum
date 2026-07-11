@@ -29,16 +29,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** A single node is content-bearing: a CONTENT_TYPES @type WITH a non-trivial content field.
  *  socialmediaposting requires a pin-detail page (isPinDetail) + a non-empty articleBody. */
 function nodeIsContentBearing(node: Record<string, unknown>, isPinDetail: boolean): boolean {
-  const types = shortTypes(node);
-  if (!types.some((t) => CONTENT_TYPES.has(t))) return false;
-  // A NON-social content type decides it: harvestContentText tries social first (yields nothing —
-  // the social case returns undefined) then the real type, so a co-typed ["SocialMediaPosting",
-  // "Article"] still counts the Article (codex: don't let an embedded post vanish real content).
-  if (types.some((t) => t !== "socialmediaposting" && CONTENT_TYPES.has(t))) {
-    return harvestContentText(node) !== undefined;
-  }
-  // socialmediaposting only: gate-scoped to a pin-detail page + a non-empty articleBody.
-  return isPinDetail && typeof node.articleBody === "string" && node.articleBody.trim().length > 0;
+  const ctypes = shortTypes(node).filter((t) => CONTENT_TYPES.has(t));
+  if (ctypes.length === 0) return false;
+  // A pin-detail page's socialmediaposting articleBody is the caption — counts EVEN on a co-typed
+  // node (e.g. [SocialMediaPosting, Product] with only articleBody, no Product description), so the
+  // gate does not reject an otherwise-harvestable pin shell (Pass 2 surfaces the caption) (codex).
+  if (isPinDetail && ctypes.includes("socialmediaposting") && typeof node.articleBody === "string" && node.articleBody.trim().length > 0) return true;
+  // Otherwise a NON-social content type decides it: harvestContentText tries social first (yields
+  // nothing) then the real type, so a co-typed ["SocialMediaPosting", "Article"] counts the Article.
+  if (ctypes.some((t) => t !== "socialmediaposting")) return harvestContentText(node) !== undefined;
+  // socialmediaposting only, off-pin or no articleBody → not content-bearing.
+  return false;
 }
 
 /** Iteratively flatten nested arrays, ORDER-PRESERVING + O(n). Array WRAPPERS are containers, not

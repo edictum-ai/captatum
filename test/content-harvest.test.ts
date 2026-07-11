@@ -155,6 +155,15 @@ test("#152 codex: title derivation is field-gated (a name-only Movie doesn't sup
   assert.equal(preferredTitle("Generic", { jsonLd: { "@type": "JobPosting", title: "Platform Engineer" } }), "Platform Engineer");
 });
 
+test("#152 codex: a co-typed [SocialMediaPosting, Product] pin with only articleBody satisfies the gate", () => {
+  // The pin's articleBody caption counts even when co-typed with a field-less Product — was: the
+  // non-social branch was decisive → harvestContentText(Product, no description) → undefined → rejected.
+  assert.equal(hasContentBearingJsonLd({ "@type": ["SocialMediaPosting", "Product"], articleBody: "pin caption." }, true), true, "co-typed pin + articleBody is content-bearing on a pin page");
+  // And the caption surfaces via Pass 2 (gate⇒non-empty).
+  const payload = buildPayload("raw", { jsonLd: { "@type": ["SocialMediaPosting", "Product"], articleBody: "pin caption.", image: "https://i.test/x.jpg" } } as StructuredData, "", "https://www.pinterest.com/pin/123/");
+  assert.ok(payload.includes("pin caption."), `co-typed pin caption surfaces: ${payload}`);
+});
+
 test("#152 codex: a nested pin caption (WebPage.mainEntity → SocialMediaPosting) is harvested", () => {
   // The gate counts a nested pin caption; the lead must harvest it too (Pass 2 now searches the
   // nested graph, not just top-level) — else a pin page with a nested caption returns empty.
