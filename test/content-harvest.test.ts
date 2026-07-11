@@ -164,6 +164,13 @@ test("#152 codex: a co-typed [SocialMediaPosting, Product] pin with only article
   assert.ok(payload.includes("pin caption."), `co-typed pin caption surfaces: ${payload}`);
 });
 
+test("#152 codex: a co-typed [SocialMediaPosting, Product] pin classifies 'pin', not 'product' (per-type field-gating)", () => {
+  // The field-less Product must not be advertised — contentBearingTypesOf yields only
+  // socialmediaposting (the caption), so mapType skips it → isPinHost → 'pin' (codex).
+  const r = base({ finalUrl: "https://www.pinterest.com/pin/123/", structured: { jsonLd: { "@type": ["SocialMediaPosting", "Product"], articleBody: "caption", image: "https://i.test/x.jpg" } } });
+  assert.equal(classifyContentType(r), "pin", "co-typed pin → 'pin' via isPinHost, not 'product' (field-less Product not advertised)");
+});
+
 test("#152 codex: a nested pin caption (WebPage.mainEntity → SocialMediaPosting) is harvested", () => {
   // The gate counts a nested pin caption; the lead must harvest it too (Pass 2 now searches the
   // nested graph, not just top-level) — else a pin page with a nested caption returns empty.

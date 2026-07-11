@@ -28,18 +28,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** A single node is content-bearing: a CONTENT_TYPES @type WITH a non-trivial content field.
  *  socialmediaposting requires a pin-detail page (isPinDetail) + a non-empty articleBody. */
-function nodeIsContentBearing(node: Record<string, unknown>, isPinDetail: boolean): boolean {
+/** The specific CONTENT_TYPES @types that make `node` content-bearing — field-gated PER TYPE
+ *  (mirror nodeIsContentBearing): a pin-detail page's socialmediaposting articleBody caption, and/or
+ *  each non-social type that has a harvestable field. Used by the classifier so it advertises ONLY
+ *  the harvestable type(s) — a co-typed [SocialMediaPosting, Product] pin accepted via articleBody
+ *  yields ['socialmediaposting'] (→ 'pin' via isPinHost), NOT the field-less 'product' (codex). */
+function contentBearingTypesOf(node: Record<string, unknown>, isPinDetail: boolean): string[] {
   const ctypes = shortTypes(node).filter((t) => CONTENT_TYPES.has(t));
-  if (ctypes.length === 0) return false;
-  // A pin-detail page's socialmediaposting articleBody is the caption — counts EVEN on a co-typed
-  // node (e.g. [SocialMediaPosting, Product] with only articleBody, no Product description), so the
-  // gate does not reject an otherwise-harvestable pin shell (Pass 2 surfaces the caption) (codex).
-  if (isPinDetail && ctypes.includes("socialmediaposting") && typeof node.articleBody === "string" && node.articleBody.trim().length > 0) return true;
-  // Otherwise a NON-social content type decides it: harvestContentText tries social first (yields
-  // nothing) then the real type, so a co-typed ["SocialMediaPosting", "Article"] counts the Article.
-  if (ctypes.some((t) => t !== "socialmediaposting")) return harvestContentText(node) !== undefined;
-  // socialmediaposting only, off-pin or no articleBody → not content-bearing.
-  return false;
+  const out: string[] = [];
+  if (ctypes.length === 0) return out;
+  if (isPinDetail && ctypes.includes("socialmediaposting") && typeof node.articleBody === "string" && node.articleBody.trim().length > 0) out.push("socialmediaposting");
+  for (const t of ctypes) {
+    if (t === "socialmediaposting") continue;
+    if (harvestContentText({ ...node, "@type": t }) !== undefined) out.push(t); // per-type field check
+  }
+  return out;
+}
+
+function nodeIsContentBearing(node: Record<string, unknown>, isPinDetail: boolean): boolean {
+  return contentBearingTypesOf(node, isPinDetail).length > 0;
 }
 
 /** Iteratively flatten nested arrays, ORDER-PRESERVING + O(n). Array WRAPPERS are containers, not
@@ -120,14 +127,14 @@ function collectContentTypes(value: unknown, isPinDetail: boolean, depth: number
   for (const item of flattenArrays(value)) {
     if (!isRecord(item) || seen.has(item)) continue;
     seen.add(item);
-    const bearing = nodeIsContentBearing(item, isPinDetail);
-    if (bearing) {
-      for (const t of shortTypes(item)) if (CONTENT_TYPES.has(t)) types.push(t);
-    }
+    // Only the HARVESTABLE type(s) — not every CONTENT_TYPES type on the node — so a field-less
+    // co-type (a [SocialMediaPosting, Product] pin via articleBody) doesn't misclassify as 'product'.
+    const bearingTypes = contentBearingTypesOf(item, isPinDetail);
+    for (const t of bearingTypes) types.push(t);
     // A content-bearing node is TERMINAL for classification (its own type is primary) — do NOT descend
     // its @graph or related links (an Article carrying its own @graph:[Product] stays 'article'). A
     // wrapper (non-bearing) descends @graph (flat expansion) + the nested links to find content.
-    if (!bearing) {
+    if (bearingTypes.length === 0) {
       collectContentTypes(item["@graph"], isPinDetail, depth + 1, seen, types);
       for (const key of NESTED_CONTENT_LINKS) collectContentTypes(item[key], isPinDetail, depth + 1, seen, types);
     }
