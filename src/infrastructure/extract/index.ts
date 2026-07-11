@@ -58,6 +58,7 @@ export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
     text,
     structured: metadata.structured,
     contentType: input.contentType,
+    url: input.url,
   });
 
   return {

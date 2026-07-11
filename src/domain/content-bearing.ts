@@ -1,78 +1,161 @@
-// Content-bearing structured-data predicate: does the JSON-LD carry content an agent can use
-// WITHOUT rendering? Shared by the shell-gate (Tier-1 → render escalation) and content-quality
-// (low_value exclusion) so the two NEVER drift on what counts as "real content" (#159 codex).
-// Pure domain — operates only on the parsed structured data (no infra imports).
+// Content-bearing predicate + lead harvest for the shell-gate's JSON-LD path and the low_value
+// exclusion (#152; next step — and partial reversal — of #109). Pure domain.
 //
-// A node is content-bearing if it is a real data node (any @type that isn't ONLY scaffolding, OR
-// any data key beyond @context/@id/@graph), OR — if it IS scaffolding-only (WebPage/WebSite/…) —
-// it carries a non-empty content property (description/articleBody/…) or an inline content entity
-// (mainEntity/about/hasPart/…). `null`/`[]`/`{}`/a context-only node do NOT count (#81/#109).
+// A JSON-LD node is content-bearing iff it declares a @type in CONTENT_TYPES AND carries a
+// harvestable content field (harvestContentText yields non-empty) — OR a nested content-bearing
+// entity is reachable via @graph / mainEntity / mainEntityOfPage / about / subject / hasPart /
+// itemListElement. ALLOWLIST (CONTENT_TYPES) at the trust boundary, not blocklist: scaffolding
+// (WebPage/WebSite/…), @type-less nodes, and metadata types (Organization/Person/Offer/
+// VideoObject/…) do NOT satisfy even with a description — so a JS-rendered listing page whose
+// static HTML carries only metadata JSON-LD escalates to render instead of stopping at an empty
+// Tier-1 (the StartupJobs/NoFluffJobs bug).
+//
+// The gate (hasContentBearingJsonLd) and the Tier-1 lead harvest (firstContentHarvest) SHARE one
+// walk (findFirstContentNode) so the invariant "gate satisfied ⇒ non-empty harvest" holds by
+// construction for every non-social type. socialmediaposting is gate-scoped to pin-detail pages
+// (isPinDetail) and harvested by tier1-payload's Pass 2, not here.
+import { CONTENT_TYPES, shortTypes, shortSchemaType, NESTED_CONTENT_LINKS } from "./content-types.ts";
+import { harvestContentText } from "./content-harvest.ts";
 
-/** Normalize a schema.org @type to its short lowercase form (e.g. "jobposting"), flattening full
- *  IRI forms (https://schema.org/WebPage → webpage). Exported (an early `export` also lets
- *  `node --check` detect this import-free module as ESM + apply type-stripping). */
-export function shortSchemaType(value: string): string {
-  const lower = value.toLowerCase().replace(/^https?:\/\/schema\.org\//, "").replace(/\/+$/, "");
-  return lower.includes("/") ? lower.slice(lower.lastIndexOf("/") + 1) : lower;
+export { shortSchemaType, NESTED_CONTENT_LINKS } from "./content-types.ts"; // back-compat re-export
+
+/** Cap on chained wrapper descent (mainEntity/about/subject/hasPart/itemListElement). Guards cycles. */
+export const MAX_NESTED_DEPTH = 4;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** @type values that are page-structure METADATA, not content. A node typed ONLY as one of these
- *  is "scaffolding" — it labels the page (name/url) but carries no body content, so it must not
- *  satisfy the shell-gate / low_value-exclude on its own. Data types (Article/Product/JobPosting/…)
- *  and nodes with a content property still count. */
-const SCAFFOLDING_TYPES = new Set([
-  "webpage", "website", "collectionpage", "searchresultspage", "itempage",
-  "breadcrumblist", "sitenavigationelement", "aboutpage", "contactpage", "profilepage",
-]);
-
-/** schema.org text properties whose non-empty value means real body content. */
-const CONTENT_PROPERTIES = new Set(["description", "articleBody", "text", "headline", "abstract", "caption", "body"]);
-
-function nodeTypes(node: Record<string, unknown>): string[] {
-  const type = node["@type"];
-  const raw = typeof type === "string" ? [type] : Array.isArray(type) ? type.filter((t): t is string => typeof t === "string") : [];
-  return raw.map(shortSchemaType);
-}
-
-/** A node typed ONLY with scaffolding @types (e.g. WebPage) — needs a content property or nested
- *  entity to count. */
-function isScaffoldingOnly(node: Record<string, unknown>): boolean {
-  const types = nodeTypes(node);
-  return types.length > 0 && types.every((t) => SCAFFOLDING_TYPES.has(t));
-}
-
-function hasNonEmptyContentProp(node: Record<string, unknown>): boolean {
-  return Object.entries(node).some(
-    ([key, value]) => CONTENT_PROPERTIES.has(key) && typeof value === "string" && value.trim().length > 0,
-  );
-}
-
-/** schema.org properties that link a page-wrapper (WebPage/…) to its primary inline content entity.
- *  A URL string here is a reference, not content — only inline objects are followed. */
-const NESTED_CONTENT_LINKS = ["mainEntity", "mainEntityOfPage", "about", "subject", "hasPart"];
-/** Cap on chained scaffolding-wrapper descent (mainEntity → …) — guards isPartOf/hasPart cycles. */
-const MAX_NESTED_DEPTH = 4;
-
-/** Whether JSON-LD actually carries content an agent can use WITHOUT rendering — a typed node or a
- *  real data property. Recurses arrays and @graph. A scaffolding-only node (WebPage/WebSite/…)
- *  counts with a non-empty content property OR a content-bearing nested entity (#109). */
-export function hasContentBearingJsonLd(jsonLd: unknown, depth = 0): boolean {
-  if (Array.isArray(jsonLd)) return jsonLd.some((n) => hasContentBearingJsonLd(n, depth));
-  if (!jsonLd || typeof jsonLd !== "object") return false;
-  const node = jsonLd as Record<string, unknown>;
-  if (hasContentBearingJsonLd(node["@graph"], depth)) return true;
-  if (isScaffoldingOnly(node)) {
-    return hasNonEmptyContentProp(node) || hasNestedContent(node, depth);
+/** A single node is content-bearing: a CONTENT_TYPES @type WITH a non-trivial content field.
+ *  socialmediaposting requires a pin-detail page (isPinDetail) + a non-empty articleBody. */
+/** The specific CONTENT_TYPES @types that make `node` content-bearing — field-gated PER TYPE
+ *  (mirror nodeIsContentBearing): a pin-detail page's socialmediaposting articleBody caption, and/or
+ *  each non-social type that has a harvestable field. Used by the classifier so it advertises ONLY
+ *  the harvestable type(s) — a co-typed [SocialMediaPosting, Product] pin accepted via articleBody
+ *  yields ['socialmediaposting'] (→ 'pin' via isPinHost), NOT the field-less 'product' (codex). */
+function contentBearingTypesOf(node: Record<string, unknown>, isPinDetail: boolean): string[] {
+  const ctypes = shortTypes(node).filter((t) => CONTENT_TYPES.has(t));
+  const out: string[] = [];
+  if (ctypes.length === 0) return out;
+  if (isPinDetail && ctypes.includes("socialmediaposting") && typeof node.articleBody === "string" && node.articleBody.trim().length > 0) out.push("socialmediaposting");
+  for (const t of ctypes) {
+    if (t === "socialmediaposting") continue;
+    if (harvestContentText({ ...node, "@type": t }) !== undefined) out.push(t); // per-type field check
   }
-  // A real node declares a @type or carries a data property beyond @context/@id/@graph.
-  return Object.keys(node).some((key) => key !== "@context" && key !== "@id" && key !== "@graph");
+  return out;
 }
 
-function hasNestedContent(node: Record<string, unknown>, depth: number): boolean {
-  if (depth >= MAX_NESTED_DEPTH) return false;
-  return NESTED_CONTENT_LINKS.some((key) => {
-    const value = node[key];
-    return value !== undefined && value !== null && typeof value === "object"
-      && hasContentBearingJsonLd(value as Record<string, unknown>, depth + 1);
-  });
+function nodeIsContentBearing(node: Record<string, unknown>, isPinDetail: boolean): boolean {
+  return contentBearingTypesOf(node, isPinDetail).length > 0;
+}
+
+/** Iteratively flatten nested arrays, ORDER-PRESERVING + O(n). Array WRAPPERS are containers, not
+ *  semantic nesting — they must NOT consume the depth budget (the extractJsonLd multi-script shape
+ *  [[{@graph:[…]}, …], node] has several array layers before content; recursing them at depth+1
+ *  exhausted MAX_NESTED_DEPTH on the wrappers). Explicit-stack DFS: order-preserving (document order
+ *  — the first content node / first pin caption stays first), O(n) time, no array shifting, no
+ *  call-stack growth (a deep/wide array of distinct wrappers can't overflow or stall the loop) (codex). */
+function flattenArrays(value: unknown): unknown[] {
+  const out: unknown[] = [];
+  const stack: Array<{ arr: unknown[]; i: number }> = [];
+  let arr: unknown[] = Array.isArray(value) ? value : [value];
+  let i = 0;
+  while (stack.length > 0 || i < arr.length) {
+    if (i >= arr.length) { const f = stack.pop()!; arr = f.arr; i = f.i; continue; } // resume parent
+    const v = arr[i++];
+    if (Array.isArray(v)) { stack.push({ arr, i }); arr = v; i = 0; } // descend into the nested array
+    else out.push(v);
+  }
+  return out;
+}
+
+/** Shared walk: the first content-bearing node reachable from `value` (flattened arrays, @graph, and
+ *  the nested-content links). Only @graph / nested-links consume depth (semantic descent); array
+ *  wrappers are flattened iteratively (no depth cost). `allowSocial` includes socialmediaposting. */
+function findFirstContentNode(
+  value: unknown, isPinDetail: boolean, allowSocial: boolean, depth: number, seen: Set<Record<string, unknown>>,
+): Record<string, unknown> | undefined {
+  if (depth >= MAX_NESTED_DEPTH) return undefined; // caps @graph / nested-link descent (arrays flatten, don't recurse)
+  for (const item of flattenArrays(value)) {
+    if (!isRecord(item) || seen.has(item)) continue;
+    seen.add(item);
+    const ctypes = shortTypes(item).filter((t) => CONTENT_TYPES.has(t));
+    // "Social-only" = socialmediaposting is the node's ONLY content type → skipped for the lead
+    // (allowSocial=false; Pass 2 owns the caption). A CO-TYPED [SocialMediaPosting, Article] is NOT
+    // social-only → included (its Article is harvested; gate⇒non-empty) (codex).
+    const isSocialOnly = ctypes.length > 0 && ctypes.every((t) => t === "socialmediaposting");
+    if ((!isSocialOnly || allowSocial) && nodeIsContentBearing(item, isPinDetail)) return item;
+    const graph = findFirstContentNode(item["@graph"], isPinDetail, allowSocial, depth + 1, seen);
+    if (graph) return graph;
+    for (const key of NESTED_CONTENT_LINKS) {
+      const nested = findFirstContentNode(item[key], isPinDetail, allowSocial, depth + 1, seen);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+/** Whether JSON-LD carries content an agent can use WITHOUT rendering (the shell-gate's
+ *  structured-data path). `isPinDetail` scopes socialmediaposting to pin-detail pages. */
+export function hasContentBearingJsonLd(jsonLd: unknown, isPinDetail = false): boolean {
+  return findFirstContentNode(jsonLd, isPinDetail, true, 0, new Set()) !== undefined;
+}
+
+/** The first non-social content node's harvestable text (the Tier-1 result.text lead). Mirrors
+ *  the gate's walk so gate-satisfied ⇒ non-empty (for non-social types). `forLead` skips an
+ *  Article's `articleBody` to avoid duplicating the visible body — but the caller passes forLead =
+ *  hasVisibleText, so an articleBody-only shell with NO visible text still leads with articleBody
+ *  (gate⇒non-empty holds). undefined if none. */
+export function firstContentHarvest(jsonLd: unknown, isPinDetail = false, forLead = true): string | undefined {
+  const node = findFirstContentNode(jsonLd, isPinDetail, false, 0, new Set());
+  return node ? harvestContentText(node, { forLead }) : undefined;
+}
+
+/** The (capped) CONTENT_TYPES @types of every content-bearing node reachable from jsonLd — the SAME
+ *  walk + content-bearing notion as `hasContentBearingJsonLd`, so the contentType classifier mirrors
+ *  the gate exactly: capped @type, field-required (a name-only `Movie` the gate rejects is NOT
+ *  collected), nested-link descent. The classifier's content type therefore never advertises content
+ *  the gate ignored (#152, codex). */
+export function contentBearingTypes(jsonLd: unknown, isPinDetail = false): string[] {
+  const types: string[] = [];
+  collectContentTypes(jsonLd, isPinDetail, 0, new Set(), types);
+  return types;
+}
+
+function collectContentTypes(value: unknown, isPinDetail: boolean, depth: number, seen: Set<Record<string, unknown>>, types: string[]): void {
+  if (depth >= MAX_NESTED_DEPTH) return; // caps @graph / nested descent (arrays flatten, don't consume depth)
+  for (const item of flattenArrays(value)) {
+    if (!isRecord(item) || seen.has(item)) continue;
+    seen.add(item);
+    // Only the HARVESTABLE type(s) — not every CONTENT_TYPES type on the node — so a field-less
+    // co-type (a [SocialMediaPosting, Product] pin via articleBody) doesn't misclassify as 'product'.
+    const bearingTypes = contentBearingTypesOf(item, isPinDetail);
+    for (const t of bearingTypes) types.push(t);
+    // A content-bearing node is TERMINAL for classification (its own type is primary) — do NOT descend
+    // its @graph or related links (an Article carrying its own @graph:[Product] stays 'article'). A
+    // wrapper (non-bearing) descends @graph (flat expansion) + the nested links to find content.
+    if (bearingTypes.length === 0) {
+      collectContentTypes(item["@graph"], isPinDetail, depth + 1, seen, types);
+      for (const key of NESTED_CONTENT_LINKS) collectContentTypes(item[key], isPinDetail, depth + 1, seen, types);
+    }
+  }
+}
+
+/** Every SocialMediaPosting node reachable from jsonLd (top-level, @graph, AND the nested-content
+ *  links — depth-capped + cycle-guarded) — so the pin-caption lead finds a caption nested behind a
+ *  wrapper (WebPage.mainEntity → SocialMediaPosting), not just top-level/@graph ones (#152, codex). */
+export function collectPostingNodes(jsonLd: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  walkPostings(jsonLd, 0, new Set(), out);
+  return out;
+}
+function walkPostings(value: unknown, depth: number, seen: Set<Record<string, unknown>>, out: Record<string, unknown>[]): void {
+  if (depth >= MAX_NESTED_DEPTH) return; // arrays flatten (don't consume depth); @graph/nested do
+  for (const item of flattenArrays(value)) {
+    if (!isRecord(item) || seen.has(item)) continue;
+    seen.add(item);
+    if (shortTypes(item).includes("socialmediaposting")) out.push(item);
+    walkPostings(item["@graph"], depth + 1, seen, out);
+    for (const key of NESTED_CONTENT_LINKS) walkPostings(item[key], depth + 1, seen, out);
+  }
 }

@@ -986,7 +986,9 @@ test("malformed.html returns partial structured data instead of throwing", () =>
     name: "Recovered",
   });
   assert.equal(extraction.text, "Recovered body text despite missing closing tags");
-  assert.equal(extraction.shellGate.reason, "structured-data-found");
+  // #152: the recovered JSON-LD is a `Thing` node (not a CONTENT_TYPES data type), so it no longer
+  // satisfies the shell-gate; the page resolves at Tier-1 via its VISIBLE text (content-present).
+  assert.equal(extraction.shellGate.reason, "content-present");
 });
 
 test("Tier-1 use case returns Result-compatible structured data and shell evidence", async () => {

@@ -1,4 +1,5 @@
 import { ipVersion, isPrivate } from "../../domain/policy.ts";
+import { shortSchemaType } from "../../domain/content-types.ts";
 import { findStartTags } from "./html.ts";
 
 /**
@@ -104,15 +105,6 @@ function isImageObject(node: Record<string, unknown>): boolean {
   const type = node["@type"];
   const types = Array.isArray(type) ? type.map(String) : type === undefined ? [] : [String(type)];
   return types.some((t) => shortSchemaType(t) === "imageobject");
-}
-
-/** Normalize a schema.org @type to its short lowercase form (e.g. "imageobject"). Strips a
- *  leading schema.org IRI prefix and trailing slashes, then keeps the last path segment — so
- *  "WebPage", "https://schema.org/WebPage", and "https://schema.org/WebPage/" all → "webpage".
- *  Shared with the shell-gate. */
-export function shortSchemaType(value: string): string {
-  const lower = value.toLowerCase().replace(/^https?:\/\/schema\.org\//, "").replace(/\/+$/, "");
-  return lower.includes("/") ? lower.slice(lower.lastIndexOf("/") + 1) : lower;
 }
 
 /** Accept a bare URL string, an ImageObject `{url|contentUrl}`, or a list of either. */

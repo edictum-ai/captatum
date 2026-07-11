@@ -1,42 +1,18 @@
 import type { Output } from "../../domain/tier.ts";
 import type { StructuredData } from "../../domain/platform.ts";
 import { stripHtmlTags } from "../../infrastructure/extract/html.ts";
-import { isPinDetailPage } from "../classify.ts";
+import { shortTypes, CONTENT_TYPES } from "../../domain/content-types.ts";
+import { firstContentHarvest, collectPostingNodes } from "../../domain/content-bearing.ts";
+import { harvestContentText } from "../../domain/content-harvest.ts";
+import { isPinDetailPage } from "../../domain/pin-url.ts";
 
-/**
- * JSON-LD schema.org types whose `name`/`headline`/`title` reliably IS the page's
- * subject (job/article/product). For these the structured-data title is more
- * specific than `<title>` — e.g. an Ashby iframe reports `<title>Careers — E2B
- * </title>` while its JobPosting JSON-LD carries the real title. Organization/
- * WebSite are excluded so a homepage `<title>` beats a generic org name.
- * SocialMediaPosting is intentionally NOT here: a social post is frequently an
- * embed on an unrelated page, not the subject — surfacing a pin's caption is
- * handled separately in leadDescription (pass 2) so it can never steal the title.
- */
-const CONTENT_TITLE_TYPES = new Set([
-  "jobposting", "article", "newsarticle", "blogposting", "techarticle",
-  "scholarlyarticle", "report", "product", "event", "recipe", "course",
-  "review", "webapplication", "softwareapplication", "videoobject",
-  "musicrecording", "book",
-]);
-
-/** Normalize a schema.org @type to its short lowercase form (e.g. "jobposting"). */
-function shortSchemaType(value: string): string {
-  const lower = value.toLowerCase().replace(/^https?:\/\/schema\.org\//, "");
-  return lower.includes("/") ? lower.slice(lower.lastIndexOf("/") + 1) : lower;
-}
-
-/** Short lowercase schema.org @types on a node (short, full-IRI, and array forms). */
-function shortTypes(node: Record<string, unknown> | null): string[] {
-  if (!node) return [];
-  const type = node["@type"];
-  const types = Array.isArray(type) ? type.map(String) : type === undefined ? [] : [String(type)];
-  return types.map(shortSchemaType);
-}
-
-/** A node whose @type is a page-subject type (job/article/product/pin/...). */
+/** A node whose @type is a content type — the shared CONTENT_TYPES set (the gate set == the
+ *  harvester set == the classifier superset; #152), EXCEPT socialmediaposting: an embedded post
+ *  is frequently NOT the page's title subject (it's pin-caption content, handled by Pass 2), so
+ *  title derivation skips it (matches the old CONTENT_TITLE_TYPES that intentionally excluded it).
+ *  Used for the title-derivation walk + the Pass-2 "higher content" suppression. */
 export function isContentNode(node: Record<string, unknown> | null): boolean {
-  return shortTypes(node).some((t) => CONTENT_TITLE_TYPES.has(t));
+  return shortTypes(node).some((t) => t !== "socialmediaposting" && CONTENT_TYPES.has(t));
 }
 
 /** Treat a value as an array (undefined → [], non-array → [value]). */
@@ -86,24 +62,30 @@ export function candidateNodes(jsonLd: unknown): Record<string, unknown>[] {
  * an article, a landing page, a board/profile, or a lookalike host can never lead.
  * An Article's articleBody equals its visible body, so it is never used as a lead.
  */
-function leadDescription(structured: StructuredData, url: string): string | undefined {
+function leadDescription(structured: StructuredData, url: string, hasVisibleText: boolean): string | undefined {
   if (!structured.jsonLd) return undefined;
+  // Pass 1: the first content node's harvestable text (#152 widens this per-type — Review.reviewBody,
+  // FAQPage Q&As, HowTo steps, JobPosting.title, Article.articleBody/headline, …). forLead = hasVisibleText:
+  // when there IS visible text, an Article's articleBody is skipped (it duplicates the body); when there
+  // is NOT, articleBody is led with (gate⇒non-empty for an articleBody-only shell). firstContentHarvest
+  // mirrors the shell-gate's walk. SocialMediaPosting is skipped here (Pass 2 owns the pin-caption harvest).
+  const lead = firstContentHarvest(structured.jsonLd, false, hasVisibleText);
+  if (lead) return stripHtml(lead);
   const nodes = candidateNodes(structured.jsonLd);
-  // Pass 1: a real description lead from any content node (concise, non-dominating).
-  for (const node of nodes) {
-    if (!isContentNode(node)) continue;
-    const desc = node?.description;
-    if (typeof desc === "string" && desc.length > 50) return stripHtml(desc);
-  }
   // Pass 2: a pin's caption, only on an actual pin detail page whose only content
   // node is the post itself. A higher-priority content node suppresses the fallback
   // — but a co-typed post (e.g. @type ["SocialMediaPosting","Article"]) is the pin,
-  // so exclude social postings from the suppression.
-  const hasHigherContent = nodes.some(
-    (n) => isContentNode(n) && !shortTypes(n).includes("socialmediaposting"),
-  );
+  // so exclude social postings from the suppression. FIELD-GATED (audit): a sibling counts as
+  // "higher content" only if it is non-social content-typed AND harvestable — a field-less
+  // {Product, name+image} (no description) must NOT suppress the caption (else gate⇒empty).
+  const hasHigherContent = nodes.some((n) => {
+    const ts = shortTypes(n);
+    return ts.some((t) => t !== "socialmediaposting" && CONTENT_TYPES.has(t)) && harvestContentText(n) !== undefined;
+  });
   if (!isPinDetailPage(url) || hasHigherContent) return undefined;
-  const postings = nodes.filter((n) => shortTypes(n).includes("socialmediaposting"));
+  // Nested-aware: a pin caption can sit behind a wrapper (WebPage.mainEntity → SocialMediaPosting),
+  // not just at top-level/@graph, so search the whole reachable graph (codex).
+  const postings = collectPostingNodes(structured.jsonLd);
   // Prefer the posting that IS this pin (its url/mainEntityOfPage references the
   // fetched pin id) over a related/embedded pin; fall back to the first posting.
   const pinId = pinIdFromUrl(url);
@@ -137,11 +119,20 @@ function referencesPinId(node: Record<string, unknown> | undefined, pinId: strin
   return refs.some((r) => isPinDetailPage(r) && pinIdFromUrl(r) === pinId);
 }
 
+/** Whether the visible text is substantial (a real body, not a few chars of shell boilerplate like
+ *  "Loading" / nav crumbs) — mirrors the shell-gate's hasContent notion. Used to decide whether an
+ *  Article's articleBody would duplicate the body: only substantial visible text suppresses it, so a
+ *  thin shell still leads with articleBody (gate⇒non-empty) (codex). */
+function hasSubstantialText(text: string): boolean {
+  const t = text.trim();
+  return t.length >= 80 || t.split(/\s+/).filter(Boolean).length >= 12;
+}
+
 /** Shape the Tier-1 output string for the requested output mode. */
 export function buildPayload(output: Output, structured: StructuredData, text: string, url: string): string {
   if (output === "extract") return JSON.stringify(structured, null, 2);
   const parts: string[] = [];
-  const desc = leadDescription(structured, url);
+  const desc = leadDescription(structured, url, hasSubstantialText(text));
   if (desc) parts.push(desc);
   if (text) parts.push(text);
   return parts.join("\n\n");
