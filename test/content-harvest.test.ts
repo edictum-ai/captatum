@@ -115,11 +115,20 @@ test("#152 codex: a deeply-nested @graph chain is depth-capped (no stack overflo
   assert.equal(hasContentBearingJsonLd(node), false, "depth-capped: the deep node past MAX_NESTED_DEPTH is not reached");
 });
 
-test("#152 codex: a deeply-nested ARRAY chain is depth-capped (no stack overflow)", () => {
-  // [[[[…{Article}…]]]] — nested array wrappers (distinct, not a cycle) must be capped too.
+test("#152 codex: array wrappers flatten, not consume depth (deep array reaches content, no overflow)", () => {
+  // 100-deep [[[…{Article}…]]] — arrays are CONTAINERS, flattened iteratively (no stack growth, no
+  // depth cost), so the Article IS reached. (codex: arrays must not exhaust MAX_NESTED_DEPTH.)
   let node: unknown = { "@type": "Article", headline: "deep" };
   for (let i = 0; i < 100; i++) node = [node];
-  assert.equal(hasContentBearingJsonLd(node), false, "array-chain depth-capped: the deep node is not reached");
+  assert.equal(hasContentBearingJsonLd(node), true, "content reached through deep array wrappers (no overflow)");
+});
+
+test("#152 codex: the multi-script extractJsonLd shape [[{@graph:[…]}, …], node] reaches content", () => {
+  // Several array layers before content; arrays flatten (don't consume depth), so the Article is
+  // reached within budget + classified (was: arrays ate the depth → content looked absent → render).
+  const multiScript = [[{ "@graph": [{ "@type": "Article", headline: "real story" }] }, { "@type": "BreadcrumbList" }], { "@type": "WebSite", name: "x" }];
+  assert.equal(hasContentBearingJsonLd(multiScript), true, "multi-script array wrappers don't hide content");
+  assert.equal(classifyContentType(base({ finalUrl: "https://x.test/p", structured: { jsonLd: multiScript } })), "article");
 });
 
 test("#152 codex: a nested pin caption (WebPage.mainEntity → SocialMediaPosting) is harvested", () => {

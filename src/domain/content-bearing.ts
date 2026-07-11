@@ -41,39 +41,44 @@ function nodeIsContentBearing(node: Record<string, unknown>, isPinDetail: boolea
   return isPinDetail && typeof node.articleBody === "string" && node.articleBody.trim().length > 0;
 }
 
-/** Shared walk: the first content-bearing node reachable from `value` (arrays, @graph, and the
- *  nested-content links, depth-capped + object-identity cycle-guarded). `allowSocial` includes
- *  socialmediaposting (the gate does; the Pass-1 lead harvest does not — Pass 2 owns it). */
+/** Iteratively flatten nested arrays (order-preserving). Array WRAPPERS are containers, not semantic
+ *  nesting — they must NOT consume the depth budget (the extractJsonLd multi-script shape
+ *  [[{@graph:[…]}, …], node] has several array layers before any content; recursing them at depth+1
+ *  exhausted MAX_NESTED_DEPTH on the wrappers, so a normal multi-script page's content looked absent).
+ *  Iterative flattening bounds array recursion without stack growth (codex). */
+function flattenArrays(value: unknown): unknown[] {
+  const queue: unknown[] = Array.isArray(value) ? [...value] : [value];
+  const out: unknown[] = [];
+  for (let i = 0; i < queue.length; i++) {
+    const v = queue[i];
+    if (Array.isArray(v)) for (const e of v) queue.push(e);
+    else out.push(v);
+  }
+  return out;
+}
+
+/** Shared walk: the first content-bearing node reachable from `value` (flattened arrays, @graph, and
+ *  the nested-content links). Only @graph / nested-links consume depth (semantic descent); array
+ *  wrappers are flattened iteratively (no depth cost). `allowSocial` includes socialmediaposting. */
 function findFirstContentNode(
   value: unknown, isPinDetail: boolean, allowSocial: boolean, depth: number, seen: Set<Record<string, unknown>>,
 ): Record<string, unknown> | undefined {
-  // TOP depth guard (codex): caps array / @graph / nested-link recursion UNIFORMLY. Without it a
-  // chain of distinct array/@graph wrappers (not a cycle, so `seen` doesn't help) recurses forever
-  // and overflows the stack on untrusted JSON-LD. Content nested ≥ MAX_NESTED_DEPTH isn't reached
-  // (a safe extra render, never a crash).
-  if (depth >= MAX_NESTED_DEPTH) return undefined;
-  if (Array.isArray(value)) {
-    for (const v of value) {
-      const found = findFirstContentNode(v, isPinDetail, allowSocial, depth + 1, seen);
-      if (found) return found;
+  if (depth >= MAX_NESTED_DEPTH) return undefined; // caps @graph / nested-link descent (arrays flatten, don't recurse)
+  for (const item of flattenArrays(value)) {
+    if (!isRecord(item) || seen.has(item)) continue;
+    seen.add(item);
+    const ctypes = shortTypes(item).filter((t) => CONTENT_TYPES.has(t));
+    // "Social-only" = socialmediaposting is the node's ONLY content type → skipped for the lead
+    // (allowSocial=false; Pass 2 owns the caption). A CO-TYPED [SocialMediaPosting, Article] is NOT
+    // social-only → included (its Article is harvested; gate⇒non-empty) (codex).
+    const isSocialOnly = ctypes.length > 0 && ctypes.every((t) => t === "socialmediaposting");
+    if ((!isSocialOnly || allowSocial) && nodeIsContentBearing(item, isPinDetail)) return item;
+    const graph = findFirstContentNode(item["@graph"], isPinDetail, allowSocial, depth + 1, seen);
+    if (graph) return graph;
+    for (const key of NESTED_CONTENT_LINKS) {
+      const nested = findFirstContentNode(item[key], isPinDetail, allowSocial, depth + 1, seen);
+      if (nested) return nested;
     }
-    return undefined;
-  }
-  if (!isRecord(value)) return undefined;
-  if (seen.has(value)) return undefined;
-  seen.add(value);
-  const types = shortTypes(value);
-  // "Social-only" = socialmediaposting is the node's ONLY content type. Those are skipped for the
-  // lead (allowSocial=false; Pass 2 owns the pin caption). A CO-TYPED [SocialMediaPosting, Article]
-  // is NOT social-only → included, so its Article is harvested (gate⇒non-empty holds) (codex).
-  const ctypes = types.filter((t) => CONTENT_TYPES.has(t));
-  const isSocialOnly = ctypes.length > 0 && ctypes.every((t) => t === "socialmediaposting");
-  if ((!isSocialOnly || allowSocial) && nodeIsContentBearing(value, isPinDetail)) return value;
-  const graph = findFirstContentNode(value["@graph"], isPinDetail, allowSocial, depth + 1, seen);
-  if (graph) return graph;
-  for (const key of NESTED_CONTENT_LINKS) {
-    const nested = findFirstContentNode(value[key], isPinDetail, allowSocial, depth + 1, seen);
-    if (nested) return nested;
   }
   return undefined;
 }
@@ -106,21 +111,21 @@ export function contentBearingTypes(jsonLd: unknown, isPinDetail = false): strin
 }
 
 function collectContentTypes(value: unknown, isPinDetail: boolean, depth: number, seen: Set<Record<string, unknown>>, types: string[]): void {
-  if (depth >= MAX_NESTED_DEPTH) return; // top guard: caps array/@graph/nested uniformly (codex)
-  if (Array.isArray(value)) { for (const v of value) collectContentTypes(v, isPinDetail, depth + 1, seen, types); return; }
-  if (!isRecord(value) || seen.has(value)) return;
-  seen.add(value);
-  const bearing = nodeIsContentBearing(value, isPinDetail);
-  if (bearing) {
-    for (const t of shortTypes(value)) if (CONTENT_TYPES.has(t)) types.push(t);
-  }
-  // A content-bearing node is TERMINAL for classification (its own type is primary) — do NOT descend
-  // its @graph or related links (mirrors findFirstContentNode's first-found; an Article carrying its
-  // own @graph:[Product] stays 'article'). A wrapper (non-bearing) descends @graph (flat expansion)
-  // + the nested links to find content (audit).
-  if (!bearing) {
-    collectContentTypes(value["@graph"], isPinDetail, depth + 1, seen, types);
-    for (const key of NESTED_CONTENT_LINKS) collectContentTypes(value[key], isPinDetail, depth + 1, seen, types);
+  if (depth >= MAX_NESTED_DEPTH) return; // caps @graph / nested descent (arrays flatten, don't consume depth)
+  for (const item of flattenArrays(value)) {
+    if (!isRecord(item) || seen.has(item)) continue;
+    seen.add(item);
+    const bearing = nodeIsContentBearing(item, isPinDetail);
+    if (bearing) {
+      for (const t of shortTypes(item)) if (CONTENT_TYPES.has(t)) types.push(t);
+    }
+    // A content-bearing node is TERMINAL for classification (its own type is primary) — do NOT descend
+    // its @graph or related links (an Article carrying its own @graph:[Product] stays 'article'). A
+    // wrapper (non-bearing) descends @graph (flat expansion) + the nested links to find content.
+    if (!bearing) {
+      collectContentTypes(item["@graph"], isPinDetail, depth + 1, seen, types);
+      for (const key of NESTED_CONTENT_LINKS) collectContentTypes(item[key], isPinDetail, depth + 1, seen, types);
+    }
   }
 }
 
@@ -133,11 +138,12 @@ export function collectPostingNodes(jsonLd: unknown): Record<string, unknown>[] 
   return out;
 }
 function walkPostings(value: unknown, depth: number, seen: Set<Record<string, unknown>>, out: Record<string, unknown>[]): void {
-  if (depth >= MAX_NESTED_DEPTH) return;
-  if (Array.isArray(value)) { for (const v of value) walkPostings(v, depth + 1, seen, out); return; } // recurse nested arrays (extractJsonLd nests multi-script as [[nodes], node])
-  if (!isRecord(value) || seen.has(value)) return;
-  seen.add(value);
-  if (shortTypes(value).includes("socialmediaposting")) out.push(value);
-  walkPostings(value["@graph"], depth + 1, seen, out);
-  for (const key of NESTED_CONTENT_LINKS) walkPostings(value[key], depth + 1, seen, out);
+  if (depth >= MAX_NESTED_DEPTH) return; // arrays flatten (don't consume depth); @graph/nested do
+  for (const item of flattenArrays(value)) {
+    if (!isRecord(item) || seen.has(item)) continue;
+    seen.add(item);
+    if (shortTypes(item).includes("socialmediaposting")) out.push(item);
+    walkPostings(item["@graph"], depth + 1, seen, out);
+    for (const key of NESTED_CONTENT_LINKS) walkPostings(item[key], depth + 1, seen, out);
+  }
 }
