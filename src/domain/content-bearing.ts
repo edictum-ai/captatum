@@ -41,20 +41,22 @@ function nodeIsContentBearing(node: Record<string, unknown>, isPinDetail: boolea
   return isPinDetail && typeof node.articleBody === "string" && node.articleBody.trim().length > 0;
 }
 
-/** Iteratively flatten nested arrays, ORDER-PRESERVING (document order — the first content node /
- *  first pin caption must stay first). Array WRAPPERS are containers, not semantic nesting — they
- *  must NOT consume the depth budget (the extractJsonLd multi-script shape [[{@graph:[…]}, …], node]
- *  has several array layers before content; recursing them at depth+1 exhausted MAX_NESTED_DEPTH on
- *  the wrappers). Iterative DFS via an explicit stack bounds array recursion without call-stack
- *  growth (codex); splice-in-place keeps it order-preserving (appending to a queue was breadth-first). */
+/** Iteratively flatten nested arrays, ORDER-PRESERVING + O(n). Array WRAPPERS are containers, not
+ *  semantic nesting — they must NOT consume the depth budget (the extractJsonLd multi-script shape
+ *  [[{@graph:[…]}, …], node] has several array layers before content; recursing them at depth+1
+ *  exhausted MAX_NESTED_DEPTH on the wrappers). Explicit-stack DFS: order-preserving (document order
+ *  — the first content node / first pin caption stays first), O(n) time, no array shifting, no
+ *  call-stack growth (a deep/wide array of distinct wrappers can't overflow or stall the loop) (codex). */
 function flattenArrays(value: unknown): unknown[] {
-  const queue: unknown[] = Array.isArray(value) ? [...value] : [value];
   const out: unknown[] = [];
-  for (let i = 0; i < queue.length;) {
-    const v = queue[i];
-    if (Array.isArray(v)) { queue.splice(i, 1, ...v); continue; } // unwrap IN PLACE → order-preserving
-    out.push(v);
-    i++;
+  const stack: Array<{ arr: unknown[]; i: number }> = [];
+  let arr: unknown[] = Array.isArray(value) ? value : [value];
+  let i = 0;
+  while (stack.length > 0 || i < arr.length) {
+    if (i >= arr.length) { const f = stack.pop()!; arr = f.arr; i = f.i; continue; } // resume parent
+    const v = arr[i++];
+    if (Array.isArray(v)) { stack.push({ arr, i }); arr = v; i = 0; } // descend into the nested array
+    else out.push(v);
   }
   return out;
 }

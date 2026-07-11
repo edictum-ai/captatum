@@ -8,6 +8,7 @@ import { harvestContentText } from "../src/domain/content-harvest.ts";
 import { hasContentBearingJsonLd, firstContentHarvest } from "../src/domain/content-bearing.ts";
 import { classifyContentType } from "../src/application/classify.ts";
 import { buildPayload } from "../src/application/use-cases/tier1-payload.ts";
+import { preferredTitle } from "../src/application/use-cases/tier1-extract.ts";
 import type { Result } from "../src/domain/result.ts";
 import type { StructuredData } from "../src/domain/platform.ts";
 
@@ -136,6 +137,22 @@ test("#152 codex: flattenArrays preserves document order ([[article], job] → t
   // breadth-first flatten (the bug) yielded the JobPosting first; order-preserving flatten fixes it.
   const lead = firstContentHarvest([[{ "@type": "Article", headline: "first in doc order" }], { "@type": "JobPosting", title: "second" }]);
   assert.ok(lead && lead.includes("first in doc order"), `document-order first (Article) leads: ${lead}`);
+});
+
+test("#152 codex: many empty array wrappers flatten in linear time (no quadratic stall)", () => {
+  // 10k empty `[]` wrappers + an Article — splice-based flatten was O(n²) (shifted the array each
+  // iter); the explicit-stack DFS is O(n). Asserts it completes + reaches the Article (no stall).
+  const arr: unknown[] = Array.from({ length: 10_000 }, () => []);
+  arr.push({ "@type": "Article", headline: "after the empties" });
+  assert.equal(hasContentBearingJsonLd(arr), true, "10k empty arrays + Article: Article reached, no stall");
+});
+
+test("#152 codex: title derivation is field-gated (a name-only Movie doesn't supply the title)", () => {
+  // A gate-rejected {Movie, name} (no description) must not replace the page title — preferredTitle
+  // keeps the raw title (the Movie isn't content-bearing, so its name isn't trusted).
+  assert.equal(preferredTitle("Generic Page Title", { jsonLd: { "@type": "Movie", name: "Inception" } }), "Generic Page Title");
+  // …but a harvestable node still supplies the title.
+  assert.equal(preferredTitle("Generic", { jsonLd: { "@type": "JobPosting", title: "Platform Engineer" } }), "Platform Engineer");
 });
 
 test("#152 codex: a nested pin caption (WebPage.mainEntity → SocialMediaPosting) is harvested", () => {

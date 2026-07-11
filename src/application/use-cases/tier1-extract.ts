@@ -6,6 +6,7 @@ import { decodeBody, isHtmlContentType, isJsonContentType } from "../../infrastr
 import type { StructuredData } from "../../domain/platform.ts";
 import type { ShellGateEvidence } from "../../domain/shell-gate.ts";
 import { buildPayload, candidateNodes, isContentNode } from "./tier1-payload.ts";
+import { harvestContentText } from "../../domain/content-harvest.ts";
 
 /** REDOS-4: char budget for synchronous HTML extraction input. The scanners are
  *  O(n); 1M chars is far beyond any real page's structured-data region. */
@@ -165,6 +166,9 @@ function contentTitleFromJsonLd(jsonLd: unknown): string | undefined {
 
 function contentTitleOfNode(node: Record<string, unknown> | null): string | undefined {
   if (!node || !isContentNode(node)) return undefined;
+  // Field-gated (codex): a node the shell-gate REJECTS (e.g. a name-only {Movie} — no harvestable
+  // field) must not supply the page title. Mirror the gate's content-bearing notion.
+  if (harvestContentText(node) === undefined) return undefined;
   for (const key of ["title", "name", "headline"]) {
     const value = node[key];
     if (typeof value === "string" && value.trim()) return value.trim();
