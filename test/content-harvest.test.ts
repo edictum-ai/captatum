@@ -107,6 +107,14 @@ test("#152 codex: a deeply-nested ItemList chain is depth-capped (no stack overf
   assert.equal(out, undefined, "depth-capped: the step past MAX_SECTION_DEPTH is not reached");
 });
 
+test("#152 codex: a deeply-nested @graph chain is depth-capped (no stack overflow on untrusted JSON-LD)", () => {
+  // 100-deep {@graph:{@graph:…}} of distinct wrappers (not a cycle, so the `seen` set doesn't help) —
+  // the @graph recursion must increment depth so MAX_NESTED_DEPTH caps it (was: same-depth → overflow).
+  let node: unknown = { "@type": "Article", headline: "deep" };
+  for (let i = 0; i < 100; i++) node = { "@graph": node };
+  assert.equal(hasContentBearingJsonLd(node), false, "depth-capped: the deep node past MAX_NESTED_DEPTH is not reached");
+});
+
 test("#152 codex: an articleBody-only Article with no visible text still yields a non-empty Tier-1 (gate⇒harvest)", () => {
   // The gate counts articleBody (content-bearing); the lead must too when there's no visible text to
   // duplicate — else an empty shell with {Article, articleBody} would satisfy the gate but render empty.

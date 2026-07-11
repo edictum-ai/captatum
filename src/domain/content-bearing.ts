@@ -65,7 +65,10 @@ function findFirstContentNode(
   const isSocialOnly = ctypes.length > 0 && ctypes.every((t) => t === "socialmediaposting");
   if ((!isSocialOnly || allowSocial) && nodeIsContentBearing(value, isPinDetail)) return value;
   if (depth >= MAX_NESTED_DEPTH) return undefined;
-  const graph = findFirstContentNode(value["@graph"], isPinDetail, allowSocial, depth, seen);
+  // @graph recurses at depth+1 (codex): a chain of distinct {@graph:{@graph:…}} wrappers is genuine
+  // recursion (the `seen` set only guards cycles, not depth) — without the increment it bypasses
+  // MAX_NESTED_DEPTH and overflows the stack on untrusted JSON-LD.
+  const graph = findFirstContentNode(value["@graph"], isPinDetail, allowSocial, depth + 1, seen);
   if (graph) return graph;
   for (const key of NESTED_CONTENT_LINKS) {
     const nested = findFirstContentNode(value[key], isPinDetail, allowSocial, depth + 1, seen);
@@ -109,6 +112,6 @@ function collectContentTypes(value: unknown, isPinDetail: boolean, depth: number
     for (const t of shortTypes(value)) if (CONTENT_TYPES.has(t)) types.push(t);
   }
   if (depth >= MAX_NESTED_DEPTH) return;
-  collectContentTypes(value["@graph"], isPinDetail, depth, seen, types);
+  collectContentTypes(value["@graph"], isPinDetail, depth + 1, seen, types); // @graph: depth+1 (stack cap, codex)
   for (const key of NESTED_CONTENT_LINKS) collectContentTypes(value[key], isPinDetail, depth + 1, seen, types);
 }
