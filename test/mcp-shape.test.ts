@@ -162,14 +162,16 @@ test("tier none / render-unavailable with empty content is status fail", () => {
 });
 
 test("contentType handles @graph, @type arrays, full IRIs, and multi-type precedence", () => {
+  // (#152: classification is field-gated, mirroring the shell-gate — so each content node carries a
+  // harvestable field; the classification logic under test — @graph / arrays / IRIs / precedence — is unchanged.)
   // @graph + full IRI
   assert.equal(
-    buildStructuredContent(base({ structured: { jsonLd: { "@graph": [{ "@type": "https://schema.org/JobPosting" }] } } }), false).contentType,
+    buildStructuredContent(base({ structured: { jsonLd: { "@graph": [{ "@type": "https://schema.org/JobPosting", title: "Eng" }] } } }), false).contentType,
     "job",
   );
   // @type array: [Article, JobPosting] -> job wins by precedence (not array order)
   assert.equal(
-    buildStructuredContent(base({ structured: { jsonLd: { "@type": ["Article", "JobPosting"] } } }), false).contentType,
+    buildStructuredContent(base({ structured: { jsonLd: { "@type": ["Article", "JobPosting"], title: "Eng" } } }), false).contentType,
     "job",
   );
   // WebPage is NOT an article
@@ -180,7 +182,7 @@ test("contentType handles @graph, @type arrays, full IRIs, and multi-type preced
   // explicit JobPosting on a pinterest.* host wins over the pin heuristic
   assert.equal(
     buildStructuredContent(
-      base({ finalUrl: "https://www.pinterest.com/careers/1", structured: { jsonLd: { "@type": "JobPosting" } } }),
+      base({ finalUrl: "https://www.pinterest.com/careers/1", structured: { jsonLd: { "@type": "JobPosting", title: "Eng" } } }),
       false,
     ).contentType,
     "job",
@@ -201,7 +203,7 @@ test("render-failed-but-tier1-ok is a warning, not a fatal error", () => {
 
 test("successful extract carries the JSON result and still classifies contentType", () => {
   const shape = buildStructuredContent(
-    base({ output: "extract", result: JSON.stringify({ title: "Hello" }), structured: { jsonLd: { "@type": "Product" } } }),
+    base({ output: "extract", result: JSON.stringify({ title: "Hello" }), structured: { jsonLd: { "@type": "Product", description: "A widget." } } }),
     false,
   );
   assert.equal(shape.result, JSON.stringify({ title: "Hello" }));
@@ -305,9 +307,10 @@ test("summary that fell back to raw (provider none) is status partial", () => {
 });
 
 test("contentType classification: job / product / article / pin / spa", () => {
-  assert.equal(buildStructuredContent(base({ structured: { jsonLd: { "@type": "JobPosting" } } }), false).contentType, "job");
-  assert.equal(buildStructuredContent(base({ structured: { jsonLd: { "@type": "Product" } } }), false).contentType, "product");
-  assert.equal(buildStructuredContent(base({ structured: { jsonLd: { "@type": "NewsArticle" } } }), false).contentType, "article");
+  // (#152: classification is field-gated, mirroring the shell-gate — each content node carries a field.)
+  assert.equal(buildStructuredContent(base({ structured: { jsonLd: { "@type": "JobPosting", title: "Eng" } } }), false).contentType, "job");
+  assert.equal(buildStructuredContent(base({ structured: { jsonLd: { "@type": "Product", description: "A widget." } } }), false).contentType, "product");
+  assert.equal(buildStructuredContent(base({ structured: { jsonLd: { "@type": "NewsArticle", headline: "Story" } } }), false).contentType, "article");
   assert.equal(buildStructuredContent(base({ structured: { og: { "og:type": "article" } } }), false).contentType, "article");
   assert.equal(buildStructuredContent(base({ finalUrl: "https://www.pinterest.com/pin/123/" }), false).contentType, "pin");
   assert.equal(buildStructuredContent(base({ jsRequired: true, tier: "render-blocked", resolvedVia: "render-blocked", result: "" }), false).contentType, "spa");

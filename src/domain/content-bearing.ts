@@ -89,3 +89,26 @@ export function firstContentHarvest(jsonLd: unknown, isPinDetail = false, forLea
   const node = findFirstContentNode(jsonLd, isPinDetail, false, 0, new Set());
   return node ? harvestContentText(node, { forLead }) : undefined;
 }
+
+/** The (capped) CONTENT_TYPES @types of every content-bearing node reachable from jsonLd — the SAME
+ *  walk + content-bearing notion as `hasContentBearingJsonLd`, so the contentType classifier mirrors
+ *  the gate exactly: capped @type, field-required (a name-only `Movie` the gate rejects is NOT
+ *  collected), nested-link descent. The classifier's content type therefore never advertises content
+ *  the gate ignored (#152, codex). */
+export function contentBearingTypes(jsonLd: unknown, isPinDetail = false): string[] {
+  const types: string[] = [];
+  collectContentTypes(jsonLd, isPinDetail, 0, new Set(), types);
+  return types;
+}
+
+function collectContentTypes(value: unknown, isPinDetail: boolean, depth: number, seen: Set<Record<string, unknown>>, types: string[]): void {
+  if (Array.isArray(value)) { for (const v of value) collectContentTypes(v, isPinDetail, depth, seen, types); return; }
+  if (!isRecord(value) || seen.has(value)) return;
+  seen.add(value);
+  if (nodeIsContentBearing(value, isPinDetail)) {
+    for (const t of shortTypes(value)) if (CONTENT_TYPES.has(t)) types.push(t);
+  }
+  if (depth >= MAX_NESTED_DEPTH) return;
+  collectContentTypes(value["@graph"], isPinDetail, depth, seen, types);
+  for (const key of NESTED_CONTENT_LINKS) collectContentTypes(value[key], isPinDetail, depth + 1, seen, types);
+}

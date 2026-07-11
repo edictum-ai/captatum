@@ -153,4 +153,23 @@ test("#152 codex: a co-typed [SocialMediaPosting, Article] shell yields the Arti
   assert.ok(payload.includes("co-typed article body."), `co-typed Article body is harvested: ${payload}`);
 });
 
+test("#152 codex: classification uses the CAPPED @type reader (matches the gate on a huge @type array)", () => {
+  // 100k junk @types then JobPosting — the gate's capped reader misses JobPosting (safe extra
+  // render); the classifier must too (was: uncapped typesOf found it → 'job' divergence).
+  const hugeType = Array.from({ length: 100_000 }, (_, i) => `Type${i}`);
+  hugeType.push("JobPosting");
+  const r = base({ finalUrl: "https://x.test/p", structured: { jsonLd: { "@type": hugeType, title: "Eng" } } });
+  assert.notEqual(classifyContentType(r), "job", "capped classifier does not see a type past MAX_TYPE_ARRAY");
+});
+
+test("#152 codex: a name-only widened type (no field) does NOT classify 'article' (gate-rejected ⇒ not advertised)", () => {
+  // {Movie, name} is name-only — the gate rejects it (no description). The classifier must not
+  // advertise contentType 'article' for content the gate ignored.
+  const nameOnly = base({ finalUrl: "https://x.test/p", structured: { jsonLd: { "@type": "Movie", name: "Inception" } } });
+  assert.notEqual(classifyContentType(nameOnly), "article");
+  // …but a Movie WITH a description is content-bearing → 'article'.
+  const withDesc = base({ finalUrl: "https://x.test/p", structured: { jsonLd: { "@type": "Movie", description: "A film." } } });
+  assert.equal(classifyContentType(withDesc), "article");
+});
+
 

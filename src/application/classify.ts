@@ -1,6 +1,7 @@
 import type { Result } from "../domain/result.ts";
-import { shortSchemaType, CONTENT_TYPES, NESTED_CONTENT_LINKS } from "../domain/content-types.ts";
-import { isPinHost } from "../domain/pin-url.ts";
+import { shortSchemaType, CONTENT_TYPES } from "../domain/content-types.ts";
+import { contentBearingTypes } from "../domain/content-bearing.ts";
+import { isPinHost, isPinDetailPage } from "../domain/pin-url.ts";
 
 /**
  * Agent-facing classification of a Result's content kind and access state.
@@ -59,8 +60,10 @@ export function classifyContentType(result: Result): ContentType {
   if (isJsonContentType(result.contentType)) return "json";
 
   // Explicit schema.org / og:type declarations are authoritative and win over
-  // the host heuristic — a Pinterest careers page with a JobPosting is "job".
-  const jsonLdType = bestContentType(primaryTypes(result.structured?.jsonLd));
+  // the host heuristic — a Pinterest careers page with a JobPosting is "job". contentBearingTypes
+  // mirrors the shell-gate (capped @type, field-required, nested), so the classifier never
+  // advertises a type the gate rejected (#152).
+  const jsonLdType = bestContentType(contentBearingTypes(result.structured?.jsonLd, isPinDetailPage(result.finalUrl || result.url)));
   if (jsonLdType) return jsonLdType;
 
   const ogType = (result.structured?.og?.["og:type"] ?? "").toLowerCase();
@@ -122,38 +125,6 @@ function needsRender(result: Result): boolean {
     result.tier === "render-unavailable" ||
     result.jsRequired
   );
-}
-
-/** Collect every short schema.org @type across top-level nodes and @graph. */
-/** Collect schema.org @types for contentType classification. Walks top-level nodes, @graph, and
- *  the nested-content links (mainEntity/about/hasPart/itemListElement, depth-capped + cycle-guarded)
- *  mirroring the shell-gate's walk — but descends the nested links ONLY for wrapper nodes that are
- *  not themselves a CONTENT_TYPES type, so an Article.about→Product stays 'article' while an
- *  ItemList.itemListElement→Product reaches 'product'. Keeps gate-satisfying ⇒ non-unknown (#152). */
-function primaryTypes(jsonLd: unknown): string[] {
-  const types: string[] = [];
-  collectPrimaryTypes(jsonLd, types, 0, new Set());
-  return types;
-}
-
-function collectPrimaryTypes(value: unknown, types: string[], depth: number, seen: Set<Record<string, unknown>>): void {
-  for (const node of asArray(value)) {
-    if (!isRecord(node) || seen.has(node)) continue;
-    seen.add(node);
-    const own = typesOf(node);
-    types.push(...own);
-    if (depth >= 4) continue;
-    collectPrimaryTypes(node["@graph"], types, depth, seen);
-    if (!own.some((t) => CONTENT_TYPES.has(t))) { // wrapper node: descend its nested content links
-      for (const link of NESTED_CONTENT_LINKS) collectPrimaryTypes(node[link], types, depth + 1, seen);
-    }
-  }
-}
-
-function typesOf(node: Record<string, unknown>): string[] {
-  const type = node["@type"];
-  const arr = Array.isArray(type) ? type.map(String) : type === undefined ? [] : [String(type)];
-  return arr.map(shortSchemaType);
 }
 
 function mapType(type: string | undefined): ContentType | undefined {
