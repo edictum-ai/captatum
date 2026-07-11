@@ -41,18 +41,20 @@ function nodeIsContentBearing(node: Record<string, unknown>, isPinDetail: boolea
   return isPinDetail && typeof node.articleBody === "string" && node.articleBody.trim().length > 0;
 }
 
-/** Iteratively flatten nested arrays (order-preserving). Array WRAPPERS are containers, not semantic
- *  nesting — they must NOT consume the depth budget (the extractJsonLd multi-script shape
- *  [[{@graph:[…]}, …], node] has several array layers before any content; recursing them at depth+1
- *  exhausted MAX_NESTED_DEPTH on the wrappers, so a normal multi-script page's content looked absent).
- *  Iterative flattening bounds array recursion without stack growth (codex). */
+/** Iteratively flatten nested arrays, ORDER-PRESERVING (document order — the first content node /
+ *  first pin caption must stay first). Array WRAPPERS are containers, not semantic nesting — they
+ *  must NOT consume the depth budget (the extractJsonLd multi-script shape [[{@graph:[…]}, …], node]
+ *  has several array layers before content; recursing them at depth+1 exhausted MAX_NESTED_DEPTH on
+ *  the wrappers). Iterative DFS via an explicit stack bounds array recursion without call-stack
+ *  growth (codex); splice-in-place keeps it order-preserving (appending to a queue was breadth-first). */
 function flattenArrays(value: unknown): unknown[] {
   const queue: unknown[] = Array.isArray(value) ? [...value] : [value];
   const out: unknown[] = [];
-  for (let i = 0; i < queue.length; i++) {
+  for (let i = 0; i < queue.length;) {
     const v = queue[i];
-    if (Array.isArray(v)) for (const e of v) queue.push(e);
-    else out.push(v);
+    if (Array.isArray(v)) { queue.splice(i, 1, ...v); continue; } // unwrap IN PLACE → order-preserving
+    out.push(v);
+    i++;
   }
   return out;
 }

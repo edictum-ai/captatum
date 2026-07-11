@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { shortSchemaType, shortTypes, CONTENT_TYPES, MAX_TYPE_ARRAY } from "../src/domain/content-types.ts";
 import { harvestContentText } from "../src/domain/content-harvest.ts";
-import { hasContentBearingJsonLd } from "../src/domain/content-bearing.ts";
+import { hasContentBearingJsonLd, firstContentHarvest } from "../src/domain/content-bearing.ts";
 import { classifyContentType } from "../src/application/classify.ts";
 import { buildPayload } from "../src/application/use-cases/tier1-payload.ts";
 import type { Result } from "../src/domain/result.ts";
@@ -129,6 +129,13 @@ test("#152 codex: the multi-script extractJsonLd shape [[{@graph:[…]}, …], n
   const multiScript = [[{ "@graph": [{ "@type": "Article", headline: "real story" }] }, { "@type": "BreadcrumbList" }], { "@type": "WebSite", name: "x" }];
   assert.equal(hasContentBearingJsonLd(multiScript), true, "multi-script array wrappers don't hide content");
   assert.equal(classifyContentType(base({ finalUrl: "https://x.test/p", structured: { jsonLd: multiScript } })), "article");
+});
+
+test("#152 codex: flattenArrays preserves document order ([[article], job] → the Article leads)", () => {
+  // An array-wrapped Article BEFORE a JobPosting: document order says the Article leads. The
+  // breadth-first flatten (the bug) yielded the JobPosting first; order-preserving flatten fixes it.
+  const lead = firstContentHarvest([[{ "@type": "Article", headline: "first in doc order" }], { "@type": "JobPosting", title: "second" }]);
+  assert.ok(lead && lead.includes("first in doc order"), `document-order first (Article) leads: ${lead}`);
 });
 
 test("#152 codex: a nested pin caption (WebPage.mainEntity → SocialMediaPosting) is harvested", () => {
