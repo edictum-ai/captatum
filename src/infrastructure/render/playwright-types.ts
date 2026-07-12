@@ -32,6 +32,10 @@ export interface PlaywrightPage {
   url(): string;
   waitForTimeout(ms: number): Promise<void>;
   waitForLoadState(state: string, options?: { timeout?: number }): Promise<void>;
+  /** The browser's live DOM evaluation (#154) — used for `domTextLength` (document.body.innerText
+   *  length), which captures shadow-DOM / computed-visible text the serialized-HTML extractor
+   *  misses. Optional so test mocks need not implement it (the renderer guards the call). */
+  evaluate?<T>(pageFunction: () => T): Promise<T>;
   close(): Promise<void>;
 }
 

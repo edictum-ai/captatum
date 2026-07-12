@@ -148,6 +148,25 @@ export interface Result {
    *  retry per 429/503 seed. Single-fetch surfaces it on the receipt but does not
    *  auto-retry (PR 3). */
   retryAfterMs?: number;
+  /** Diagnostics on a Tier-3 render-FAILURE outcome (render_empty / render_error). Absent on
+   *  render_unavailable (no renderer ran), render-blocked, and Tier-1/2 success. (#154) */
+  renderDiagnostics?: RenderDiagnostics;
+}
+
+/** Render-failure diagnostics surfaced to the caller (#154). `egressBytes` is the Tier-3-ONLY
+ *  subresource egress (distinct from Result.egressBytes, which includes the Tier-1 doc).
+ *  `domTextLength` is the browser's live DOM text (captures shadow-DOM/computed text the
+ *  serialized-HTML extractor misses). `renderEgressHosts` are registrable domains (raw IP /
+ *  single-label hosts redacted to "[ip-literal]" at the output boundary — never a raw IP).
+ *  `possibleReason` is a conservative HINT, never a trusted diagnosis; `unknown` is the default. */
+export interface RenderDiagnostics {
+  renderedBytes?: number;
+  domTextLength?: number;
+  egressBytes?: number;
+  renderEgressHosts: string[];
+  blockedRequests: number;
+  forwardedRequests: number;
+  possibleReason: "render-error" | "network-blocked" | "extraction-gap" | "empty-dom" | "unknown";
 }
 
 /** sha256 hex of a string. */

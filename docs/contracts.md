@@ -328,6 +328,8 @@ BulkResult {
 }
 ```
 
+**`renderDiagnostics?`** (#154, additive) — present on the single-fetch + bulk result ONLY on a Tier-3 render-failure outcome (`render_empty`, `render_error`/render-failure); absent on `render_unavailable` (no renderer ran), `render-blocked`, and Tier-1/2 success. Shape: `{ renderedBytes?, domTextLength?, egressBytes?, renderEgressHosts, blockedRequests, forwardedRequests, possibleReason }`. `egressBytes` here is the **Tier-3-only** subresource egress (distinct from `Result.egressBytes`, which includes the Tier-1 doc); `domTextLength` is the browser's live DOM text (captures shadow-DOM/computed text the extractor misses); `renderEgressHosts` are registrable domains (raw IP/single-label hosts redacted to `[ip-literal]` — never a raw IP). `possibleReason` (`render-error | network-blocked | extraction-gap | empty-dom | unknown`) is a **conservative hint, never a trusted diagnosis** — an unclear cause is `unknown`; `bot-wall` is deliberately not a reason (unreliably distinguishable; the #151 `gateReason` antibot signal rides separately when attributable). **Surfacing change:** single-fetch now also surfaces `egressBytes` (parity with bulk) and `renderEgressHosts` (NEW in both — previously internal-only; callers gain the set of registrable domains the page loaded subresources from, a new bounded host-identifier surface). `mainFrameUrl` is not duplicated (use `finalUrl`; `renderEgressHosts` covers a redirect-to-challenge). `renderDiagnostics` reflects the final render attempt only on the bulk-retry path.
+
 ### MCP delivery
 
 - `content[0].text`: one bounded blob. Provenance header

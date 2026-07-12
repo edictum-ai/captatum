@@ -1,6 +1,7 @@
 import type { ProvenanceError, Result, TransformInfo } from "../../domain/result.ts";
 import { classifyAccess, classifyContentType, hasContent, type AccessInfo, type ContentType } from "../../application/classify.ts";
 import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
+import { shapeRenderDiagnostics } from "./egress-shaping.ts";
 
 export type Status = "pass" | "partial" | "fail";
 
@@ -48,6 +49,9 @@ export function buildStructuredContent(result: Result, debug: boolean): Record<s
     warnings,
     images: result.structured?.images ?? [],
     errors,
+    // Network-egress truth (parity with bulk's per-row field) + render-failure diagnostics (#154).
+    ...(result.egressBytes !== undefined ? { egressBytes: result.egressBytes } : {}),
+    ...(result.renderDiagnostics ? { renderDiagnostics: shapeRenderDiagnostics(result.renderDiagnostics) } : {}),
   };
 
   const transform = leanTransform(result.transform);

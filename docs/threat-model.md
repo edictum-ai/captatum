@@ -123,6 +123,20 @@ the contract reference; this file is the security reasoning.
   acceptable because the threat model for reference/doc pages is legitimate-but-noisy authors (a
   hostile author can dominate the feed regardless). Residual: the extract layer remains hand-rolled
   (house rule prefers a proven library); a wholesale replacement is a separate change.
+- **renderDiagnostics output-exposure (#154):** on a Tier-3 render-failure outcome the result now
+  surfaces `renderDiagnostics` — `renderedBytes`/`domTextLength` (sizes), `egressBytes` (a count),
+  `blockedRequests`/`forwardedRequests` (counts), `possibleReason` (a fixed enum), and
+  `renderEgressHosts`. Every field is a count/size/enum, EXCEPT `renderEgressHosts` which is a NEW
+  host-identifier surface: callers gain the set of registrable domains the page loaded subresources
+  from. It is bounded by construction — the output shaper filters to `registrableDomain(h) !== null`
+  and redacts IP/single-label hosts to the `[ip-literal]` sentinel, so NO raw IP, path, query, or
+  full URL crosses the boundary (the internal `render-egress.ts:19` `registrableDomain(h) ?? h`
+  fallback is kept for the bulk union-key gate, but only the filtered copy is surfaced). The host
+  SET is ATTACKER-INFLUENCED: a hostile render_empty page chooses its own subresource hosts (it can
+  `fetch()` arbitrary hosts), so the surfaced domains are page-chosen — a low-bandwidth covert
+  channel + a receipt-bloat vector. It is CARDINALITY-CAPPED at the output boundary (deduped + ≤ 8
+  entries + a trailing "(+K more)" count), bounding both the bloat and the channel. There is no
+  host/IP redactor in the redaction path; safety is by construction at the extractor boundary.
 - **Anti-bot challenge classification (#41, #151) is a narrow curated deny-list of literal
   challenge signatures over an already-fetched body** — it issues NO new request and adds NO
   egress/SSRF surface (it inspects only response headers/body already pulled through the sole

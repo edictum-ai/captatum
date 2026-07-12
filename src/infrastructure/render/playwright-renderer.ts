@@ -10,7 +10,7 @@ import type {
 import { streamFromBytes } from "../http/body.ts";
 import { P1BrowserUrlGuard, safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { RenderRouteState } from "./route-state.ts";
-import { waitForBodyStable } from "./settle.ts";
+import { liveDomTextLength, waitForBodyStable } from "./settle.ts";
 import type {
   PlaywrightBrowser,
   PlaywrightDownload,
@@ -122,13 +122,13 @@ export class PlaywrightRenderer implements RenderPort {
           if (frameContent.length > 100) content += "\n" + frameContent;
         }
       } catch { /* iframe capture best-effort */ }
-      // Advisory byte cap: rendered HTML is in memory, so truncate at the cap and
-      // keep it (with a provenance note) rather than throwing it away.
+      const domTextLength = await liveDomTextLength(page); // #154: live DOM text (shadow-DOM/computed)
+      // Advisory byte cap: truncate rendered HTML at the cap + keep it (with a note), not drop it.
       const { bytes, truncated } = capRenderedBytes(content, input.maxBytes);
       const notice: ProvenanceError | undefined = truncated
         ? { code: "max_bytes", message: `Rendered content truncated at ${input.maxBytes} bytes` }
         : undefined;
-      return renderSuccess(input, page, response?.status() ?? state.status, bytes, state, notice);
+      return renderSuccess(input, page, response?.status() ?? state.status, bytes, state, notice, domTextLength);
     } catch (error) {
       return renderFailure(state.fatal ?? rejectFromError(error), actions, state);
     } finally {
@@ -173,7 +173,7 @@ async function closeWebSocket(socket: PlaywrightWebSocketRoute, actions: RenderA
   await socket.close();
 }
 
-function renderSuccess(input: RenderInput, page: PlaywrightPage, status: number, bytes: Uint8Array, state: RenderRouteState, notice?: ProvenanceError): RenderOutput {
+function renderSuccess(input: RenderInput, page: PlaywrightPage, status: number, bytes: Uint8Array, state: RenderRouteState, notice: ProvenanceError | undefined, domTextLength: number | undefined): RenderOutput {
   const egressHosts = state.egressHosts();
   return {
     rendered: true,
@@ -188,6 +188,7 @@ function renderSuccess(input: RenderInput, page: PlaywrightPage, status: number,
     actions: state.actions,
     egressBytes: state.egressBytes(),
     ...(egressHosts.length > 0 ? { egressHosts } : {}),
+    ...(domTextLength !== undefined ? { domTextLength } : {}),
     ...(notice ? { notice } : {}),
   };
 }

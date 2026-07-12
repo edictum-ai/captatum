@@ -64,6 +64,8 @@ export function toBulkSeedResult(seed: ValidatedSeed, r: Result, output: Output)
     jsRequired: r.jsRequired,
     resolvedVia: r.resolvedVia,
     redirectHosts: r.redirects.map((rd) => hostOf(rd.url)),
+    ...(r.renderEgressHosts ? { renderEgressHosts: r.renderEgressHosts } : {}), // #154 (net-new in bulk rows)
+    ...(r.renderDiagnostics ? { renderDiagnostics: r.renderDiagnostics } : {}), // #154
     ...(r.contentSha256 !== undefined ? { contentSha256: r.contentSha256 } : {}),
     result: snippet500(r.result),
     content: clipContent(r.result),

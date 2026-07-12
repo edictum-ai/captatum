@@ -8,6 +8,7 @@ import {
   type HtmlExtractor,
 } from "./tier1-extract.ts";
 import type { NormalizedCaptatumInput } from "./captatum-input.ts";
+import { buildRenderDiagnostics } from "./render-diagnostics.ts";
 
 export interface MaybeRenderInput {
   result: Result;
@@ -69,6 +70,12 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
     if (renderEgress > 0) input.result.egressBytes = tier1Bytes + renderEgress;
     if (rendered.egressHosts && rendered.egressHosts.length > 0) input.result.renderEgressHosts = rendered.egressHosts;
     input.result.attempts.push(...controlAttempts);
+    // renderDiagnostics only when a render ACTUALLY ran + failed. The hosted no-CDP path's
+    // unavailableRenderer() returns {rendered:false, code:"render_unavailable"} — no render ran, so
+    // no diagnostics (the contract: render_unavailable carries none; codex P2).
+    if (rendered.code !== "render_unavailable") {
+      input.result.renderDiagnostics = buildRenderDiagnostics(rendered);
+    }
     return renderRejected(input.result, rendered, renderMs);
   }
 
@@ -93,6 +100,7 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
   if (extracted.jsRequired && extracted.result.trim().length === 0) {
     input.result.attempts.push(...controlAttempts);
     input.result.timings.renderMs = renderMs;
+    input.result.renderDiagnostics = buildRenderDiagnostics(rendered); // #154 (render_empty: DOM present)
     return renderRejected(input.result, { rejected: true, code: "render_empty", message: "Render produced no content (empty shell)" }, renderMs);
   }
   const promoted = promoteRenderedResult(input.result, extracted, renderMs, controlAttempts);

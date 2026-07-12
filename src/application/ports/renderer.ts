@@ -52,6 +52,10 @@ export interface RenderSuccess {
   /** Registrable domains the render loaded subresources from. Fed into the bulk
    *  per-host union count gate as `Result.renderEgressHosts` (BULK-3). */
   egressHosts?: string[];
+  /** The browser's LIVE DOM text length (document.body.innerText.length) — captures shadow-DOM /
+   *  computed-visible text the serialized-HTML extractor misses. Surfaced as
+   *  `RenderDiagnostics.domTextLength` (#154). Absent when the page is gone (best-effort). */
+  domTextLength?: number;
 }
 
 export type RenderFailure = RejectResult & {
