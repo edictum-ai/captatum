@@ -177,28 +177,36 @@ export function selectMainContentHtml(html: string, revealedIds: Set<string> = r
   // candidate (a genuinely `display:none`-hidden article is still excluded — #97 safety).
   const clean = stripChrome(stripHiddenSubtrees(stripInert(html), hiddenClasses, revealedIds));
 
-  // Score <article> candidates by visible-text length (capped — REDOS-8: an <article>/<main>
-  // flood would otherwise run the ~10-pass extractVisibleText on every element, an unbounded
-  // N×body on the hotter landmark path; #165's cap mirrors selectContentContainer). The FIRST is
-  // the page's primary (document order), but a SUBSTANTIALLY richer sibling overrides it — a React
-  // loading skeleton is a short placeholder shipped first; the real streamed article is a far
-  // larger later sibling. Scoring threads revealedIds so a boundary-bearing fragment is measured
-  // with its streamed content. slice preserves document order (firstArticle stays correct); real
-  // pages have 1–3 articles/mains, so the cap never bites legitimately.
-  const articles = findElements(clean, "article").slice(0, MAX_LANDMARK_CANDIDATES).map<{ content: string; len: number }>((el) => ({
-    content: el.content,
-    len: extractVisibleText(el.content, revealedIds).length,
-  }));
+  // Score a BOUNDED set of <article>/<main> candidates by visible-text length. REDOS-8: a flood
+  // would otherwise run the ~10-pass extractVisibleText on every element (unbounded N×body on this
+  // hotter landmark path). The bound is the document-order FIRST (so firstArticle / the #118
+  // skeleton-override is correct) UNION the top-K richest by RAW content length — NOT slice(0,K),
+  // which (codex P2) would miss a late #118 React-streamed article sitting past K teaser articles.
+  // Raw length is an O(1) proxy that selects the same top-K as visible text for real pages (1–3);
+  // extractVisibleText then runs on ≤ K+1 candidates. (Mirrors selectContentContainer's prescore.)
+  const scoredBounded = (
+    elements: { content: string }[],
+    keepFirst: boolean,
+  ): { content: string; len: number }[] => {
+    if (elements.length === 0) return [];
+    const keep = new Set<number>();
+    if (keepFirst) keep.add(0); // document-order first (firstArticle / the #118 skeleton)
+    const byRaw = elements.map((_, i) => i).sort((a, b) => elements[b].content.length - elements[a].content.length);
+    for (const i of byRaw) {
+      if (keep.size >= MAX_LANDMARK_CANDIDATES) break;
+      keep.add(i);
+    }
+    return [...keep].map((i) => ({ content: elements[i].content, len: extractVisibleText(elements[i].content, revealedIds).length }));
+  };
+  // articles[0] is the document-order FIRST (keepFirst adds index 0 before the raw shortlist).
+  const articles = scoredBounded(findElements(clean, "article"), true);
   const firstArticle = articles[0];
   const richestArticle = articles.reduce<{ content: string; len: number } | undefined>(
     (best, el) => !best || el.len > best.len ? el : best,
     undefined,
   );
-  const longestMain = findElements(clean, "main").slice(0, MAX_LANDMARK_CANDIDATES).reduce<{ content: string; len: number } | undefined>(
-    (best, el) => {
-      const len = extractVisibleText(el.content, revealedIds).length;
-      return !best || len > best.len ? { content: el.content, len } : best;
-    },
+  const longestMain = scoredBounded(findElements(clean, "main"), false).reduce<{ content: string; len: number } | undefined>(
+    (best, el) => !best || el.len > best.len ? el : best,
     undefined,
   );
   // First <article> wins by default. A substantially richer sibling overrides it ONLY on a React
