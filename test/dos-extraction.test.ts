@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { findElements, stripHtmlTags } from "../src/infrastructure/extract/html.ts";
+import { selectContentContainer } from "../src/infrastructure/extract/content-container.ts";
 import { collectHiddenDisplayNoneClasses } from "../src/infrastructure/extract/hidden-classes.ts";
 import { inlineSvgText } from "../src/infrastructure/extract/svg-text.ts";
 
@@ -204,4 +205,20 @@ test("stripHtmlTags is linear on a quoted-`>` attr flood (REDOS-7)", () => {
     DIRECT_CEILING_MS,
   );
   assert.match(out.replace(/\s+/g, " ").trim(), /^(x )(x )*x$|^x$/, "all tags stripped, only 'x' tokens remain");
+});
+
+test("selectContentContainer stays bounded on a nested allowlist-class flood (#165 REDOS)", () => {
+  // The v1-defect (score EVERY candidate with the ~10-pass extractVisibleText) is N×body×10 →
+  // minutes at this scale. The fix (candidate cap + raw-length prescore + extractVisibleText on
+  // only top-K) bounds it to a constant number of passes regardless of N. Guard with an ABSOLUTE
+  // ceiling, not a LARGE/SMALL wall-clock ratio: selectContentContainer is multi-pass, so a ratio
+  // is too sensitive to scheduler contention under parallel CI/local load to be a stable linearity
+  // signal (empirically non-monotonic under contention). An unbounded impl blows past this
+  // ceiling; the bounded impl is ~tens of ms. (Phase-isolated linearity: findStartTags,
+  // findMatchingClose×cap, and extractVisibleText are each independently linear on this input.)
+  const N = 4_000; // ~100KB nested body, 4000 allowlist candidates (the cap keeps ≤16)
+  const html = `<div class="prose">`.repeat(N) + `Real article body content substantial enough to clear the floor. `.repeat(4) + `</div>`.repeat(N);
+  const { ms, out } = timedMs(() => selectContentContainer(html, new Set<string>()));
+  assert.ok(out !== null, "the outermost prose container is selected (it holds the body)");
+  assert.ok(ms < MULTI_CEILING_MS, `#165 prose-flood N=${N}: ${ms.toFixed(0)}ms exceeded ${MULTI_CEILING_MS}ms — the cap+prescore+top-K bound was lost (an N×extractVisibleText impl is minutes here)`);
 });

@@ -36,7 +36,7 @@ export const SKELETON_ARTICLE_MAX_CHARS = 1000;
  */
 /** Depth-aware matching close for a chrome tag — pairs an outer open with its MATCHING close, not
  *  the inner's (handles nested same-tag chrome like `<nav>…<nav>…</nav>…</nav>`) (#160 codex r10). */
-function findMatchingClose(lower: string, close: string, opens: readonly { start: number }[], openIdx: number, from: number): number {
+export function findMatchingClose(lower: string, close: string, opens: readonly { start: number }[], openIdx: number, from: number): number {
   let depth = 1, search = from, nextOpenIdx = openIdx + 1;
   for (;;) {
     const nc = findCloseTag(lower, close, search);
