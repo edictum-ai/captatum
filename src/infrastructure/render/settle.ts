@@ -63,7 +63,23 @@ export async function waitForBodyStable(page: PlaywrightPage, opts: SettleOption
 export async function liveDomTextLength(page: PlaywrightPage): Promise<number | undefined> {
   try {
     if (!page.evaluate) return undefined;
-    return (await page.evaluate((): number => (document.body?.innerText ?? "").length)) ?? 0;
+    // document.body.innerText does NOT traverse open shadow roots (verified empirically: a page
+    // whose visible content sits in an open shadow root yields innerText "" — codex P2). Walk open
+    // shadow roots for their text so a shadow-DOM render_empty still surfaces a high domTextLength
+    // (→ extraction-gap) instead of a misleading 0 (→ empty-dom). Closed roots are inaccessible.
+    return (await page.evaluate((): number => {
+      let len = (document.body?.innerText ?? "").length;
+      const stack: Element[] = Array.from(document.body?.querySelectorAll("*") ?? []);
+      while (stack.length) {
+        const el = stack.pop() as Element;
+        const sr = el.shadowRoot;
+        if (sr) {
+          len += (sr.textContent ?? "").length;
+          stack.push(...Array.from(sr.querySelectorAll("*")));
+        }
+      }
+      return len;
+    })) ?? 0;
   } catch {
     return undefined; // page gone / evaluate failed — best-effort
   }
