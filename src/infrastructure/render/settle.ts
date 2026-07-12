@@ -54,3 +54,17 @@ export async function waitForBodyStable(page: PlaywrightPage, opts: SettleOption
     await page.waitForTimeout(interval);
   }
 }
+
+/** The browser's LIVE DOM text length (document.body.innerText.length) — captures shadow-DOM /
+ *  computed-visible text that `page.content()` (serialized HTML) cannot carry (shadow roots aren't
+ *  serialized), so it splits a page whose DOM HAS text the extractor dropped (shadow-DOM / parser
+ *  gap) from a wall/stub (#154 renderDiagnostics). Best-effort: undefined if the page is gone or
+ *  `evaluate` is unsupported (test mocks). */
+export async function liveDomTextLength(page: PlaywrightPage): Promise<number | undefined> {
+  try {
+    if (!page.evaluate) return undefined;
+    return (await page.evaluate((): number => (document.body?.innerText ?? "").length)) ?? 0;
+  } catch {
+    return undefined; // page gone / evaluate failed — best-effort
+  }
+}

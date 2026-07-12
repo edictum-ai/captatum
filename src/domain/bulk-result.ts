@@ -4,6 +4,7 @@
 // docs/contracts.md §"Tool: captatum_bulk" / "BulkResult envelope".
 import type { Tier, Output } from "./tier.ts";
 import type { BulkGuard, BulkStatus, PerHostTruncation } from "./bulk-policy.ts";
+import type { RenderDiagnostics } from "./result.ts";
 
 /** One per processed seed, INPUT ORDER preserved. `result` is a hard snippet
  *  (<=500 chars) or a per-entry reject message (used in structuredContent + failures[]);
@@ -30,6 +31,12 @@ export interface BulkSeedResult {
   transform?: { provider: string; model?: string; reason?: string; costUsd?: number; inTokens?: number; outTokens?: number };
   warnings: { code: string; message: string }[];
   errors: { code: string; message: string }[];
+  /** Net-new in bulk rows (#154): the registrable domains a Tier-3 render loaded subresources
+   *  from (previously internal-only, fed to the per-host union gate). Redacted at the output
+   *  boundary (raw IP → "[ip-literal]"). */
+  renderEgressHosts?: string[];
+  /** Render-failure diagnostics (#154) — present only on a render_empty / render-error seed. */
+  renderDiagnostics?: RenderDiagnostics;
 }
 
 export interface BulkTotals {

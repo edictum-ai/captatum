@@ -123,6 +123,20 @@ the contract reference; this file is the security reasoning.
   acceptable because the threat model for reference/doc pages is legitimate-but-noisy authors (a
   hostile author can dominate the feed regardless). Residual: the extract layer remains hand-rolled
   (house rule prefers a proven library); a wholesale replacement is a separate change.
+- **renderDiagnostics output-exposure (#154):** on a Tier-3 render-failure outcome the result now
+  surfaces `renderDiagnostics` — `renderedBytes`/`domTextLength` (sizes), `egressBytes` (a count),
+  `blockedRequests`/`forwardedRequests` (counts), `possibleReason` (a fixed enum), and
+  `renderEgressHosts`. Every field is a count/size/enum, EXCEPT `renderEgressHosts` which is a NEW
+  host-identifier surface: callers gain the set of registrable domains the page loaded subresources
+  from. It is bounded by construction — the output shaper filters to `registrableDomain(h) !== null`
+  and redacts IP/single-label hosts to the `[ip-literal]` sentinel, so NO raw IP, path, query, or
+  full URL crosses the boundary (the internal `render-egress.ts:19` `registrableDomain(h) ?? h`
+  fallback is kept for the bulk union-key gate, but only the filtered copy is surfaced). There is no
+  host/IP redactor in the redaction path; safety is by construction at the extractor boundary.
+  `possibleReason` is a heuristic over an untrusted render outcome — a HINT, never a trusted
+  diagnosis (a hostile page can shape the signals); `unknown` is the honest default. Single-fetch now
+  also surfaces `egressBytes` (parity with bulk); `renderEgressHosts` is newly surfaced in BOTH
+  single-fetch and bulk (previously internal-only) — a net-new, documented, bounded exposure.
 - **Anti-bot challenge classification (#41, #151) is a narrow curated deny-list of literal
   challenge signatures over an already-fetched body** — it issues NO new request and adds NO
   egress/SSRF surface (it inspects only response headers/body already pulled through the sole
