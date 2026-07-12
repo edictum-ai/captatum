@@ -36,7 +36,7 @@ export const SKELETON_ARTICLE_MAX_CHARS = 1000;
  */
 /** Depth-aware matching close for a chrome tag — pairs an outer open with its MATCHING close, not
  *  the inner's (handles nested same-tag chrome like `<nav>…<nav>…</nav>…</nav>`) (#160 codex r10). */
-function findMatchingClose(lower: string, close: string, opens: readonly { start: number }[], openIdx: number, from: number): number {
+export function findMatchingClose(lower: string, close: string, opens: readonly { start: number }[], openIdx: number, from: number): number {
   let depth = 1, search = from, nextOpenIdx = openIdx + 1;
   for (;;) {
     const nc = findCloseTag(lower, close, search);
@@ -173,10 +173,17 @@ export function selectMainContentHtml(html: string, revealedIds: Set<string> = r
   // candidate (a genuinely `display:none`-hidden article is still excluded — #97 safety).
   const clean = stripChrome(stripHiddenSubtrees(stripInert(html), hiddenClasses, revealedIds));
 
-  // Score every <article> by visible-text length. The FIRST is the page's primary (document
+  // Score every <article>/<main> by visible-text length. The FIRST is the page's primary (document
   // order), but a SUBSTANTIALLY richer sibling overrides it — a React loading skeleton is a short
-  // placeholder shipped first; the real streamed article is a far larger later sibling. Scoring
-  // threads revealedIds so a boundary-bearing fragment is measured with its streamed content.
+  // placeholder shipped first; the real streamed article is a far larger later sibling (#118). The
+  // override MUST be able to find the real article wherever it sits (past N teasers, or as a
+  // plain-text body behind markup-heavy cards), so all candidates are scored — no cap. REDOS-8
+  // residual: an <article>/<main> flood runs the ~10-pass extractVisibleText per element, but it is
+  // BODY-BUDGET-BOUND (~2.5s at the 5MB EXTRACT_CHAR_BUDGET) and pre-existing (not from #165). A cap
+  // was attempted (slice by count, then a raw-length shortlist) and REVERTED — both regressed #118
+  // (a late/streamed/plain-text real article can sit anywhere; any cap that doesn't score all
+  // candidates can miss it). process finding: capping an N×extractVisibleText whose selection
+  // semantics require seeing every candidate is the wrong shape; bound the body, not the candidates.
   const articles = findElements(clean, "article").map<{ content: string; len: number }>((el) => ({
     content: el.content,
     len: extractVisibleText(el.content, revealedIds).length,

@@ -8,6 +8,7 @@ import { isHtmlContentType } from "../http/body.ts";
 import { extractVisibleText } from "./html.ts";
 import { revealedReactBoundaryIds } from "./hidden.ts";
 import { selectMainContentHtml, stripChromeFromRaw } from "./main-content.ts";
+import { selectContentContainer } from "./content-container.ts";
 import { extractPageMetadata } from "./metadata.ts";
 import { evaluateShellGate } from "./shell-gate.ts";
 
@@ -34,19 +35,19 @@ export function extractHtml(input: HtmlExtractionInput): HtmlExtraction {
   // outside scope), so recomputing it from the fragment would empty the set + strip a React
   // boundary (#118 codex P1). Both selectMainContentHtml and extractVisibleText take it explicitly.
   const revealedIds = revealedReactBoundaryIds(input.html);
-  // No main-content landmark → fall back to the FULL page MINUS site chrome (aside/nav/footer).
-  // Otherwise an SPA shell whose static HTML carries only nav/TOC chrome (<p>/<h2> in <nav>/<aside>)
-  // satisfies the shell-gate's hasContent threshold and ships the nav menu as "content" instead of
-  // escalating to render (#144 — Jira REST v3: 13,630 chars of chrome, article JS-only).
-  // The visible-text scope: a main-content landmark (<article>/<main>) when present, else the full
-  // page MINUS site chrome (aside/nav/footer, fully pre-cleaned). An SPA shell whose static HTML
-  // carries only nav/TOC chrome then doesn't satisfy the shell-gate + escalates to render (#144).
+  // Scope the visible text so site chrome (nav/header/footer/sidebar) doesn't lead the feed.
+  // Precedence: a main-content landmark (<article>/<main>) > a recognized main-content container
+  // (#165: cppreference #content, php.net #layout-content, …) > the chrome-stripped whole body.
+  // An SPA shell whose static HTML carries only nav/TOC chrome then doesn't satisfy the shell-gate
+  // and escalates to render (#144 — Jira REST v3). The chrome-stripped body is computed ONLY on the
+  // no-landmark path (short-circuit on the common landmark-bearing fetch). A container overrides
+  // footer-keep (a stronger content signal); with no container the footer-keeping whole body stands.
+  // landmarkFound stays FALSE for a container — the shell-gate evaluates its text on merit, so an
+  // empty <div id="content"> SPA shell still escalates to render (#165, #144).
   const landmark = html ? selectMainContentHtml(input.html, revealedIds) : null;
-  // No main-content landmark → fall back to the FULL page MINUS site chrome (aside/nav/footer,
-  // fully pre-cleaned). Otherwise an SPA shell whose static HTML carries only nav/TOC chrome
-  // (<p>/<h2> in <nav>/<aside>) satisfies the shell-gate + ships the nav as "content" instead of
-  // escalating to render (#144 — Jira REST v3: 13,630 chars chrome, article JS-only).
-  const scope = landmark ?? (html ? stripChromeFromRaw(input.html, revealedIds) : input.html);
+  const cleanedBody = html && landmark === null ? stripChromeFromRaw(input.html, revealedIds) : null;
+  const container = cleanedBody !== null ? selectContentContainer(cleanedBody, revealedIds) : null;
+  const scope = landmark ?? container ?? cleanedBody ?? input.html;
   const text = html ? extractVisibleText(scope, revealedIds) : input.html;
   const shellGate = evaluateShellGate({
     html: input.html,
