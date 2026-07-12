@@ -104,8 +104,19 @@ the contract reference; this file is the security reasoning.
   so malformed input neither drops content nor leaks markup, ≤~2× per char on the malformed
   tail, still linear). The `prescanMetaCharset` meta-tag-end scan (`src/infrastructure/http/charset.ts`)
   was the same class of quote-blind bug (a `>` in a meta attr could hide the charset → mojibake)
-  and is fixed the same way. Residual: the extract layer remains hand-rolled (house rule prefers
-  a proven library); a wholesale replacement is a separate change.
+  and is fixed the same way. The no-landmark **main-content container selector** (#165) is a linear
+  `findStartTags` scan for a curated ID/class allowlist (`#content`/`#bodyContent`/`#mw-content-text`,
+  `#layout-content`, `.entry-content`, …) plus a bounded count of `extractVisibleText` calls
+  (candidates are prescored by raw content length — O(1) — and only the top-K run the ~10-pass
+  extractor; a candidate cap bounds the flood surface), so it adds no new REDOS surface.
+  Content-integrity: scoping to a recognized container drops top-bar/sidebar chrome — the most
+  injection-shaped region of a page — from the head of the trusted visible-text feed (same
+  improvement class as #146's directive-JS fix). Honest residual: the selector is a heuristic a
+  hostile page author can game — the length floor bounds false-positive SIZE, not false-positive
+  IDENTITY, so an above-floor wrong container can narrow the feed away from content held elsewhere;
+  acceptable because the threat model for reference/doc pages is legitimate-but-noisy authors (a
+  hostile author can dominate the feed regardless). Residual: the extract layer remains hand-rolled
+  (house rule prefers a proven library); a wholesale replacement is a separate change.
 - **Anti-bot challenge classification (#41, #151) is a narrow curated deny-list of literal
   challenge signatures over an already-fetched body** — it issues NO new request and adds NO
   egress/SSRF surface (it inspects only response headers/body already pulled through the sole
