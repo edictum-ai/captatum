@@ -76,8 +76,15 @@ const captatum = createCaptatumUseCase({
 // LimitingFetcher (BULK-2) + BulkQuotaPort (BULK-1) gate has landed). Built with the UNWRAPPED
 // captatum executor so the route's one-slot admission wrap bounds the whole call, not per-seed
 // fan-out. The per-tenant quota (BULK-1) bounds cross-call amplification, fail-closed.
-const bulk = config.bulk.enabled()
-  ? createCaptatumBulkUseCase({
+let bulk: ReturnType<typeof createCaptatumBulkUseCase> | undefined;
+if (config.bulk.enabled()) {
+  // #157: CAPTATUM_BULK_MAX_GLOBAL_WALL_MS is the hosted lever to raise the 55 s default toward the
+  // 180 s ceiling. Read here (inside the enabled() branch) so a malformed value boot-rejects ONLY
+  // when bulk is on (a bulk-disabled server never validates a knob it never uses). Captured once —
+  // undefined when unset → the domain applies the 55 s hosted default; the domain clamps to the
+  // ceiling as defense-in-depth (config already rejected above-ceiling).
+  const maxGlobalWallMs = config.bulk.maxGlobalWallMs();
+  bulk = createCaptatumBulkUseCase({
     executor: captatum,
     adapters: createAdapterRegistry(),
     clock,
@@ -85,14 +92,15 @@ const bulk = config.bulk.enabled()
       maxPerHostInflight: config.bulk.maxPerHostInflight(),
       crawlDelayMs: config.bulk.crawlDelayMs(),
       maxConcurrency: config.bulk.maxConcurrency(),
+      ...(maxGlobalWallMs !== undefined ? { maxGlobalWallMs } : {}),
     },
     quota: new InMemoryBulkQuotaPort({
       clock,
       windowSeconds: config.bulk.quotaWindowSeconds(),
       limit: config.bulk.quotaSeedLimit(),
     }),
-  })
-  : undefined;
+  });
+}
 const app = await createHttpApp({
   captatum,
   ...(bulk !== undefined ? { bulk } : {}),
