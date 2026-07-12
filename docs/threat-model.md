@@ -109,10 +109,12 @@ the contract reference; this file is the security reasoning.
   `#layout-content`, `.entry-content`, …) plus a bounded count of `extractVisibleText` calls
   (candidates are prescored by raw content length — O(1) — and only the top-K run the ~10-pass
   extractor; a per-tag candidate cap bounds the flood surface), so it adds no new REDOS surface.
-  The sibling landmark path (`selectMainContentHtml`) had the same N×`extractVisibleText` shape on
-  its `<article>`/`<main>` scoring; #165 mirrors the bound there too (REDOS-8: the candidate lists
-  are sliced to a cap before scoring), so an attacker who learns the container path is capped cannot
-  pivot to an `<article>` flood on the hotter every-page path.
+  The sibling landmark path (`selectMainContentHtml`) has the same N×`extractVisibleText` shape on
+  its `<article>`/`<main>` scoring and is left UNBOUNDED: the #118 skeleton-override must find the
+  real streamed article wherever it sits, so a candidate cap (attempted: slice by count, then a
+  raw-length shortlist) regressed it (codex P2 ×2) and was reverted. That REDOS is body-budget-bound
+  (~2.5s at the 5MB cap, pre-existing) — the body cap is the bound. A real fix (a cheap accurate
+  text-length proxy, or a DOM-based extractor) is a separate change.
   Content-integrity: scoping to a recognized container drops top-bar/sidebar chrome — the most
   injection-shaped region of a page — from the head of the trusted visible-text feed (same
   improvement class as #146's directive-JS fix). Honest residual: the selector is a heuristic a

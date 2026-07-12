@@ -1661,22 +1661,21 @@ test("selectMainContentHtml: a richer sibling does NOT override the primary on a
   assert.equal((main ?? "").includes("Related"), false, "a non-React page's longer sibling must not displace the primary article");
 });
 
-test("selectMainContentHtml: a late #118 streamed article past K teasers still wins (REDOS-8 cap is first ∪ raw-shortlist, not slice — codex P2)", () => {
-  // The REDOS-8 bound must NOT be slice(0, K): a React page can ship a skeleton <article> first,
-  // then K+ teaser/card articles, then the real streamed body past the cap. slice(0,K) would
-  // exclude the real article and lock in the skeleton (the #118 override's richestArticle would
-  // never see it) — regressing #118. The bound is document-order FIRST ∪ top-K-by-raw, so the
-  // raw-richest real article is always scored and the skeleton-override fires. (Fails under
-  // slice(0,MAX_LANDMARK_CANDIDATES): the real article is dropped, the skeleton is returned.)
+test("selectMainContentHtml: a late #118 streamed article past many teasers still wins (the override must find the real article wherever it sits)", () => {
+  // The #118 skeleton-override must find the real streamed article wherever it sits — past many
+  // teaser/card articles, or as plain text behind markup-heavy cards. selectMainContentHtml scores
+  // every <article> (no cap) so richestArticle always sees the real body. (This pinned the codex
+  // finding that a candidate cap — slice by count, or a raw-length shortlist — regressed #118; the
+  // cap was reverted. Asserts the behavior holds: the late rich article overrides the skeleton.)
   const skeleton = "<p>" + "Loading... ".repeat(5) + "</p>"; // ~55 chars (a skeleton, < SKELETON_ARTICLE_MAX_CHARS)
   const teaser = "<article><h3>Card</h3><p>A teaser card in the grid.</p></article>";
   const realBody = "<h1>LATE_REAL_STREAMED</h1><p>" + "This is the real streamed article body, far richer than every teaser and the skeleton. ".repeat(20) + "</p>";
   const swap = "<script>$RC=function(a){var e=document.getElementById(a);if(e)e.removeAttribute('hidden')};$RC('S:1')</script>";
-  // skeleton(0) + 33 teasers(1-33) + real(34): the real article sits past MAX_LANDMARK_CANDIDATES(32).
+  // skeleton(0) + 33 teasers(1-33) + real(34): the real article sits past where any small cap would cut.
   const html = "<html><body>" + swap + "<article>" + skeleton + "</article>" + teaser.repeat(33) + "<article>" + realBody + "</article></body></html>";
   const main = selectMainContentHtml(html);
-  assert.match(main ?? "", /LATE_REAL_STREAMED/, "the late rich article (past K teasers) is scored via the raw shortlist and overrides the skeleton");
-  assert.equal((main ?? "").includes("Loading..."), false, "the skeleton is not locked in by a slice cap");
+  assert.match(main ?? "", /LATE_REAL_STREAMED/, "the late rich article (past many teasers) is scored and overrides the skeleton");
+  assert.equal((main ?? "").includes("Loading..."), false, "the skeleton is not locked in");
 });
 
 test("selectMainContentHtml: a substantial primary is NOT displaced by a richer sibling even on a React page (#118 codex P2)", () => {
