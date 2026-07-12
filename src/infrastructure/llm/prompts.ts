@@ -19,9 +19,24 @@ export function buildMessages(input: TransformInput): LlmMessage[] {
   ];
 }
 
+/**
+ * #155: front-load guidance appended to every summary instruction. When output space may be
+ * limited (a caller `budget`, or a page long enough to hit the model's output cap after
+ * escalation), steer the model to lead with the most decision-relevant parts and omit a whole
+ * lower-priority section rather than cut off mid-answer — so a capped summary still carries the
+ * important fields (a 6-field due-diligence prompt no longer drops the verdict/red-flags at the
+ * tail). The trailing carve-out mirrors the verbatim rule's exact triggers (list/extract/
+ * enumerate): front-loading must NEVER license dropping items the caller asked to be listed, so
+ * enumeration/extract prompts are unaffected. It is advisory prompt wording only — it composes
+ * with the router's budget-escalation loop (the messages are built once and retried unchanged at
+ * each higher cap, so every attempt — including the final truncated-best — carries the guidance).
+ */
+export const FRONTLOAD_ON_TRUNCATION =
+  "If output space may be limited, answer the most decision-relevant parts of the request first, omitting an entire lower-priority section rather than truncating mid-answer; never drop items you were asked to list, extract, or enumerate.";
+
 function summaryInstruction(input: TransformInput): string {
   const budget = input.budget ? ` Keep the answer within ${input.budget} tokens.` : "";
-  return `User request: ${input.prompt}${budget} Answer concretely from the provided content. When the request asks to list, extract, or enumerate items, output every matching item verbatim as it appears in the content — do not say items were "found" or "detected" without listing them. If specific items are genuinely not in the content, say so explicitly rather than hedging.`;
+  return `User request: ${input.prompt}${budget} Answer concretely from the provided content. When the request asks to list, extract, or enumerate items, output every matching item verbatim as it appears in the content — do not say items were "found" or "detected" without listing them. If specific items are genuinely not in the content, say so explicitly rather than hedging. ${FRONTLOAD_ON_TRUNCATION}`;
 }
 
 function extractInstruction(input: TransformInput): string {

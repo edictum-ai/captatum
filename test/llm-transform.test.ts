@@ -11,6 +11,26 @@ import { LlmTransformer, ModelRouter } from "../src/infrastructure/llm/model-rou
 import { noneReason } from "../src/infrastructure/llm/router-helpers.ts";
 import { detectSensitiveTransformInput } from "../src/infrastructure/llm/safety.ts";
 import type { LlmGenerateInput, LlmGenerateResult, LlmModelCandidate, LlmProvider } from "../src/infrastructure/llm/types.ts";
+import { buildMessages, FRONTLOAD_ON_TRUNCATION } from "../src/infrastructure/llm/prompts.ts";
+
+test("#155: summary instruction front-loads on truncation without weakening the enumeration rule", () => {
+  // The summary prompt is 100% caller-controlled; captatum adds no field-ordering guidance of
+  // its own, so on a capped (transform_truncated) summary the model writes in document order and
+  // the tail fields (e.g. red flags / verdict on a due-diligence prompt) are the ones cut. The
+  // fix appends FRONTLOAD_ON_TRUNCATION. This pins three things at once:
+  const user = buildMessages({ mode: "summarize", output: "summary", content: "page", prompt: "Summarize" })[1]?.content ?? "";
+  // (a) the front-load clause is present on the summary instruction ...
+  assert.ok(user.includes(FRONTLOAD_ON_TRUNCATION), "front-load clause appended to the summary instruction");
+  // (b) ... AND the verbatim-enumeration rule survives alongside it (the two compose).
+  assert.match(user, /list, extract, or enumerate items, output every matching item verbatim/);
+  // (c) the carve-out names the SAME three triggers as the verbatim rule (list/extract/enumerate).
+  //     A judge-panel found that a carve-out naming only "list or enumerate" left "extract" prompts
+  //     (e.g. "extract all error codes") exposed to item omission — so all three must be mirrored.
+  assert.match(FRONTLOAD_ON_TRUNCATION, /never drop items you were asked to list, extract, or enumerate/);
+  // (d) extract mode is a different instruction and must NOT carry the summary front-load clause.
+  const extractUser = buildMessages({ mode: "extract", output: "extract", content: "page", prompt: "p", schema: { type: "object" } })[1]?.content ?? "";
+  assert.doesNotMatch(extractUser, /decision-relevant/, "front-load clause is summary-only, not extract");
+});
 
 test("default summary with configured provider returns transformed provenance", async () => {
   const provider = new RecordingProvider(candidate("openrouter", "free/model", { free: true }), {
