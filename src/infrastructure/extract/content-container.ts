@@ -20,8 +20,6 @@ import { findMatchingClose } from "./main-content.ts";
  */
 export function selectContentContainer(cleanedBody: string, revealedIds: Set<string>): string | null {
   const lower = cleanedBody.toLowerCase();
-  const bodyTextLen = extractVisibleText(cleanedBody, revealedIds).length;
-  if (bodyTextLen === 0) return null;
 
   // Gather allowlisted <div>/<section> candidates. findMatchingClose needs the FULL same-tag
   // open array for depth-counting (a subset would pair an open with a premature inner close →
@@ -48,7 +46,13 @@ export function selectContentContainer(cleanedBody: string, revealedIds: Set<str
   };
   scan("div", "</div");
   scan("section", "</section");
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return null; // no-container pages return here WITHOUT a bodyTextLen
+  // pass — the caller (index.ts) then extracts cleanedBody once for the delivered text. (codex P2:
+  // computing bodyTextLen before this check made no-container pages + SPA shells pay the ~10-pass
+  // extractor twice.) bodyTextLen is needed only to score candidates against the floor.
+
+  const bodyTextLen = extractVisibleText(cleanedBody, revealedIds).length;
+  if (bodyTextLen === 0) return null;
 
   // Prescore by raw content length (O(1)); run the ~10-pass extractVisibleText on ONLY the top-K
   // (the v1-defect fix — scoring every candidate with the extractor was N×body×10 on nested 5MB).
