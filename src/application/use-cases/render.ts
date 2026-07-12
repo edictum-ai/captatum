@@ -70,7 +70,12 @@ export async function maybeRender(input: MaybeRenderInput): Promise<Result> {
     if (renderEgress > 0) input.result.egressBytes = tier1Bytes + renderEgress;
     if (rendered.egressHosts && rendered.egressHosts.length > 0) input.result.renderEgressHosts = rendered.egressHosts;
     input.result.attempts.push(...controlAttempts);
-    input.result.renderDiagnostics = buildRenderDiagnostics(rendered); // #154 (render-error: no DOM)
+    // renderDiagnostics only when a render ACTUALLY ran + failed. The hosted no-CDP path's
+    // unavailableRenderer() returns {rendered:false, code:"render_unavailable"} — no render ran, so
+    // no diagnostics (the contract: render_unavailable carries none; codex P2).
+    if (rendered.code !== "render_unavailable") {
+      input.result.renderDiagnostics = buildRenderDiagnostics(rendered);
+    }
     return renderRejected(input.result, rendered, renderMs);
   }
 

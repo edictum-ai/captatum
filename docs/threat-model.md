@@ -131,12 +131,12 @@ the contract reference; this file is the security reasoning.
   from. It is bounded by construction — the output shaper filters to `registrableDomain(h) !== null`
   and redacts IP/single-label hosts to the `[ip-literal]` sentinel, so NO raw IP, path, query, or
   full URL crosses the boundary (the internal `render-egress.ts:19` `registrableDomain(h) ?? h`
-  fallback is kept for the bulk union-key gate, but only the filtered copy is surfaced). There is no
+  fallback is kept for the bulk union-key gate, but only the filtered copy is surfaced). The host
+  SET is ATTACKER-INFLUENCED: a hostile render_empty page chooses its own subresource hosts (it can
+  `fetch()` arbitrary hosts), so the surfaced domains are page-chosen — a low-bandwidth covert
+  channel + a receipt-bloat vector. It is CARDINALITY-CAPPED at the output boundary (deduped + ≤ 8
+  entries + a trailing "(+K more)" count), bounding both the bloat and the channel. There is no
   host/IP redactor in the redaction path; safety is by construction at the extractor boundary.
-  `possibleReason` is a heuristic over an untrusted render outcome — a HINT, never a trusted
-  diagnosis (a hostile page can shape the signals); `unknown` is the honest default. Single-fetch now
-  also surfaces `egressBytes` (parity with bulk); `renderEgressHosts` is newly surfaced in BOTH
-  single-fetch and bulk (previously internal-only) — a net-new, documented, bounded exposure.
 - **Anti-bot challenge classification (#41, #151) is a narrow curated deny-list of literal
   challenge signatures over an already-fetched body** — it issues NO new request and adds NO
   egress/SSRF surface (it inspects only response headers/body already pulled through the sole
