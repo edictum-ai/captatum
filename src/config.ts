@@ -1,4 +1,5 @@
 import { isLoopbackHost } from "./domain/policy.ts";
+import { BULK_GUARD_CEILINGS } from "./domain/bulk-policy.ts";
 
 export const config = {
   source: {
@@ -118,6 +119,17 @@ export const config = {
     maxPerHostInflight: () => envPositiveInteger("CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT", 2),
     crawlDelayMs: () => envPositiveInteger("CAPTATUM_BULK_CRAWL_DELAY_MS", 1000),
     maxConcurrency: () => envPositiveInteger("CAPTATUM_BULK_MAX_CONCURRENCY", 4),
+    /** #157: hosted runtime lever to raise the bulk global-deadline wall (maxGlobalWallMs) from
+     *  the 55 s hosted default toward the 180 s hard ceiling, without a code change. The wall is a
+     *  directed-DoS / egress-deadline bound, so this is a SECURITY SELECTOR — malformed input fails
+     *  CLOSED at boot (throw), never silently falls back (never `value || default`). UNSET / empty /
+     *  whitespace-only → undefined (the hosted path omits the field and the domain applies the 55 s
+     *  default). A clean decimal integer of ms in [1, ceiling] → that value. Anything else —
+     *  non-numeric, zero, above the ceiling, or a Number() shape the operator did not literally type
+     *  (hex, scientific, float, signed) — throws, naming the env var + the valid range. The ceiling
+     *  is single-sourced from BULK_GUARD_CEILINGS (the domain's hard cap); the domain clamps again
+     *  as defense-in-depth. Operator/deploy-time env (k8s ConfigMap/Secret), not request input. */
+    maxGlobalWallMs: (): number | undefined => envBulkWallMs("CAPTATUM_BULK_MAX_GLOBAL_WALL_MS"),
     /** BULK-2: process-wide GLOBAL fetch-concurrency cap on hosted (LimitingFetcher).
      *  Bounds the unbounded worst case (admission 8 CALLS × maxConcurrency 4 = up to 32
      *  concurrent fetches) below the 2 vCPU/4 GiB sizing. Default 24: below 32 (bounds the
@@ -149,4 +161,34 @@ function envPositiveInteger(name: string, fallback: number): number {
 
 function envList(name: string): string[] {
   return envString(name, "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/** #157: parse the bulk global-wall env (a security selector — fail CLOSED at boot on malformed).
+ *  Unset / empty / whitespace-only → undefined (absent operator config). Otherwise a strict decimal
+ *  integer of ms in [1, ceiling] → that number; anything else throws (names the env var + range).
+ *  The regex runs AFTER .trim() (so surrounding whitespace / a heredoc trailing newline on a valid
+ *  value is accepted — the #1 ConfigMap contamination) and rejects non-decimal shapes an operator
+ *  did not literally type (hex 0x10, scientific 1e5, floats, signs, internal whitespace, unicode
+ *  digits). Leading zeros (055000) are accepted at no security cost (still decimal-only, bounded). */
+function envBulkWallMs(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const trimmed = raw.trim();
+  if (!/^[0-9]+$/.test(trimmed)) {
+    throw new Error(
+      `${name} must be a decimal integer of milliseconds in [1, ${BULK_GUARD_CEILINGS.maxGlobalWallMs}] ` +
+        `(the bulk global-deadline wall ceiling); got: ${JSON.stringify(raw)}`,
+    );
+  }
+  const parsed = Number(trimmed);
+  if (parsed < 1) {
+    throw new Error(`${name} must be >= 1 ms; got: ${JSON.stringify(raw)}`);
+  }
+  if (parsed > BULK_GUARD_CEILINGS.maxGlobalWallMs) {
+    throw new Error(
+      `${name}=${parsed} ms exceeds the hard ceiling ${BULK_GUARD_CEILINGS.maxGlobalWallMs} ms ` +
+        `(the directed-DoS / egress-deadline bound); lower it toward the 55 s default or up to the ceiling.`,
+    );
+  }
+  return parsed;
 }

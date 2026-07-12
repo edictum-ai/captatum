@@ -17,9 +17,12 @@ export interface BulkOperatorConfig {
   readonly maxPerHostInflight: number;
   readonly crawlDelayMs: number;
   readonly maxConcurrency: number;
-  /** Optional operator tightening of the global wall (lowering only — clamped DOWN to the
-   *  default; a deployment may shorten the wall for its sizing, never lengthen it past the
-   *  hard server cap). */
+  /** Optional operator override of the global wall. An operator may set the wall anywhere in
+   *  [1 ms, BULK_GUARD_CEILINGS.maxGlobalWallMs] — LOWERING below the 55 s hosted default for a
+   *  tight deployment, or RAISING toward the 180 s ceiling (e.g. the hosted lever
+   *  CAPTATUM_BULK_MAX_GLOBAL_WALL_MS, #157, when a deployment learns its real client timeout is
+   *  higher; or the local-binary flavor, which passes the ceiling so it keeps the pre-#148 wall).
+   *  Absent → the 55 s hosted default. Never past the ceiling. See resolveBulkGuard below. */
   readonly maxGlobalWallMs?: number;
   /** Optional operator tightening of the per-host directed-DoS COUNT bound (lowering only —
    *  clamped DOWN to the default 10; tightens the quarantine bound for a sensitive deployment). */
