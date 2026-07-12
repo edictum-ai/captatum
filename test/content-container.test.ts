@@ -79,3 +79,28 @@ test("#165 id is case-insensitive; class tokens are case-insensitive", () => {
   const body2 = `<div class="Entry-Content"><p>${prose(30)}</p></div>`;
   assert.ok(selectContentContainer(body2, NO_IDS) !== null, "mixed-case class token matched");
 });
+
+test("#165 .prose is NOT a content container — a large .prose comments block does not displace the real article", () => {
+  // .prose is Tailwind Typography's generic styled-text utility (comments, sidebars, footer legal
+  // text), not a content-container convention. A large .prose block must not clear the floor and
+  // scope the feed away from the real article in a sibling. (independent-review finding)
+  const body =
+    `<div class="prose"><p>${prose(60)}</p></div>` + // ~1.2k chars of "comments" (would clear the floor)
+    `<div class="post"><h1>REAL_ARTICLE_HEAD</h1><p>${prose(12)}</p></div>`; // the real article
+  // Neither .prose nor .post is allowlisted → no container selected → the caller keeps the whole
+  // body and the real article survives. (If .prose were re-added, this fails: it would be selected.)
+  assert.ok(selectContentContainer(body, NO_IDS) === null, ".prose is not a content container");
+});
+
+test("#165 per-tag cap: a <div> allowlist flood does not starve a later <section> candidate", () => {
+  // 20 allowlisted <div id="content"> (a SHARED cap would fill the pool before the section scan
+  // runs) precede a large <section id="layout-content"> holding the majority. The PER-TAG cap means
+  // each tag gets its own cap, so the section IS scanned and — as the majority — selected. Without
+  // the per-tag cap, the section scan is starved → section never a candidate → null (fails this).
+  const body =
+    `<div id="content">x</div>`.repeat(20) +
+    `<section id="layout-content"><h1>SECTION_REAL_TAIL</h1><p>${prose(40)}</p></section>`;
+  const out = selectContentContainer(body, NO_IDS);
+  assert.ok(out !== null, "the section was scanned despite the div flood (per-tag cap)");
+  assert.match(out!, /SECTION_REAL_TAIL/, "the section — the majority — is selected");
+});

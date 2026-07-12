@@ -216,8 +216,8 @@ test("selectContentContainer stays bounded on a nested allowlist-class flood (#1
   // signal (empirically non-monotonic under contention). An unbounded impl blows past this
   // ceiling; the bounded impl is ~tens of ms. (Phase-isolated linearity: findStartTags,
   // findMatchingClose×cap, and extractVisibleText are each independently linear on this input.)
-  const N = 4_000; // ~100KB nested body, 4000 allowlist candidates (the cap keeps ≤16)
-  const html = `<div class="prose">`.repeat(N) + `Real article body content substantial enough to clear the floor. `.repeat(4) + `</div>`.repeat(N);
+  const N = 4_000; // ~100KB nested body, 4000 allowlist candidates (the per-tag cap keeps ≤16)
+  const html = `<div class="entry-content">`.repeat(N) + `Real article body content substantial enough to clear the floor. `.repeat(4) + `</div>`.repeat(N);
   const { ms, out } = timedMs(() => selectContentContainer(html, new Set<string>()));
   assert.ok(out !== null, "the outermost prose container is selected (it holds the body)");
   assert.ok(ms < MULTI_CEILING_MS, `#165 prose-flood N=${N}: ${ms.toFixed(0)}ms exceeded ${MULTI_CEILING_MS}ms — the cap+prescore+top-K bound was lost (an N×extractVisibleText impl is minutes here)`);

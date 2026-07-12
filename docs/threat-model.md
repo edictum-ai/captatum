@@ -108,7 +108,11 @@ the contract reference; this file is the security reasoning.
   `findStartTags` scan for a curated ID/class allowlist (`#content`/`#bodyContent`/`#mw-content-text`,
   `#layout-content`, `.entry-content`, …) plus a bounded count of `extractVisibleText` calls
   (candidates are prescored by raw content length — O(1) — and only the top-K run the ~10-pass
-  extractor; a candidate cap bounds the flood surface), so it adds no new REDOS surface.
+  extractor; a per-tag candidate cap bounds the flood surface), so it adds no new REDOS surface.
+  The sibling landmark path (`selectMainContentHtml`) had the same N×`extractVisibleText` shape on
+  its `<article>`/`<main>` scoring; #165 mirrors the bound there too (REDOS-8: the candidate lists
+  are sliced to a cap before scoring), so an attacker who learns the container path is capped cannot
+  pivot to an `<article>` flood on the hotter every-page path.
   Content-integrity: scoping to a recognized container drops top-bar/sidebar chrome — the most
   injection-shaped region of a page — from the head of the trusted visible-text feed (same
   improvement class as #146's directive-JS fix). Honest residual: the selector is a heuristic a

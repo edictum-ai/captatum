@@ -30,8 +30,11 @@ export function selectContentContainer(cleanedBody: string, revealedIds: Set<str
   const candidates: Array<{ content: string; rawLen: number }> = [];
   const scan = (tagName: string, close: string): void => {
     const opens = findStartTags(cleanedBody, tagName);
+    let added = 0; // PER-TAG cap: a <div> allowlist flood must not eat the cap before the <section>
+    // scan runs (e.g. 16 allowlisted divs starving <section id="layout-content">). Each tag gets
+    // up to MAX_CONTENT_CANDIDATES; the shared `candidates` pool is then prescored across both.
     for (let i = 0; i < opens.length; i++) {
-      if (candidates.length >= MAX_CONTENT_CANDIDATES) break;
+      if (added >= MAX_CONTENT_CANDIDATES) break;
       if (!isContentContainer(opens[i].attrs)) continue;
       const closeStart = findMatchingClose(lower, close, opens, i, opens[i].end);
       if (closeStart === -1) {
@@ -40,6 +43,7 @@ export function selectContentContainer(cleanedBody: string, revealedIds: Set<str
       } else {
         candidates.push({ content: cleanedBody.slice(opens[i].end, closeStart), rawLen: closeStart - opens[i].end });
       }
+      added++;
     }
   };
   scan("div", "</div");
@@ -101,8 +105,11 @@ const CONTENT_CONTAINER_IDS = new Set([
   "content-body", "page-body", "mainbody", "documentation", "docs-content",
   "docs-body", "article-body", "dokuwiki__content",
 ]);
-/** Curated main-content container classes (any whitespace-token match). */
+/** Curated main-content container classes (any whitespace-token match). `prose` is deliberately
+ *  EXCLUDED — it is Tailwind Typography's generic styled-text utility (comments, sidebars, footer
+ *  legal text), not a content-container convention; a large `.prose` block would clear the floor
+ *  and displace the real article (content-loss). Re-add only behind a density signal. */
 const CONTENT_CONTAINER_CLASSES = new Set([
-  "entry-content", "post-content", "article-content", "markdown-body", "prose",
+  "entry-content", "post-content", "article-content", "markdown-body",
   "td-content", "document", "body-content", "refentry", "mw-body", "theme-doc-markdown",
 ]);

@@ -26,6 +26,10 @@ export const SIBLING_ARTICLE_OVERRIDE_FACTOR = 5;
 /** A first <article> at or below this visible-text length is treated as a skeleton candidate
  *  (a loading placeholder, not primary content). Real article bodies are normally far larger. */
 export const SKELETON_ARTICLE_MAX_CHARS = 1000;
+/** REDOS-8 cap on the <article>/<main> candidates scored with the ~10-pass extractVisibleText
+ *  (an <article>/<main> flood would otherwise be unbounded N×body on this hotter landmark path).
+ *  Real pages have 1–3; slice preserves document order so firstArticle stays correct. (#165 mirror) */
+const MAX_LANDMARK_CANDIDATES = 32;
 
 /**
  * <aside>/<nav>/<footer> are chrome (sidebars, TOCs, mega-menus, page footers). They are stripped
@@ -173,11 +177,15 @@ export function selectMainContentHtml(html: string, revealedIds: Set<string> = r
   // candidate (a genuinely `display:none`-hidden article is still excluded — #97 safety).
   const clean = stripChrome(stripHiddenSubtrees(stripInert(html), hiddenClasses, revealedIds));
 
-  // Score every <article> by visible-text length. The FIRST is the page's primary (document
-  // order), but a SUBSTANTIALLY richer sibling overrides it — a React loading skeleton is a short
-  // placeholder shipped first; the real streamed article is a far larger later sibling. Scoring
-  // threads revealedIds so a boundary-bearing fragment is measured with its streamed content.
-  const articles = findElements(clean, "article").map<{ content: string; len: number }>((el) => ({
+  // Score <article> candidates by visible-text length (capped — REDOS-8: an <article>/<main>
+  // flood would otherwise run the ~10-pass extractVisibleText on every element, an unbounded
+  // N×body on the hotter landmark path; #165's cap mirrors selectContentContainer). The FIRST is
+  // the page's primary (document order), but a SUBSTANTIALLY richer sibling overrides it — a React
+  // loading skeleton is a short placeholder shipped first; the real streamed article is a far
+  // larger later sibling. Scoring threads revealedIds so a boundary-bearing fragment is measured
+  // with its streamed content. slice preserves document order (firstArticle stays correct); real
+  // pages have 1–3 articles/mains, so the cap never bites legitimately.
+  const articles = findElements(clean, "article").slice(0, MAX_LANDMARK_CANDIDATES).map<{ content: string; len: number }>((el) => ({
     content: el.content,
     len: extractVisibleText(el.content, revealedIds).length,
   }));
@@ -186,7 +194,7 @@ export function selectMainContentHtml(html: string, revealedIds: Set<string> = r
     (best, el) => !best || el.len > best.len ? el : best,
     undefined,
   );
-  const longestMain = findElements(clean, "main").reduce<{ content: string; len: number } | undefined>(
+  const longestMain = findElements(clean, "main").slice(0, MAX_LANDMARK_CANDIDATES).reduce<{ content: string; len: number } | undefined>(
     (best, el) => {
       const len = extractVisibleText(el.content, revealedIds).length;
       return !best || len > best.len ? { content: el.content, len } : best;
