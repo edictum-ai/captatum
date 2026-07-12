@@ -51,8 +51,13 @@ function detectLowValue(result: Result): boolean {
   // (the SPA's JS/CSS) — the real "large page" signal. A large SPA with a tiny DOM ("Careers") has
   // small `bytes` but large `egressBytes`, so the threshold must use the network size (#159 codex).
   if ((result.egressBytes ?? result.bytes) < LOW_VALUE_MIN_BYTES) return false;
-  // Reuse the shell-gate's exact content-bearing predicate (a CONTENT_TYPES @type with a content
-  // field, or a nested content entity) — not a narrower allowlist, so the two never drift (#159).
+  // Reuse the shell-gate's JSON-LD content-bearing predicate — INTENTIONALLY NOT its app-state predicate.
+  // The gate treats a named app-state key (__NEXT_DATA__/__NUXT_DATA__/…) as "maybe content" to ELIDE a
+  // render (a latency heuristic); but appState is NOT surfaced in the lean receipt (debug-gated), so a
+  // tier-1 app-state page with thin visible text still DELIVERS thin content to the agent. low_value
+  // judges the delivered text, so it does not mirror the gate's app-state signal — else the StartupJobs
+  // repro (Nuxt shell, 68 chars visible, __NUXT_DATA__ present) would silently pass again (#185 codex P2
+  // declined on this rationale; the deeper fix is shell-gate/render fidelity, #152/#154).
   return !hasContentBearingJsonLd(result.structured?.jsonLd, isPinDetailPage(result.finalUrl || result.url));
 }
 

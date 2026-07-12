@@ -191,3 +191,22 @@ test("classifyContentQuality: a render-incapable tier is NOT content-quality-cla
   assert.equal(classifyContentQuality(result({ result: "Loading...", bytes: 250_000, title: "App", tier: "render-unavailable" })), undefined);
   assert.equal(classifyContentQuality(result({ result: "Loading...", bytes: 250_000, title: "App", tier: "render-blocked" })), undefined);
 });
+
+test("classifyContentQuality: a tier-1 app-state page with thin DELIVERED text IS low_value (#185 codex P2 — declined)", () => {
+  // codex P2 asked detectLowValue to mirror the shell-gate's app-state predicate (exempt __NEXT_DATA__/
+  // __NUXT_DATA__/__PRELOADED_STATE__/etc. pages). Declined: appState is NOT surfaced in the LEAN receipt
+  // (it is debug-gated), so a tier-1 app-state page with <500 visible chars still DELIVERS thin content
+  // to the agent — low_value is honest. Mirroring app-state would regress the #179 repro (StartupJobs:
+  // a Nuxt shell, 68 chars visible, __NUXT_DATA__ present → would silently pass again). The deeper fix
+  // for such pages is shell-gate/render fidelity (#152/#154), out of scope for the content-quality layer.
+  // REGRESSION: pins the intentional JSON-LD-only predicate; FAILS if a future change adds the app-state
+  // exemption (these would flip from "low_value" to undefined).
+  assert.equal(classifyContentQuality(result({
+    result: "Dashboard", bytes: 250_000, title: "Acme Dashboard", tier: 1,
+    structured: { appState: { __NEXT_DATA__: { props: { user: "alice" } } } },
+  })), "low_value");
+  assert.equal(classifyContentQuality(result({
+    result: "Dashboard", bytes: 250_000, title: "Acme Dashboard", tier: 1,
+    structured: { appState: { __NUXT_DATA__: [1, 2, 3] } },
+  })), "low_value");
+});
