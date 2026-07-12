@@ -22,13 +22,13 @@ export function redactEgressHost(host: string): string {
  *  cap bounds the cardinality surfaced into the caller's context (#154 review HIGH). */
 const MAX_SURFACED_RENDER_HOSTS = 8;
 
-export function shapeRenderDiagnostics(d: RenderDiagnostics): Record<string, unknown> {
+export function shapeRenderDiagnostics(d: RenderDiagnostics, includeHosts = true): Record<string, unknown> {
   const out: Record<string, unknown> = {
-    renderEgressHosts: capRenderEgressHosts(d.renderEgressHosts),
     blockedRequests: d.blockedRequests,
     forwardedRequests: d.forwardedRequests,
     possibleReason: d.possibleReason,
   };
+  if (includeHosts) out.renderEgressHosts = capRenderEgressHosts(d.renderEgressHosts);
   if (d.renderedBytes !== undefined) out.renderedBytes = d.renderedBytes;
   if (d.domTextLength !== undefined) out.domTextLength = d.domTextLength;
   if (d.egressBytes !== undefined) out.egressBytes = d.egressBytes;

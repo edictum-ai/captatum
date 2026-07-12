@@ -91,9 +91,10 @@ function leanRow(r: BulkSeedResult, tier: RowTier, debug: boolean): Record<strin
     jsRequired: r.jsRequired,
     resolvedVia: r.resolvedVia,
     ...(tier !== "compact" ? { redirectHosts: r.redirectHosts } : {}), // drop on compact (heaviest non-url field)
-    // #154: failure-path diagnostic; hosts redacted at the boundary. Dropped on compact — its
-    // renderEgressHosts list is unbounded + would defeat compact's 25KB ceiling (codex P2).
-    ...(r.renderDiagnostics && tier !== "compact" ? { renderDiagnostics: shapeRenderDiagnostics(r.renderDiagnostics) } : {}),
+    // #154: failure-path diagnostic. Kept in EVERY tier (incl. compact) so possibleReason/counts
+    // survive on large bulks; renderEgressHosts (the only bloat field) is omitted in compact for the
+    // 25KB ceiling (the hosts are count-capped at 8 in the full/lean tiers).
+    ...(r.renderDiagnostics ? { renderDiagnostics: shapeRenderDiagnostics(r.renderDiagnostics, tier !== "compact") } : {}),
     ...(r.contentSha256 !== undefined && tier !== "compact" ? { contentSha256: r.contentSha256 } : {}),
     // Compact tier: clip each diagnostic message + cap the row count so long upstream/schema
     // messages can't overflow the 25 KB ceiling from warnings[]/errors[] (codes are kept).

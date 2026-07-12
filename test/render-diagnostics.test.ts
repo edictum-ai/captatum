@@ -58,6 +58,11 @@ test("#154 shapeRenderDiagnostics caps + dedups renderEgressHosts (attacker-infl
   // registrable domain (app.example.com → example.com — the redaction surfaces eTLD+1, not the subdomain).
   const ips: RenderDiagnostics = { renderEgressHosts: ["1.2.3.4", "5.6.7.8", "app.example.com"], blockedRequests: 0, forwardedRequests: 0, possibleReason: "unknown" };
   assert.deepEqual(shapeRenderDiagnostics(ips).renderEgressHosts, ["[ip-literal]", "example.com"]);
+  // Compact (includeHosts=false): possibleReason/counts kept; renderEgressHosts omitted (the bloat field).
+  const compact = shapeRenderDiagnostics({ renderEgressHosts: ["site0.com", "site1.com"], blockedRequests: 2, forwardedRequests: 0, possibleReason: "extraction-gap", renderedBytes: 5000 }, false);
+  assert.equal(compact.possibleReason, "extraction-gap", "compact keeps possibleReason");
+  assert.equal(compact.blockedRequests, 2, "compact keeps counts");
+  assert.equal(compact.renderEgressHosts, undefined, "compact omits the hosts list (25KB ceiling)");
 });
 
 test("#154 no renderDiagnostics when the renderer returns code render_unavailable (hosted no-CDP path — codex P2)", async () => {
