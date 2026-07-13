@@ -167,17 +167,25 @@ the contract reference; this file is the security reasoning.
   `\s*` quantifier, linear) is bounded by the requester's HTTP max-header-size, and a cookie alone
   never gates (`detectAntibotBlock` ignores `hasChallengeCookie`). No bypass is attempted — the wall
   is labeled, not entered.
-- **`output:"extract"` schema is untrusted input, validated at the input boundary (#153).**
-  The caller-supplied JSON Schema is parsed as DATA (never a directive) and checked against the
-  supported-keyword allowlist (`findUnsupportedSchemaKeyword`, the same `SUPPORTED_SCHEMA_KEYS`
-  set the value validator enforces) **before any fetch/LLM** — fail-closed
-  (`extract_schema_unsupported_keyword`, JSON-RPC `InvalidParams`) so a schema using a keyword
-  captatum cannot verify (e.g. `format`, `contentEncoding`, or a misplaced tool knob like
-  `budget`) neither burns a round-trip nor accepts unvalidated structured data. Allowlist, not
-  blocklist (house rule). The offending key AND each property-name path segment are length-capped
-  before they enter the error message, and **no schema value is ever echoed** (the schema is
-  untrusted data). The same check runs on `captatum_bulk`'s uniform schema as a whole-call reject.
-  A defense-in-depth copy remains at the transform seam (`finalize`) — dead in the production call
+- **`output:"extract"` schema is untrusted input, validated at the input boundary (#153/#193).**
+  The caller-supplied JSON Schema is parsed as DATA (never a directive). Before the supported-keyword
+  allowlist (`findUnsupportedSchemaKeyword`, the same `SUPPORTED_SCHEMA_KEYS` set the value validator
+  enforces), Captatum recovers exactly six valid root-level fields accidentally merged by a client:
+  `budget`, `timeoutMs`, `allowRender`, `debug`, `maxBytes`, and `transform`. It shallow-clones the
+  schema, revalidates each value through the ordinary input parser without coercion, and removes it
+  from the clone. It applies the value only when the true top-level field is absent; otherwise it
+  discards the nested value and emits a distinct, non-fatal `schema_knob_extracted` warning. It never
+  recurses into schema properties, and it never recovers URL/output/prompt/schema fields or bulk cost
+  knobs; untrusted schema data cannot select a fetch target, output mode, or bulk cost policy. The six
+  allowlisted knobs may change their ordinary bounded fetch/render behavior only after field validation.
+  Required scope is resolved from the same provider-aware effective output the use case executes: `raw`
+  skips Transform (and ignores an unused override) while `summary`/`extract` require Transform scope. The cleaned schema is then checked before
+  any fetch/LLM, fail-closed (`extract_schema_unsupported_keyword`, JSON-RPC `InvalidParams`) for
+  every remaining keyword Captatum cannot verify (`format`, `contentEncoding`, invalid recovered
+  values, and all non-allowlisted tool keys). Allowlist, not blocklist (house rule). The offending
+  key AND each property-name path segment are length-capped before they enter the error message, and
+  **no schema value is ever echoed**. The same recovery runs once on `captatum_bulk`'s uniform schema;
+  its warning is call-level and not duplicated per seed. A defense-in-depth copy remains at the transform seam (`finalize`) — dead in the production call
   graph (normalize always runs first), retained only for a hypothetical direct-`TransformPort`
   caller. **Depth:** the recursive walk carries an explicit `MAX_SCHEMA_DEPTH = 64` and fails
   closed (`extract_schema_too_deep`) on exceed. This is required because the walker is the **more

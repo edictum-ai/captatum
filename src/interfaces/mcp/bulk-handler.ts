@@ -14,18 +14,22 @@ import { buildBulkStructuredContent } from "./bulk-shape.ts";
 import { CAPTATUM_BULK_TOOL_NAME } from "./bulk-schema.ts";
 import { toMcpError } from "./server.ts";
 import type { CaptatumMcpServerDeps, CaptatumBulkMcpExecutor } from "./server.ts";
+import { normalizeBulkInput } from "../../application/use-cases/bulk-input.ts";
 
 export type { CaptatumBulkMcpExecutor };
 
 export async function callBulk(args: unknown, deps: CaptatumMcpServerDeps): Promise<CallToolResult> {
   const started = deps.clock.nowMs();
   let bulk: BulkResult;
+  let debug: boolean;
   try {
     // requireScope is INSIDE the try (mirrors callCaptatum) so an insufficient-scope rejection
     // on the 50× amplification surface is audited + mapped to the auth JSON-RPC code (-32003),
     // not dropped as a generic error. Bulk reuses fetch:read / fetch:transform (no bulk:read in v1);
     // raw default → fetch:read, summary/extract → fetch:transform.
-    requireScope(deps.auth, requiredScopeForCaptatum(args, "raw"));
+    const normalized = normalizeBulkInput(args);
+    debug = normalized.request.debug;
+    requireScope(deps.auth, requiredScopeForCaptatum({ output: normalized.request.requestedOutput, transform: normalized.request.transform }));
     // Thread clientId so the orchestrator can key the per-tenant BulkQuotaPort reservation (BULK-1).
     bulk = await deps.bulk!.execute(args, { fetchedAt: new Date(deps.clock.nowMs()).toISOString(), clientId: deps.auth.clientId } satisfies CaptatumContext);
   } catch (error) {
@@ -37,7 +41,6 @@ export async function callBulk(args: unknown, deps: CaptatumMcpServerDeps): Prom
   } catch (auditError) {
     process.stderr.write(`captatum: bulk audit write failed: ${auditError instanceof Error ? auditError.message : auditError}\n`);
   }
-  const debug = isRecord(args) && args.debug === true;
   return {
     content: [{ type: "text", text: bulkResultToMcpText(bulk) }],
     structuredContent: buildBulkStructuredContent(bulk, debug),

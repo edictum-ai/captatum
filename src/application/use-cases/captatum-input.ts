@@ -1,7 +1,9 @@
 import { z } from "zod";
+import type { ProvenanceError } from "../../domain/result.ts";
 import type { Output } from "../../domain/tier.ts";
 import type { TransformOverride } from "../ports/transformer.ts";
 import { findUnsupportedSchemaKeyword, MAX_SCHEMA_DEPTH, messageForUnsupportedKeyword } from "../../domain/schema-allowlist.ts";
+import { recoverExtractSchemaKnobs, type ExtractSchemaKnobInput } from "./schema-knob-recovery.ts";
 
 const CRLF = /[\r\n]|%0d|%0a/i;
 const DEFAULT_PROMPT = "Provide a concise summary of the page.";
@@ -82,6 +84,7 @@ export interface NormalizedCaptatumInput {
   allowRender: boolean;
   /** Presentation-only flag: unlock heavy diagnostic fields in the MCP payload. */
   debug: boolean;
+  schemaKnobWarnings: ProvenanceError[];
 }
 
 export interface ContractErrorBody {
@@ -129,25 +132,35 @@ export function normalizeCaptatumInput(
   defaults: CaptatumDefaults = DEFAULT_CAPTATUM_DEFAULTS,
 ): NormalizedCaptatumInput {
   const parsed = parseInput(value);
+  const recovered = recoverExtractSchemaKnobs(parsed, isValidExtractSchemaKnob);
   // Fail fast at the INPUT boundary (#153): an extract schema using an unsupported keyword
   // (or nesting beyond the cap) cannot be verified, so reject before any fetch/LLM rather than
   // degrading post-transform. Shared with captatum_bulk's uniform schema (assertExtractSchemaSupported).
-  assertExtractSchemaSupported(parsed.output, parsed.schema);
-  const url = normalizeContractUrl(parsed.url);
+  assertExtractSchemaSupported(parsed.output, recovered.schema);
+  const effective = { ...parsed, ...recovered.recovered };
+  const url = normalizeContractUrl(effective.url);
   return {
     url,
-    prompt: parsed.prompt ?? defaults.prompt,
-    requestedOutput: parsed.output ?? defaults.defaultOutput,
-    schema: parsed.schema,
-    budget: parsed.budget,
-    transform: parsed.transform as TransformOverride | undefined,
-    maxBytes: Math.min(parsed.maxBytes ?? defaults.maxBytes, defaults.maxBytesHardCap),
-    timeoutMs: Math.min(parsed.timeoutMs ?? defaults.timeoutMs, defaults.timeoutMsHardCap),
-    renderTimeoutMs: Math.min(parsed.timeoutMs ?? defaults.renderTimeoutMs, defaults.renderTimeoutMsHardCap),
+    prompt: effective.prompt ?? defaults.prompt,
+    requestedOutput: effective.output ?? defaults.defaultOutput,
+    schema: recovered.schema,
+    budget: effective.budget,
+    transform: effective.transform as TransformOverride | undefined,
+    maxBytes: Math.min(effective.maxBytes ?? defaults.maxBytes, defaults.maxBytesHardCap),
+    timeoutMs: Math.min(effective.timeoutMs ?? defaults.timeoutMs, defaults.timeoutMsHardCap),
+    renderTimeoutMs: Math.min(effective.timeoutMs ?? defaults.renderTimeoutMs, defaults.renderTimeoutMsHardCap),
     maxHops: defaults.maxHops,
-    allowRender: parsed.allowRender ?? defaults.allowRender,
-    debug: parsed.debug ?? false,
+    allowRender: effective.allowRender ?? defaults.allowRender,
+    debug: effective.debug ?? false,
+    schemaKnobWarnings: recovered.warnings,
   };
+}
+
+export function isValidExtractSchemaKnob(
+  key: keyof Pick<ExtractSchemaKnobInput, "budget" | "timeoutMs" | "allowRender" | "debug" | "maxBytes" | "transform">,
+  value: unknown,
+): boolean {
+  return value !== undefined && captatumInputSchema.shape[key].safeParse(value).success;
 }
 
 function parseInput(value: unknown): CaptatumInput {

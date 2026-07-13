@@ -94,6 +94,39 @@ test("MCP: captatum_bulk dispatches end-to-end (orchestrator → captatum → fe
   await close();
 });
 
+test("MCP: captatum_bulk emits one call-level warning when it recovers a uniform schema knob", async () => {
+  const fetcher = new PerUrlFetcher();
+  fetcher.results.set("https://a.test/x", article("A", "This is article content long enough to resolve at Tier-1.", "https://a.test/x"));
+  const { client, close } = await bootLocal(fetcher);
+  const res = await client.callTool({
+    name: "captatum_bulk",
+    arguments: { urls: ["https://a.test/x"], output: "extract", schema: { type: "object", budget: 700 } },
+  });
+  const sc = res.structuredContent as { warnings: Array<{ code: string }>; results: Array<{ warnings: Array<{ code: string }> }> };
+  assert.deepEqual(sc.warnings.map((warning) => warning.code), ["schema_knob_extracted"]);
+  assert.deepEqual(sc.results[0]?.warnings, []);
+  await close();
+});
+
+test("MCP: captatum_bulk raw output with an unused transform override stays fetch:read", async () => {
+  const audit = new MemoryAudit();
+  const deps = {
+    captatum: { execute: async () => { throw new Error("captatum should not run in this bulk test"); }, defaultOutput: "raw" },
+    auth: { subject: "u", clientId: "c", scopes: ["fetch:read"] },
+    audit, clock: { nowMs: () => NOW_MS } as ClockPort,
+    bulk: {
+      execute: async () => ({
+        kind: "bulk", count: 0, passed: 0, failed: 0, truncated: 0, deduped: 0,
+        totals: { bytes: 0, egressBytes: 0, durationMs: 0 }, guard: {}, capBreaches: [],
+        clamp: {}, fenceToken: "test", results: [], failures: [], warnings: [], errors: [],
+      }),
+    },
+  } as unknown as Parameters<typeof callBulk>[1];
+
+  await callBulk({ urls: ["https://a.test/x"], output: "raw", transform: { provider: "ollama" } }, deps);
+  assert.equal(audit.toolEvents.length, 1, "the permitted raw bulk call was audited");
+});
+
 test("MCP: captatum_bulk accepts allowRender:true (render-on-bulk, PR 3) — a non-shell seed passes at Tier-1", async () => {
   // allowRender:true used to be a tool-level invalid_input (bulk_render_not_supported); it now
   // flows through. A content-bearing (non-shell) seed is unaffected — it resolves at Tier-1.

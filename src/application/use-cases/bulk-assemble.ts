@@ -16,7 +16,10 @@ export function assembleBulkResult(args: {
   shaped: ReturnType<typeof import("../../domain/bulk-policy.ts").shapeBulkInput>;
   toProcessCount: number;
   ran: { results: BulkSeedResult[]; capBreaches: string[]; budget: BudgetTracker };
-  normalized: { invalid: { url: string; code: string; message: string }[] };
+  normalized: {
+    invalid: { url: string; code: string; message: string }[];
+    schemaKnobWarnings: { code: string; message: string }[];
+  };
   boardRejected: ValidatedSeed[];
   ashbyRejected: ValidatedSeed[];
   startMs: number;
@@ -61,7 +64,10 @@ export function assembleBulkResult(args: {
     count: results.length, passed: results.length - failedSeeds.length, failed: failedSeeds.length + rejectCount,
     truncated: perHostDropped, deduped: shaped.deduped, totals, guard, capBreaches, clamp, fenceToken,
     results, failures,
-    warnings: costClamped.map((c) => ({ code: "bulk_cost_clamped", message: `${c} was clamped to the server ceiling` })),
+    warnings: [
+      ...costClamped.map((c) => ({ code: "bulk_cost_clamped", message: `${c} was clamped to the server ceiling` })),
+      ...normalized.schemaKnobWarnings,
+    ],
     errors: [],
     ...(args.quotaReserved !== undefined && args.quotaWindowSeconds !== undefined && args.quotaLimit !== undefined
       ? { quota: { reserved: args.quotaReserved, windowSeconds: args.quotaWindowSeconds, limit: args.quotaLimit } }

@@ -40,6 +40,8 @@ export function bulkSeedStatus(r: Result): BulkStatus {
 /** Map a settled single-fetch Result to a BulkSeedResult row (INPUT ORDER is the caller's). */
 export function toBulkSeedResult(seed: ValidatedSeed, r: Result, output: Output): BulkSeedResult {
   const fatal = r.tier === "error";
+  const recoveryWarnings = r.errors.filter((error) => error.code === "schema_knob_extracted");
+  const errors = fatal ? r.errors.filter((error) => error.code !== "schema_knob_extracted") : [];
   const transform = r.transform
     ? {
         provider: r.transform.provider,
@@ -70,9 +72,9 @@ export function toBulkSeedResult(seed: ValidatedSeed, r: Result, output: Output)
     result: snippet500(r.result),
     content: clipContent(r.result),
     ...(transform !== undefined ? { transform } : {}),
-    // errors vs warnings mirror the single-fetch MCP shape: fatal iff tier:error.
-    warnings: fatal ? [] : r.errors.map((e) => ({ code: e.code, message: e.message })),
-    errors: fatal ? r.errors.map((e) => ({ code: e.code, message: e.message })) : [],
+    // Errors vs warnings mirror the single-fetch MCP shape: recovery is advisory even on a fatal seed.
+    warnings: fatal ? recoveryWarnings : r.errors.map((e) => ({ code: e.code, message: e.message })),
+    errors,
   };
 }
 
