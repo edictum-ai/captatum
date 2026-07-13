@@ -298,6 +298,23 @@ test("non-fatal advisory (extract_schema_invalid) is a warning and status partia
   assert.deepEqual(shape.warnings, [{ code: "extract_schema_invalid", message: "missing required field" }]);
 });
 
+test("schema knob recovery stays a warning when a later fetch rejection makes the tier error", () => {
+  const shape = buildStructuredContent(base({
+    tier: "error",
+    code: 0,
+    bytes: 0,
+    result: "Host resolves to a private address",
+    resolvedVia: "guarded-fetch",
+    errors: [
+      { code: "private_address", message: "Host resolves to a private address" },
+      { code: "schema_knob_extracted", message: '"budget" was recovered from "schema" and applied as a Captatum tool argument.' },
+    ],
+  }), false);
+  assert.equal(shape.status, "fail");
+  assert.deepEqual(shape.errors, [{ code: "private_address", message: "Host resolves to a private address" }]);
+  assert.deepEqual(shape.warnings, [{ code: "schema_knob_extracted", message: '"budget" was recovered from "schema" and applied as a Captatum tool argument.' }]);
+});
+
 test("summary that fell back to raw (provider none) is status partial", () => {
   const shape = buildStructuredContent(
     base({ output: "raw", transform: { provider: "none", reason: "unconfigured" } }),

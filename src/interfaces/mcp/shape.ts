@@ -64,9 +64,10 @@ export function buildStructuredContent(result: Result, debug: boolean): Record<s
 /** Fatal errors only surface when the run failed (`tier: "error"`); the rest are non-fatal warnings. */
 function splitErrors(result: Result): { errors: ProvenanceError[]; warnings: ProvenanceError[] } {
   const fatal = result.tier === "error";
+  const warnings = result.errors.filter((error) => !fatal || error.code === "schema_knob_extracted");
   return {
-    errors: fatal ? result.errors : [],
-    warnings: fatal ? [] : result.errors,
+    errors: fatal ? result.errors.filter((error) => error.code !== "schema_knob_extracted") : [],
+    warnings: fatal ? warnings : result.errors,
   };
 }
 

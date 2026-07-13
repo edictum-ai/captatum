@@ -124,10 +124,11 @@ host values. `GET`/`DELETE /mcp` return 405. Tool registration is in
 default output is provider-conditional (`raw` with no provider, `summary` with one).
 
 Scope enforcement happens after authentication and input validation, before the
-core engine runs: `output: raw` requires `fetch:read`; summary/extract or a
-transform override requires `fetch:transform`. Tool results mirror the shared
-`Result` as MCP `structuredContent` and include a model-visible provenance line
-in the text content. Tool calls write metadata-only audit events.
+core engine runs: an effective `output: raw` requires `fetch:read` even when it
+carries an unused transform override; summary/extract require `fetch:transform`.
+Tool results mirror the shared `Result` as MCP `structuredContent` and include a
+model-visible provenance line in the text content. Tool calls write metadata-only
+audit events.
 
 ## Self-contained local binary
 
@@ -207,9 +208,9 @@ authorize (PKCE S256, request-bound signed consent token)
 
 Auth-code TTL 300 s; access TTL 600 s; refresh TTL 30 days. Hosted production
 requires `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` (fail-fast
-at boot). Scopes: `fetch:read` (default), `fetch:transform`; raw fetch requires
-read and summary/extract/transform requires transform. `docs/threat-model.md`
-covers auth limits.
+at boot). Scopes: `fetch:read` (default), `fetch:transform`; effective raw needs
+`fetch:read` (an unused transform override is ignored) and summary/extract needs
+`fetch:transform`. `docs/threat-model.md` covers auth limits.
 
 ## Rebinding-proof SSRF invariants
 

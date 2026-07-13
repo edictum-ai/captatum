@@ -119,16 +119,18 @@ test("C3: unsupported keywords in EVERY applied-subschema location are caught at
 
 // --- C2: input fail-fast at the execute() boundary — ZERO fetcher invocations. ---
 
-test("C2 (unit): normalizeCaptatumInput throws extract_schema_unsupported_keyword before any fetch", () => {
-  const err = captureInputError(() =>
-    normalizeCaptatumInput({
-      url: "https://x.test/",
-      output: "extract",
-      schema: { type: "object", properties: { a: { type: "string" } }, budget: 1 },
-    }),
-  );
-  assert.equal(err.body.error.code, "extract_schema_unsupported_keyword");
-  assert.match(err.body.error.message, /budget/, "the clear message reaches the InvalidParams response, naming the offending key");
+test("C2 (unit): normalizeCaptatumInput recovers a root schema knob into the tool input", () => {
+  const normalized = normalizeCaptatumInput({
+    url: "https://x.test/",
+    output: "extract",
+    schema: { type: "object", properties: { a: { type: "string" } }, budget: 1 },
+  });
+  assert.equal(normalized.budget, 1);
+  assert.deepEqual(normalized.schema, { type: "object", properties: { a: { type: "string" } } });
+  assert.deepEqual(normalized.schemaKnobWarnings, [{
+    code: "schema_knob_extracted",
+    message: '"budget" was recovered from "schema" and applied as a Captatum tool argument.',
+  }]);
 });
 
 test("C2 (unit): a supported-keyword extract schema is accepted by normalizeCaptatumInput", () => {
@@ -171,7 +173,7 @@ test("C2: CaptatumUseCase.execute with an unsupported-keyword schema throws befo
     useCase.execute({
       url: "https://x.test/",
       output: "extract",
-      schema: { type: "object", properties: { a: { type: "string" } }, budget: 1 },
+      schema: { type: "object", properties: { a: { type: "string" } }, format: "email" },
     }),
     (err: unknown): boolean =>
       err instanceof CaptatumInputError &&
@@ -188,17 +190,28 @@ test("C2: CaptatumUseCase.execute with an unsupported-keyword schema throws befo
 
 // --- C4: bulk fail-fast — a bad UNIFORM schema rejects the whole call before any seed. ---
 
-test("C4: normalizeBulkInput throws extract_schema_unsupported_keyword for a uniform bad schema", () => {
-  // A bad uniform schema would otherwise waste N fetches; it is a whole-call (tool-level)
-  // reject, thrown before any seed is processed (same severity as too_many_urls).
+test("C4: normalizeBulkInput recovers a root schema knob once for the uniform request", () => {
+  const normalized = normalizeBulkInput({
+    urls: ["https://x.test/"],
+    output: "extract",
+    schema: { type: "object", budget: 1 },
+  });
+  assert.equal(normalized.request.budget, 1);
+  assert.deepEqual(normalized.request.schema, { type: "object" });
+  assert.equal(normalized.schemaKnobWarnings.length, 1);
+  assert.equal(normalized.schemaKnobWarnings[0]?.code, "schema_knob_extracted");
+});
+
+test("C4: normalizeBulkInput rejects a genuine unsupported keyword after recovering a root knob", () => {
   const err = captureInputError(() =>
     normalizeBulkInput({
       urls: ["https://x.test/"],
       output: "extract",
-      schema: { type: "object", budget: 1 },
+      schema: { type: "object", budget: 1, format: "email" },
     }),
   );
   assert.equal(err.body.error.code, "extract_schema_unsupported_keyword");
+  assert.match(err.body.error.message, /format/);
 });
 
 test("C4: normalizeBulkInput rejects a too-deep uniform schema before any seed", () => {

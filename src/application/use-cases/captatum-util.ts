@@ -1,5 +1,7 @@
 import { STATUS_CODES } from "node:http";
 import { computeProvenanceHash, type Result } from "../../domain/result.ts";
+import type { Platform } from "../../domain/platform.ts";
+import type { NormalizedCaptatumInput } from "./captatum-input.ts";
 import type { FetcherOptions, FetcherPort, FetcherResult, RejectResult } from "../ports/fetcher.ts";
 import { errorMessage } from "./result-excerpt.ts";
 
@@ -30,6 +32,27 @@ export function unexpectedReject(error: unknown): RejectResult {
 /** Non-negative rounded elapsed milliseconds between two clock readings. */
 export function elapsed(startMs: number, endMs: number): number {
   return Math.max(0, Math.round(endMs - startMs));
+}
+
+const GENERIC_PLATFORM: Platform = { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" };
+
+export function rejectResult(
+  request: NormalizedCaptatumInput,
+  rejected: RejectResult,
+  fetchMs: number,
+  totalMs: number,
+  fetchedAt?: string,
+): Result {
+  return {
+    url: request.url, bytes: 0, code: 0, codeText: "FETCH_REJECTED", durationMs: totalMs,
+    result: rejected.message, schemaVersion: 1, finalUrl: request.url, tier: "error",
+    output: request.requestedOutput, outputRequested: request.requestedOutput, platform: GENERIC_PLATFORM,
+    jsRequired: false, resolvedVia: "guarded-fetch",
+    attempts: [{ step: 1, tier: 1, outcome: "block", durationMs: fetchMs, reason: rejected.code }],
+    contentType: "", timings: { totalMs, fetchMs }, redirects: rejected.redirects ?? [],
+    errors: [{ code: rejected.code, message: rejected.message }, ...request.schemaKnobWarnings],
+    ...(fetchedAt !== undefined ? { fetchedAt } : {}),
+  };
 }
 
 /**

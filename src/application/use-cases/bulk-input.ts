@@ -19,7 +19,10 @@ import {
   DEFAULT_CAPTATUM_DEFAULTS,
   normalizeContractUrl,
   transformOverrideSchema,
+  isValidExtractSchemaKnob,
 } from "./captatum-input.ts";
+import { recoverExtractSchemaKnobs } from "./schema-knob-recovery.ts";
+import type { ProvenanceError } from "../../domain/result.ts";
 
 export { CaptatumInputError };
 
@@ -82,6 +85,7 @@ export interface NormalizedBulkInput {
   readonly seeds: ValidatedSeed[];
   /** Per-entry URL-validation failures (bad URL → one row, never a tool-level error). */
   readonly invalid: BulkInputFailure[];
+  readonly schemaKnobWarnings: ProvenanceError[];
 }
 
 /**
@@ -93,22 +97,24 @@ export interface NormalizedBulkInput {
  */
 export function normalizeBulkInput(value: unknown): NormalizedBulkInput {
   const parsed = parseInput(value);
+  const recovered = recoverExtractSchemaKnobs(parsed, isValidExtractSchemaKnob);
   // Fail fast at the input boundary (#153): a uniform extract schema using an unsupported keyword
   // would otherwise waste N fetches. A bad schema is a whole-call (tool-level) reject, thrown before
   // any seed is processed — same severity as too_many_urls.
-  assertExtractSchemaSupported(parsed.output, parsed.schema);
+  assertExtractSchemaSupported(parsed.output, recovered.schema);
+  const effective = { ...parsed, ...recovered.recovered };
   const request: NormalizedBulkRequest = {
-    prompt: parsed.prompt ?? DEFAULT_PROMPT,
-    requestedOutput: parsed.output ?? "raw",
-    schema: parsed.schema,
-    budget: parsed.budget,
-    transform: parsed.transform as TransformOverride | undefined,
-    maxBytes: Math.min(parsed.maxBytes ?? DEFAULT_CAPTATUM_DEFAULTS.maxBytes, DEFAULT_CAPTATUM_DEFAULTS.maxBytesHardCap),
-    timeoutMs: Math.min(parsed.timeoutMs ?? BULK_DEFAULT_TIMEOUT_MS, DEFAULT_CAPTATUM_DEFAULTS.timeoutMsHardCap),
-    allowRender: parsed.allowRender ?? false,
-    debug: parsed.debug ?? false,
-    ...(parsed.maxTransformCostUsd !== undefined ? { maxTransformCostUsd: parsed.maxTransformCostUsd } : {}),
-    ...(parsed.perSeedTransformCostUsd !== undefined ? { perSeedTransformCostUsd: parsed.perSeedTransformCostUsd } : {}),
+    prompt: effective.prompt ?? DEFAULT_PROMPT,
+    requestedOutput: effective.output ?? "raw",
+    schema: recovered.schema,
+    budget: effective.budget,
+    transform: effective.transform as TransformOverride | undefined,
+    maxBytes: Math.min(effective.maxBytes ?? DEFAULT_CAPTATUM_DEFAULTS.maxBytes, DEFAULT_CAPTATUM_DEFAULTS.maxBytesHardCap),
+    timeoutMs: Math.min(effective.timeoutMs ?? BULK_DEFAULT_TIMEOUT_MS, DEFAULT_CAPTATUM_DEFAULTS.timeoutMsHardCap),
+    allowRender: effective.allowRender ?? false,
+    debug: effective.debug ?? false,
+    ...(effective.maxTransformCostUsd !== undefined ? { maxTransformCostUsd: effective.maxTransformCostUsd } : {}),
+    ...(effective.perSeedTransformCostUsd !== undefined ? { perSeedTransformCostUsd: effective.perSeedTransformCostUsd } : {}),
   };
   const invalid: BulkInputFailure[] = [];
   const seeds: ValidatedSeed[] = [];
@@ -131,7 +137,7 @@ export function normalizeBulkInput(value: unknown): NormalizedBulkInput {
       invalid.push({ url: safeRaw, code, message });
     }
   }
-  return { request, seeds, invalid };
+  return { request, seeds, invalid, schemaKnobWarnings: recovered.warnings };
 }
 
 type ParsedBulkInput = z.infer<typeof bulkInputSchema>;

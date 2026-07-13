@@ -9,10 +9,11 @@ import process from "node:process";
  * cannot catch stdout contamination from a script wrapper (e.g. `pnpm run bridge`
  * printing `> captatum@… bridge` to stdout); this one launches the real process.
  *
- * It performs only the protocol handshake + `tools/list` (no captatum call), so
- * it stays hermetic: no network egress, no public fixture. A healthy boot must be
- * stderr-SILENT (Claude Code rejects stderr during the handshake); audit/ready logs
- * are gated behind CAPTATUM_STDIO_DEBUG=1.
+ * It performs the protocol handshake, `tools/list`, and one `captatum` call whose
+ * 127.0.0.1 target is rejected before egress. That exercises real call framing and
+ * #193's input recovery while staying hermetic: no network egress or public fixture.
+ * A healthy boot must be stderr-SILENT (Claude Code rejects stderr during the handshake);
+ * audit/ready logs are gated behind CAPTATUM_STDIO_DEBUG=1.
  */
 
 const ENTRY = "src/interfaces/mcp/stdio-bridge.ts";
@@ -139,6 +140,15 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorCodes(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => isRecord(entry) && typeof entry.code === "string" ? [entry.code] : []);
+}
+
 async function run(): Promise<ToolEntry> {
   send({
     jsonrpc: "2.0",
@@ -164,6 +174,33 @@ async function run(): Promise<ToolEntry> {
   }
   if (tool.inputSchema?.additionalProperties !== false) {
     throw new Error("stdio captatum inputSchema is not strict (additionalProperties !== false)");
+  }
+
+  send({
+    jsonrpc: "2.0",
+    id: 3,
+    method: "tools/call",
+    params: {
+      name: "captatum",
+      arguments: {
+        url: "http://127.0.0.1/",
+        output: "extract",
+        schema: { type: "object", budget: 700 },
+      },
+    },
+  });
+  const call = await waitForResponse(3);
+  const structuredContent = isRecord(call.result) && isRecord(call.result.structuredContent)
+    ? call.result.structuredContent
+    : undefined;
+  if (!structuredContent) {
+    throw new Error(`captatum recovery probe returned no structured content: ${JSON.stringify(call)}`);
+  }
+  if (!errorCodes(structuredContent.errors).includes("private_address")) {
+    throw new Error(`captatum recovery probe did not reject 127.0.0.1 before egress: ${JSON.stringify(call)}`);
+  }
+  if (!errorCodes(structuredContent.warnings).includes("schema_knob_extracted")) {
+    throw new Error(`captatum recovery probe did not surface schema_knob_extracted: ${JSON.stringify(call)}`);
   }
   if (contaminated.length > 0) {
     throw new Error(
@@ -192,6 +229,7 @@ try {
   console.log(`stdout JSON-RPC frames: ${stdoutLines.length} (0 non-protocol lines)`);
   console.log("stdout is a pure JSON-RPC channel: no pnpm banner, no stray logs");
   console.log(`captatum advertised over stdio with strict schema: ${tool.name === "captatum" ? "yes" : "no"}`);
+  console.log("captatum recovery probe: schema knob warning + pre-egress private-address reject verified");
   console.log("stderr silent on healthy boot (Claude-Code compatible; set CAPTATUM_STDIO_DEBUG=1 for audit/ready logs)");
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);

@@ -76,6 +76,29 @@ test("successful Tier-1 fetch plus extraction returns Result provenance", async 
   assert.equal(result.fetchedAt, "2026-06-16T00:00:00.000Z");
 });
 
+test("recovered extract knobs reach the transformer with a cleaned schema and advisory", async () => {
+  const fetcher = new FakeFetcher(fetchResult({ html: "<main>content</main>" }));
+  const extractor = new FakeExtractor(extraction({ text: "Clean extractable content" }));
+  const transformer = new FakeTransform({ result: '{"title":"Recovered"}', info: { provider: "openrouter", model: "test", free: true } });
+  const result = await createCaptatumUseCase({
+    fetcher,
+    extractHtml: extractor.extract,
+    transformer,
+    clock: new FakeClock([0, 0, 2, 3, 4, 5]),
+  }).execute({
+    url: "https://example.test/",
+    output: "extract",
+    schema: { type: "object", budget: 700 },
+  });
+
+  assert.equal(transformer.calls[0]?.budget, 700);
+  assert.deepEqual(transformer.calls[0]?.schema, { type: "object" });
+  assert.deepEqual(result.errors, [{
+    code: "schema_knob_extracted",
+    message: '"budget" was recovered from "schema" and applied as a Captatum tool argument.',
+  }]);
+});
+
 test("guarded-fetch reject returns structured error and short-circuits extraction", async () => {
   const fetcher = new FakeFetcher({
     rejected: true,

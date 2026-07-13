@@ -1,14 +1,13 @@
-import type { FetcherPort, FetcherResult, RejectResult } from "../ports/fetcher.ts";
+import type { FetcherPort, FetcherResult } from "../ports/fetcher.ts";
 import type { ClockPort } from "../ports/clock.ts";
 import type { RenderPort } from "../ports/renderer.ts";
 import { TransformError, type TransformPort, type TransformResult } from "../ports/transformer.ts";
-import type { Platform } from "../../domain/platform.ts";
 import { type Result, type TransformReason } from "../../domain/result.ts";
 import type { CaptatumContext } from "../ports/captatum-context.ts";
 import type { PlatformAdapterRegistry } from "../ports/platform-adapter.ts";
 import { createAdapterRegistry } from "../adapters.ts";
 import { tryTier2ShortCircuit } from "./tier2.ts";
-import { elapsed, fetchTier1WithBodyReadRetry, stampTotals } from "./captatum-util.ts";
+import { elapsed, fetchTier1WithBodyReadRetry, rejectResult, stampTotals } from "./captatum-util.ts";
 import {
   extractTier1FromFetchResult,
   type HtmlExtractor,
@@ -25,8 +24,6 @@ import {
   type NormalizedCaptatumInput,
   type CaptatumDefaults,
 } from "./captatum-input.ts";
-
-const GENERIC_PLATFORM: Platform = { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" };
 
 export interface CaptatumDeps {
   fetcher: FetcherPort;
@@ -133,6 +130,7 @@ export class CaptatumUseCase {
     startMs: number,
     fetchMs: number,
   ): Promise<Result> {
+    base.errors.push(...request.schemaKnobWarnings);
     base.outputRequested = request.requestedOutput; // #153: requested vs actual (output below may flip to raw)
     // Returned raw (never summarized): a challenge (#41/#151), 4xx/5xx error page, or a demoted app-error screen (tier:error — #145).
     if (base.challengeProvider || base.botVerification || request.requestedOutput === "raw" || Number(base.code) >= 400 || base.tier === "error") {
@@ -208,43 +206,4 @@ export class CaptatumUseCase {
 
 export function createCaptatumUseCase(deps: CaptatumDeps): CaptatumUseCase {
   return new CaptatumUseCase(deps);
-}
-
-function rejectResult(
-  request: NormalizedCaptatumInput,
-  rejected: RejectResult,
-  fetchMs: number,
-  totalMs: number,
-  fetchedAt?: string,
-): Result {
-  return {
-    url: request.url,
-    bytes: 0,
-    code: 0,
-    codeText: "FETCH_REJECTED",
-    durationMs: totalMs,
-    result: rejected.message,
-    schemaVersion: 1,
-    finalUrl: request.url,
-    tier: "error",
-    output: request.requestedOutput,
-    outputRequested: request.requestedOutput,
-    platform: GENERIC_PLATFORM,
-    jsRequired: false,
-    resolvedVia: "guarded-fetch",
-    attempts: [{
-      step: 1,
-      tier: 1,
-      outcome: "block",
-      durationMs: fetchMs,
-      reason: rejected.code,
-    }],
-    contentType: "",
-    timings: { totalMs, fetchMs },
-    // Preserve the redirect chain followed before the reject (e.g. a 302 to a host that then
-    // timed out) so the bulk orchestrator counts redirect-funnel victims on failed hops too.
-    redirects: rejected.redirects ?? [],
-    errors: [{ code: rejected.code, message: rejected.message }],
-    ...(fetchedAt !== undefined ? { fetchedAt } : {}),
-  };
 }

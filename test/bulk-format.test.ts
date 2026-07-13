@@ -4,6 +4,7 @@ import type { BulkResult, BulkSeedResult } from "../src/domain/bulk-result.ts";
 import { BULK_GUARD_DEFAULTS } from "../src/domain/bulk-policy.ts";
 import { bulkResultToMcpText } from "../src/interfaces/mcp/bulk-format.ts";
 import { buildBulkStructuredContent } from "../src/interfaces/mcp/bulk-shape.ts";
+import { toBulkSeedResult } from "../src/application/use-cases/bulk-seed.ts";
 
 const FENCE = "deadbeefcafef00d";
 
@@ -27,6 +28,27 @@ function makeBulk(count: number, contentChars: number): BulkResult {
     fenceToken: FENCE, results, failures: [], warnings: [], errors: [],
   };
 }
+
+test("bulk seed: recovery warning remains advisory when a later fetch rejection is fatal", () => {
+  const result = toBulkSeedResult({ url: "https://blocked.test/" }, {
+    url: "https://blocked.test/", finalUrl: "https://blocked.test/", bytes: 0, code: 0,
+    codeText: "FETCH_REJECTED", durationMs: 1, result: "blocked", schemaVersion: 1,
+    tier: "error", output: "extract", outputRequested: "extract",
+    platform: { adapterId: "generic", label: "Generic HTML", detectedFrom: "tier1" },
+    jsRequired: false, resolvedVia: "guarded-fetch", attempts: [], contentType: "",
+    timings: { totalMs: 1, fetchMs: 1 }, redirects: [],
+    errors: [
+      { code: "private_address", message: "Host resolves to a private address" },
+      { code: "schema_knob_extracted", message: '"budget" was recovered from "schema" and applied as a Captatum tool argument.' },
+    ],
+  }, "extract");
+
+  assert.deepEqual(result.errors, [{ code: "private_address", message: "Host resolves to a private address" }]);
+  assert.deepEqual(result.warnings, [{
+    code: "schema_knob_extracted",
+    message: '"budget" was recovered from "schema" and applied as a Captatum tool argument.',
+  }]);
+});
 
 test("bulk text: provenance header carries kind=bulk + the fence token; sections are fence-framed", () => {
   const text = bulkResultToMcpText(makeBulk(2, 50));

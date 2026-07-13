@@ -13,6 +13,7 @@ import { OAuthError, requireScope, type AuthorizedSubject } from "mcp-sso";
 import { requiredScopeForCaptatum } from "../../application/scopes.ts";
 import type { CaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import {
+  DEFAULT_CAPTATUM_DEFAULTS,
   normalizeCaptatumInput,
   CaptatumInputError,
 } from "../../application/use-cases/captatum-input.ts";
@@ -86,8 +87,8 @@ export function createCaptatumMcpServer(deps: CaptatumMcpServerDeps): Server {
 async function callCaptatum(args: unknown, deps: CaptatumMcpServerDeps, profile: ClientProfile): Promise<CallToolResult> {
   const started = deps.clock.nowMs();
   try {
-    const normalized = normalizeCaptatumInput(args);
-    requireScope(deps.auth, requiredScopeForCaptatum(args, deps.captatum.defaultOutput));
+    const normalized = normalizeCaptatumInput(args, { ...DEFAULT_CAPTATUM_DEFAULTS, defaultOutput: deps.captatum.defaultOutput });
+    requireScope(deps.auth, requiredScopeForCaptatum({ output: normalized.requestedOutput, transform: normalized.transform }));
     const result = await deps.captatum.execute(args, { fetchedAt: new Date(deps.clock.nowMs()).toISOString() });
     // AUDIT-1: audit write in its own try/catch — a rejecting sink must never
     // convert a successful fetch into a client error.

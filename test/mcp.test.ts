@@ -124,6 +124,61 @@ test("authenticated call without fetch:transform cannot perform summary output",
   await ctx.app.close();
 });
 
+test("raw output with an unused transform override permits fetch:read", async () => {
+  const transformer = new FakeTransformer();
+  const ctx = await setup({ transformer });
+  const response = await ctx.rpc({
+    arguments: { url: "https://fixture.test/", output: "raw", transform: { provider: "ollama" } },
+  }, ["fetch:read"]);
+
+  assert.equal(response.statusCode, 200, response.body);
+  const body = response.json() as RpcSuccess;
+  assert.equal(body.result.structuredContent.output, "raw");
+  assert.equal(ctx.fetcher.calls.length, 1);
+  assert.equal(transformer.calls.length, 0, "raw skips the transform stage");
+  await ctx.app.close();
+});
+
+test("provider-backed default summary requires fetch:transform when output is omitted", async () => {
+  const transformer = new FakeTransformer();
+  const ctx = await setup({ transformer });
+  const response = await ctx.rpc({ arguments: { url: "https://fixture.test/" } }, ["fetch:read"]);
+
+  assert.equal(response.statusCode, 200, response.body);
+  const body = response.json() as RpcError;
+  assert.equal(body.error.code, -32003);
+  assert.match(body.error.message, /insufficient_scope/);
+  assert.equal(ctx.fetcher.calls.length, 0);
+  assert.equal(transformer.calls.length, 0);
+  await ctx.app.close();
+});
+
+test("provider-backed default summary runs with fetch:transform when output is omitted", async () => {
+  const transformer = new FakeTransformer();
+  const ctx = await setup({ transformer });
+  const response = await ctx.rpc({ arguments: { url: "https://fixture.test/" } }, ["fetch:transform"]);
+
+  assert.equal(response.statusCode, 200, response.body);
+  const body = response.json() as RpcSuccess;
+  assert.equal(body.result.structuredContent.output, "summary");
+  assert.equal(body.result.structuredContent.result, "summary");
+  assert.equal(ctx.fetcher.calls.length, 1);
+  assert.equal(transformer.calls.length, 1);
+  await ctx.app.close();
+});
+
+test("providerless default remains raw and permits fetch:read when output is omitted", async () => {
+  const ctx = await setup();
+  const response = await ctx.rpc({ arguments: { url: "https://fixture.test/" } }, ["fetch:read"]);
+
+  assert.equal(response.statusCode, 200, response.body);
+  const body = response.json() as RpcSuccess;
+  assert.equal(body.result.structuredContent.output, "raw");
+  assert.equal(body.result.structuredContent.result, "Fixture raw body");
+  assert.equal(ctx.fetcher.calls.length, 1);
+  await ctx.app.close();
+});
+
 test("invalid tool input returns validation error before outbound fetch", async () => {
   const ctx = await setup();
   const response = await ctx.rpc({ arguments: { url: "https://fixture.test/", output: "raw", extra: true } }, ["fetch:read"]);

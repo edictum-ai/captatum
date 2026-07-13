@@ -19,6 +19,28 @@ test("normalizeBulkInput: allowRender:true is accepted (render-on-bulk, PR 3) + 
   assert.equal(defaulted.request.allowRender, false, "default remains false (raw-extraction-first)");
 });
 
+test("normalizeBulkInput: root schema knobs are recovered once and top-level values win", () => {
+  const out = normalizeBulkInput({
+    urls: ["https://a.test/x"],
+    output: "extract",
+    allowRender: false,
+    schema: { type: "object", budget: 700, allowRender: true },
+  });
+  assert.equal(out.request.budget, 700);
+  assert.equal(out.request.allowRender, false);
+  assert.deepEqual(out.request.schema, { type: "object" });
+  assert.deepEqual(out.schemaKnobWarnings, [
+    {
+      code: "schema_knob_extracted",
+      message: '"budget" was recovered from "schema" and applied as a Captatum tool argument.',
+    },
+    {
+      code: "schema_knob_extracted",
+      message: '"allowRender" in "schema" was ignored because the top-level Captatum tool argument takes precedence.',
+    },
+  ]);
+});
+
 test("normalizeBulkInput: http→https upgrade + per-entry normalizeContractUrl", () => {
   const out = normalizeBulkInput({ urls: ["http://a.test/x", "HTTPS://B.TEST/Y"] });
   assert.deepEqual(out.seeds.map((s) => s.url), ["https://a.test/x", "https://b.test/Y"]);
