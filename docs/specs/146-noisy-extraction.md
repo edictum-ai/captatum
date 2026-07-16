@@ -1,6 +1,6 @@
 # Spec: #146 — Leaked Alpine/Vue JS ahead of prose (quote-blind `stripHtmlTags`)
 
-- **Issue:** [#146](https://github.com/edictum-ai/captatum/issues/146)
+- **Issue:** [#146](https://github.com/acartag7/captatum/issues/146)
 - **Tier:** T3 (hand-rolled tokenizer over untrusted HTML — crosses the untrusted-input trust boundary)
 - **Status:** v3 — READY. Narrowed after three independent critiques (`…critique.md` BLOCKED, `…critique-v2.md` BLOCKED, `…critique-v3.md` READY). Scope reduced to the contract-ready, high-value (C) fix + the `charset.ts` same-class sibling. (B) header-strip dropped (broken + no-op on the named repros); (D) density-reorder deferred as the real cppreference/php.net fix (separate issue).
 - **Spec trailer for downstream PRs:** `Spec: docs/specs/146-noisy-extraction.md`

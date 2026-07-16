@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
 if (!Number.isInteger(major) || major < 24) {
   process.stderr.write(`captatum requires Node.js >= 24 (got ${process.versions.node}).\n`);
-  process.stderr.write("Use a recent Node, or run the hosted gateway (ghcr.io/edictum-ai/captatum).\n");
+  process.stderr.write("Use a recent Node, or run the hosted gateway (ghcr.io/acartag7/captatum).\n");
   process.exit(1);
 }
 

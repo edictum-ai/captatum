@@ -20,7 +20,7 @@ import { buildMessages, FRONTLOAD_ON_TRUNCATION } from "../infrastructure/llm/pr
 import type { LlmGenerateInput, LlmMessage } from "../infrastructure/llm/types.ts";
 import { config } from "../config.ts";
 
-const URL = process.argv[2] ?? "https://github.com/edictum-ai/captatum";
+const URL = process.argv[2] ?? "https://github.com/acartag7/captatum";
 const CAP = Number(process.argv[3] ?? 110);
 const TRIALS = Number(process.argv[4] ?? 5);
 const MODEL_OVERRIDE = process.argv[5] ?? "";

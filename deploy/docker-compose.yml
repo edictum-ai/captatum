@@ -8,8 +8,8 @@
 # compromise escapes into the sidecar (no OAuth keys, no SQLite, no env), not the
 # gateway. See docs/threat-model.md.
 #
-# Image: published by release CI to ghcr.io/edictum-ai/captatum and
-# ghcr.io/edictum-ai/captatum-browser. Set CAPTATUM_TAG to a release tag, or build
+# Image: published by release CI to ghcr.io/acartag7/captatum and
+# ghcr.io/acartag7/captatum-browser. Set CAPTATUM_TAG to a release tag, or build
 # locally:
 #   CAPTATUM_TAG=dev docker compose -f deploy/docker-compose.yml build
 #   docker compose -f deploy/docker-compose.yml up -d
@@ -23,7 +23,7 @@
 
 services:
   gateway:
-    image: ghcr.io/edictum-ai/captatum:${CAPTATUM_TAG:-latest}
+    image: ghcr.io/acartag7/captatum:${CAPTATUM_TAG:-latest}
     build:
       context: ..
       dockerfile: Dockerfile
@@ -48,7 +48,7 @@ services:
     restart: unless-stopped
 
   browser:
-    image: ghcr.io/edictum-ai/captatum-browser:${CAPTATUM_TAG:-latest}
+    image: ghcr.io/acartag7/captatum-browser:${CAPTATUM_TAG:-latest}
     build:
       context: ..
       dockerfile: Dockerfile.browser

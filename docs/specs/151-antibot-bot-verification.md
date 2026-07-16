@@ -1,6 +1,6 @@
 # Spec: #151 — Classify 429/DataDome/Imperva bot-verification walls as gated
 
-- **Issue:** [#151](https://github.com/edictum-ai/captatum/issues/151)
+- **Issue:** [#151](https://github.com/acartag7/captatum/issues/151)
 - **Tier:** T2 (classifies untrusted response bodies at a security-relevant gating boundary — a decision downstream callers trust; touches a trust boundary, not a parser over untrusted input)
 - **Status:** Post-critique, ready (see [`151-antibot-bot-verification.critique.md`](151-antibot-bot-verification.critique.md) — 2 blockers + 3 highs resolved). This spec is the authoritative target for the frozen suite + implementation.
 - **Contract section affected:** `docs/contracts.md` `access.gateReason` union + the gateReason prose + the stale "captcha not yet emitted" note; `docs/threat-model.md` anti-bot-detection boundary

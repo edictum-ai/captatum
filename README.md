@@ -12,11 +12,11 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-7C5CFC.svg" /></a>
   <a href="https://modelcontextprotocol.io"><img alt="MCP" src="https://img.shields.io/badge/MCP-captatum-9B7CF6.svg" /></a>
   <a href="https://nodejs.org"><img alt="Node 24" src="https://img.shields.io/badge/Node-24-339933.svg" /></a>
-  <a href="https://github.com/edictum-ai/captatum/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/edictum-ai/captatum/ci.yml?branch=main&label=CI" /></a>
+  <a href="https://github.com/acartag7/captatum/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/acartag7/captatum/ci.yml?branch=main&label=CI" /></a>
   <a href="SECURITY.md"><img alt="security" src="https://img.shields.io/badge/security-policy-7C5CFC.svg" /></a>
 </p>
 
-Captatum is one MCP tool that fetches a URL and returns the **actual content** — clean, token-efficient, and with a **provenance receipt** on every response (tier, final URL, whether JS was required, transform model/tokens) so an agent knows exactly how each result was produced. Every request is **SSRF-guarded**, and fetched content is treated as **untrusted data, never instructions**. It renders JS only when a page needs it and extracts structured data (JSON-LD / Open Graph) from raw HTML — so it returns content from the JS-rendered SPAs and structured pages that `WebFetch`, Firecrawl, and Jina return empty or blocked. Anti-bot challenge walls (Cloudflare/Akamai/PerimeterX) it **detects and reports as gated** rather than silently returning the challenge page — it does not bypass them (see the honest scope below). It's an [MCP server](https://modelcontextprotocol.io); it works standalone and is part of the [Edictum](https://github.com/edictum-ai) ecosystem.
+Captatum is one MCP tool that fetches a URL and returns the **actual content** — clean, token-efficient, and with a **provenance receipt** on every response (tier, final URL, whether JS was required, transform model/tokens) so an agent knows exactly how each result was produced. Every request is **SSRF-guarded**, and fetched content is treated as **untrusted data, never instructions**. It renders JS only when a page needs it and extracts structured data (JSON-LD / Open Graph) from raw HTML — so it returns content from the JS-rendered SPAs and structured pages that `WebFetch`, Firecrawl, and Jina return empty or blocked. Anti-bot challenge walls (Cloudflare/Akamai/PerimeterX) it **detects and reports as gated** rather than silently returning the challenge page — it does not bypass them (see the honest scope below). It's an [MCP server](https://modelcontextprotocol.io) and works standalone.
 
 > **Heads-up before the first call.** The default output is **provider-conditional**: `summary` when a transform provider (`OPENROUTER_API_KEY` or `OLLAMA_BASE_URL`) is configured (e.g. the hosted server), otherwise `raw` — the full clean content, no LLM. So a zero-config first call just works (raw); set a provider and it becomes a token-efficient summary. Request `output: "summary"`/`"raw"`/`"extract"` explicitly to override. See [Quick start](#quick-start-local-stdio).
 
@@ -35,9 +35,9 @@ The wedge is **trustworthy reads**. Captatum returns clean content from the JS-r
 | Firecrawl | ✅ | ✅ | markdown/html | partial | commercial |
 | Jina Reader | ✅ | light | markdown | ❌ | commercial |
 
-**Honest scope — anti-bot:** the `wreq-js` TLS/JA3+JA4 fingerprint is active for **plain HTTP only**; HTTPS uses a checked-IP Node path (no fingerprint) to preserve rebinding-proof SSRF. So Captatum does **not** bypass Cloudflare/Akamai/PerimeterX challenge walls over HTTPS — instead it **detects them and reports `access.gated` + `gateReason: captcha` + the provider** rather than silently returning the challenge page ([#41](https://github.com/edictum-ai/captatum/issues/41), shipped as honest detection). A browser-bypass was researched and found **not viable** for a self-hosted tool (the datacenter-IP ASN wall + the OSS-stealth treadmill) — see `docs/specs/issue-41-design.md`. See [Security: scope and limits](#security-scope-and-limits).
+**Honest scope — anti-bot:** the `wreq-js` TLS/JA3+JA4 fingerprint is active for **plain HTTP only**; HTTPS uses a checked-IP Node path (no fingerprint) to preserve rebinding-proof SSRF. So Captatum does **not** bypass Cloudflare/Akamai/PerimeterX challenge walls over HTTPS — instead it **detects them and reports `access.gated` + `gateReason: captcha` + the provider** rather than silently returning the challenge page ([#41](https://github.com/acartag7/captatum/issues/41), shipped as honest detection). A browser-bypass was researched and found **not viable** for a self-hosted tool (the datacenter-IP ASN wall + the OSS-stealth treadmill) — see `docs/specs/issue-41-design.md`. See [Security: scope and limits](#security-scope-and-limits).
 
-**Not for:** Captatum is the best tool for the **hard single-URL fetch + structured extract** (a job description, a dynamic doc, a product page). It is *not* a batch crawler at scale, a search engine, or a PDF/office parser. Bounded, single-call roster fetches *are* supported: pass a Greenhouse/Lever/Ashby career-board URL and Captatum returns every open role as clean structured JSON via the ATS's public list API ([#42](https://github.com/edictum-ai/captatum/issues/42)).
+**Not for:** Captatum is the best tool for the **hard single-URL fetch + structured extract** (a job description, a dynamic doc, a product page). It is *not* a batch crawler at scale, a search engine, or a PDF/office parser. Bounded, single-call roster fetches *are* supported: pass a Greenhouse/Lever/Ashby career-board URL and Captatum returns every open role as clean structured JSON via the ATS's public list API ([#42](https://github.com/acartag7/captatum/issues/42)).
 
 ## Features
 
@@ -61,7 +61,7 @@ The wedge is **trustworthy reads**. Captatum returns clean content from the JS-r
 The fastest local path is the published package — one line, no clone, no build (Node 24+):
 
 ```sh
-npx -y @edictum/captatum        # runs the local stdio MCP server
+npx -y captatum        # runs the local stdio MCP server
 ```
 
 Add it to your MCP client config and you're set (see [Connect your client](#connect-your-client)). No auth, no network listener — the client owns the process; `stdin`/`stdout` are the JSON-RPC channel.
@@ -83,14 +83,14 @@ _From source (development):_ `corepack pnpm install && node --no-warnings src/in
   "mcpServers": {
     "captatum": {
       "command": "npx",
-      "args": ["-y", "@edictum/captatum"],
+      "args": ["-y", "captatum"],
       "env": { "OPENROUTER_API_KEY": "sk-or-v1-…" }   // optional; omit for raw-only
     }
   }
 }
 ```
 
-(For Claude Code: `claude mcp add captatum -- npx -y @edictum/captatum`. For a no-cloud-egress setup, swap the env for `OLLAMA_BASE_URL=http://localhost:11434`.)
+(For Claude Code: `claude mcp add captatum -- npx -y captatum`. For a no-cloud-egress setup, swap the env for `OLLAMA_BASE_URL=http://localhost:11434`.)
 
 > The local server has **no auth** — single-user, loopback only; never expose it on a network. It opens **no listener** (stdio only), so it's strictly safer than even a loopback HTTP server.
 >
@@ -167,7 +167,7 @@ node --no-warnings scripts/gen-oauth-keys.ts          # print OAuth signing keys
 CAPTATUM_TAG=v0.11.0 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Required env (see `.env.example`): `CAPTATUM_FLAVOR=hosted`, OAuth signing keys (`gen-oauth-keys.ts`), Cloudflare Access (`CF_ACCESS_*`), `MCP_ALLOWED_HOSTS`/`ORIGINS`, `OAUTH_ISSUER`/`RESOURCE`/`REDIRECT_ALLOWLIST`. Docker images are published to GHCR (`ghcr.io/edictum-ai/captatum`, `…-browser`) by the release workflow on each tag — pin a tag (e.g. `v0.11.0`); `:latest` tracks the newest release. Full guide + troubleshooting: [`deploy/README.md`](./deploy/README.md).
+Required env (see `.env.example`): `CAPTATUM_FLAVOR=hosted`, OAuth signing keys (`gen-oauth-keys.ts`), Cloudflare Access (`CF_ACCESS_*`), `MCP_ALLOWED_HOSTS`/`ORIGINS`, `OAUTH_ISSUER`/`RESOURCE`/`REDIRECT_ALLOWLIST`. Docker images are published to GHCR (`ghcr.io/acartag7/captatum`, `…-browser`) by the release workflow on each tag — pin a tag (e.g. `v0.11.0`); `:latest` tracks the newest release. Full guide + troubleshooting: [`deploy/README.md`](./deploy/README.md).
 
 **Supply chain:** dependencies are pinned, held to a 15-day minimum-release-age gate, and `pnpm audit --prod` is required clean before deploy (see [`docs/dependency-ledger.md`](./docs/dependency-ledger.md)); the browser-sidecar base image is pinned by sha256 digest, and CI/release GitHub Actions are pinned by commit SHA.
 
@@ -202,4 +202,4 @@ Contributions are welcome and held to a security-critical bar. See [`CONTRIBUTIN
 
 ## License
 
-[MIT](./LICENSE) © Arnold Cartagena. Captatum is part of the [Edictum](https://github.com/edictum-ai) ecosystem — a runtime trust layer for AI agents — and works standalone as a general-purpose MCP fetch tool.
+[MIT](./LICENSE) © Arnold Cartagena. Captatum is a general-purpose MCP fetch tool for AI agents.

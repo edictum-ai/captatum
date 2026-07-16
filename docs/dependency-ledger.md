@@ -154,7 +154,7 @@ Chromium 149), or the CDP connection can break.
 
 Both images (gateway `Dockerfile` + sidecar `Dockerfile.browser`) build
 **linux/amd64 + linux/arm64** so the arm64 Mac mini k3s deploy pulls
-`ghcr.io/edictum-ai/captatum:latest` natively instead of building locally. arm64
+`ghcr.io/acartag7/captatum:latest` natively instead of building locally. arm64
 is cross-built via QEMU (`docker/setup-qemu-action`) on the amd64 runner. Both
 base images (`node:24.17.0-bookworm-slim`, `mcr.microsoft.com/playwright:v1.61.0-noble`)
 are pinned by digest to **multi-arch manifest lists** (verified: both carry

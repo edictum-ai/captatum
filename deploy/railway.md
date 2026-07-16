@@ -5,7 +5,7 @@ persistent volume for the SQLite store. Cloudflare Access + Tunnel sit in front.
 
 ## Steps
 
-1. **New project → deploy from image**: `ghcr.io/edictum-ai/captatum:<tag>` (use the
+1. **New project → deploy from image**: `ghcr.io/acartag7/captatum:<tag>` (use the
    latest release tag). (Alternatively, connect this repo and Railway builds from
    `Dockerfile`; `railway.toml` sets the start command + healthcheck.)
 2. **Add a volume**: Settings → Volumes → mount at `/data`. Set
