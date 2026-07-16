@@ -1,6 +1,6 @@
 # Spec: #153 — Extract: clearer schema-validation error + fail-fast at input
 
-- **Issue:** [#153](https://github.com/edictum-ai/captatum/issues/153) (bug, MED)
+- **Issue:** [#153](https://github.com/acartag7/captatum/issues/153) (bug, MED)
 - **Tier:** T3 — the caller-supplied JSON Schema for `output:"extract"` is **untrusted input**. This change adds keyword-allowlist validation at the **input boundary** (before any fetch/LLM), which crosses the trust boundary, so the full pipeline applies. Repo is Engineering OS tier **S**.
 - **Status:** v2 — READY. A 3-lens critique (`…critique.md`) returned BLOCKED on one defect (no depth cap on the pre-fetch walker) + a P1 (test ripple); both resolved. A focused re-critique (different harness) confirmed READY and surfaced one more mechanical P1 — `TransformReason` must include `unsupported_provider` (`model-router.ts:84`), a pre-existing value the free-typed `reason?: string` never enforced. Folded in (the union is now 8 values). No open decision remains.
 - **Spec trailer for downstream PRs:** `Spec: docs/specs/153-extract-schema-input-validation.md`

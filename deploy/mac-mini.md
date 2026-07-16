@@ -30,7 +30,7 @@ A typical home ISP IP passes.
 
 ```sh
 brew install --cask docker          # then launch Docker.app
-git clone https://github.com/edictum-ai/captatum.git ~/captatum
+git clone https://github.com/acartag7/captatum.git ~/captatum
 cd ~/captatum
 node --no-warnings scripts/gen-oauth-keys.ts   # print OAuth keys
 cp .env.example .env               # fill it in (keys + Cloudflare + origins)

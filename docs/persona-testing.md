@@ -12,7 +12,7 @@ before any release that changes the install path, README, or DX.
 
 Answer four questions honestly, from cold installs (no captatum, no cache):
 
-1. **Does it install + work?** (`npx -y @edictum/captatum` reaches the ready line.)
+1. **Does it install + work?** (`npx -y captatum` reaches the ready line.)
 2. **Is the README relevant + accurate** for each persona?
 3. **Are the docs clear, not confusing?** Where does a new user stumble?
 4. **What should we build / improve / extend next?**
@@ -28,11 +28,11 @@ brand-new user. Two options:
   # Lima's default guest is Ubuntu (no Homebrew) — install Node 24 via NodeSource:
   limactl exec captatum-clean -- sh -c 'command -v node || (curl -fsSL https://deb.nodesource.com/setup_24.x | sudo bash - && sudo apt-get install -y nodejs)'
   # set -o pipefail so a failed `npx` (broken publish / native-module error) is not masked by `tail`:
-  limactl exec captatum-clean -- sh -c 'set -o pipefail; npx -y @edictum/captatum </dev/null 2>&1 | tail -6'
+  limactl exec captatum-clean -- sh -c 'set -o pipefail; npx -y captatum </dev/null 2>&1 | tail -6'
   ```
 - **Docker** (lighter — a clean container, same install/DX signal):
   ```sh
-  docker run --rm node:24 sh -c 'node -v && (set -o pipefail; npx -y @edictum/captatum </dev/null 2>&1 | tail -6); echo EXIT=$?'
+  docker run --rm node:24 sh -c 'node -v && (set -o pipefail; npx -y captatum </dev/null 2>&1 | tail -6); echo EXIT=$?'
   ```
 
 A `</dev/null` on stdin makes the stdio bridge start, print its ready line, and exit —

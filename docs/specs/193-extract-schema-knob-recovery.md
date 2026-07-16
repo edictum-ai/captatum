@@ -1,6 +1,6 @@
 # Spec: #193 — recover misplaced extract tool knobs
 
-- **Issue:** [#193](https://github.com/edictum-ai/captatum/issues/193)
+- **Issue:** [#193](https://github.com/acartag7/captatum/issues/193)
 - **Tier:** T3 — caller-supplied schema is untrusted input at a pre-egress boundary.
 - **Status:** READY
 - **Supersedes:** only the #153 expectation that every root schema `budget` is an unsupported keyword.

@@ -28,7 +28,7 @@ docker compose version >/dev/null 2>&1 || \
 cat > "$APP/docker-compose.yml" <<'YAML'
 services:
   gateway:
-    image: ghcr.io/edictum-ai/captatum:${CAPTATUM_TAG:-latest}
+    image: ghcr.io/acartag7/captatum:${CAPTATUM_TAG:-latest}
     environment:
       HOST: "0.0.0.0"
       CAPTATUM_BROWSER_CDP_ENDPOINT: "http://127.0.0.1:9222"
@@ -40,7 +40,7 @@ services:
       - captatum-data:/data
     restart: unless-stopped
   browser:
-    image: ghcr.io/edictum-ai/captatum-browser:${CAPTATUM_TAG:-latest}
+    image: ghcr.io/acartag7/captatum-browser:${CAPTATUM_TAG:-latest}
     network_mode: "service:gateway"
     depends_on: [gateway]
     restart: unless-stopped

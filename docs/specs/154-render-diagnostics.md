@@ -1,6 +1,6 @@
 # Spec: #154 — renderDiagnostics on render_empty / render failures
 
-- **Issue:** [#154](https://github.com/edictum-ai/captatum/issues/154)
+- **Issue:** [#154](https://github.com/acartag7/captatum/issues/154)
 - **Tier:** T2 (new client-visible output fields cross the output-redaction / data-exposure boundary)
 - **Status:** v2 — READY (2-lens independent critique folded in; see "Critique resolutions" below). v1 was BLOCKED on a wrong egressBytes scope + a false renderEgressHosts security claim.
 - **Spec trailer:** `Spec: docs/specs/154-render-diagnostics.md`

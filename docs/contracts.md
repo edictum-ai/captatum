@@ -769,7 +769,7 @@ The repo ships two deployment-flavor runtimes off one core engine:
   implemented by `src/server.ts` / `src/interfaces/http/*` and exercised locally
   by tests and `pnpm run smoke:hosted`. The `.github/workflows/release.yml`
   workflow builds and publishes the gateway and browser-sidecar images to GHCR on
-  a `v*` tag (`ghcr.io/edictum-ai/captatum`, `ghcr.io/edictum-ai/captatum-browser`).
+  a `v*` tag (`ghcr.io/acartag7/captatum`, `ghcr.io/acartag7/captatum-browser`).
   The **gateway image ships no browser binary** — Tier-3 connects to the sidecar
   over CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`), keeping Chromium out of the gateway's
   blast radius; without a sidecar, Tier-3 is `render-unavailable`. The default
